@@ -219,6 +219,25 @@ export class Player extends Entity {
             }
         }
 
+        for (const id in ENTITIES.MOBS) {
+            const mob = ENTITIES.MOBS[id];
+            if (colliding(mob, this, 15)) {
+                // resolve collision
+                const angle = Math.atan2(mob.y - this.y, mob.x - this.x);
+                const dx = Math.cos(angle) * 10
+                const dy = Math.sin(angle) * 10
+                this.x -= dx;
+                this.y -= dy;
+                mob.x += dx;
+                mob.y += dy;
+
+                // damage ONLY the target player
+                if (mob.isAlarmed && mob.target && mob.target.id === this.id && !this.hasShield) {
+                    this.damage(dataMap.MOBS[mob.type].damage, mob);
+                }
+            }
+        }
+
         if (this.touchingSafeZone) {
             this.hasShield = true;
         } else {

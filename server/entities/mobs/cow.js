@@ -35,13 +35,4 @@ export class Cow extends Mob {
         // Default wander behavior
         super.turn();
     }
-
-    resolvePlayerCollision(player) {
-        super.resolvePlayerCollision(player);
-
-        // Damage ONLY the target player
-        if (this.isAlarmed && this.target && this.target.id === player.id && !player.hasShield) {
-            player.damage(dataMap.MOBS[this.type].damage, this);
-        }
-    }
 }

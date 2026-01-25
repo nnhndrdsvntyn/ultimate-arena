@@ -48,28 +48,6 @@ export class Mob extends Entity {
         this.x += Math.cos(this.angle) * this.speed;
         this.y += Math.sin(this.angle) * this.speed;
     }
-    resolveCollisions() {
-        // check collisions with players
-        for (const player of Object.values(ENTITIES.PLAYERS)) {
-            if (!player.isAlive) continue;
-
-            // check if touching
-            if (colliding(this, player)) {
-                this.resolvePlayerCollision(player);
-            }
-        }
-    }
-    resolvePlayerCollision(player) {
-        // resolve collision
-        const angle = Math.atan2(player.y - this.y, player.x - this.x);
-        const dx = Math.cos(angle) * 10
-        const dy = Math.sin(angle) * 10
-
-        this.x -= dx;
-        this.y -= dy;
-        player.x += dx;
-        player.y += dy;
-    }
     turn() {
         if (performance.now() - this.lastTurnTime > this.nextTurnDelay) {
             this.angle = Math.random() * Math.PI * 2 - Math.PI; // rand angle between -PI and PI
@@ -111,9 +89,6 @@ export class Mob extends Entity {
         dataMap.MOBS[this.type].deathAction(killer);
         this.lastDiedTime = performance.now();
         ENTITIES.deleteEntity('mob', this.id);
-    }
-    shoot() {
-
     }
     process() {
         const currentTime = performance.now();
@@ -169,7 +144,6 @@ export class Mob extends Entity {
         // main stuff
         this.turn();
         this.move();
-        this.resolveCollisions();
         this.clamp();
     }
 }

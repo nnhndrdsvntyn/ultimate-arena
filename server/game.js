@@ -244,13 +244,10 @@ setTimeout(() => {
         }
     };
 
-    // no mobs to test lag problem
-    /*
     spawn(1, 50, Chick, 4700, 1e4);
     spawn(51, 101, Cow, 4700, 1e4);
     spawn(102, 152, Pig, 4700, 1e4);
     spawn(153, 176, Hearty, 1e4, 1e4);
-    */
 }, 100);
 
 

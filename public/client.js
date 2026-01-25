@@ -255,25 +255,6 @@ window.render = function () {
         }
     };
 
-    const originalSend = ws.send;
-    let lastSentTime = 0;
-    const sendQueue = [];
-
-    ws.send = function (data) {
-        sendQueue.push(data);
-
-        const now = Date.now();
-
-        if (now - lastSentTime < 15) return;
-
-        lastSentTime = now;
-
-        while (sendQueue.length) {
-            originalSend.call(ws, sendQueue.shift());
-        }
-    };
-
-
     ws.onclose = () => {
         console.log('%cDisconnected from server', 'color: red; font-weight: bold;');
         if (!serverFull) {
