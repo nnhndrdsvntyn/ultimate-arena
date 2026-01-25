@@ -234,19 +234,25 @@ export const deadMobs = {};
 
 // spawn some mobs in random positions!
 setTimeout(() => {
-    for (let i = 1; i <= 100; i++) {
-        new Chick(i, Math.floor(Math.random() * 4700), Math.floor(Math.random() * 1e4))
-    }
-    for (let i = 101; i <= 201; i++) {
-        new Cow(i, Math.floor(Math.random() * 4700), Math.floor(Math.random() * 1e4))
-    }
-    for (let i = 202; i <= 302; i++) {
-        new Pig(i, Math.floor(Math.random() * 4700), Math.floor(Math.random() * 1e4))
-    }
-    for (let i = 303; i <= 353; i++) {
-        new Hearty(i, Math.floor(Math.random() * 1e4), Math.floor(Math.random() * 1e4))
-    }
+    const spawn = (start, end, Class, xMax, yMax) => {
+        for (let i = start; i <= end; i++) {
+            new Class(
+                i,
+                Math.floor(Math.random() * xMax),
+                Math.floor(Math.random() * yMax)
+            );
+        }
+    };
+
+    // no mobs to test lag problem
+    /*
+    spawn(1, 50, Chick, 4700, 1e4);
+    spawn(51, 101, Cow, 4700, 1e4);
+    spawn(102, 152, Pig, 4700, 1e4);
+    spawn(153, 176, Hearty, 1e4, 1e4);
+    */
 }, 100);
+
 
 export function spawnObject(type, x, y) {
     const radius = dataMap.OBJECTS[type]?.radius || 50;
@@ -296,7 +302,7 @@ export function spawnObject(type, x, y) {
 }
 
 // spawn 100 objects randomly using the new function
-for (let i = 0; i < 200; i++) {
+for (let i = 0; i < 100; i++) {
     spawnObject(1);
 }
 

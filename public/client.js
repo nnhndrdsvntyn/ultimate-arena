@@ -77,16 +77,54 @@ const loadingState = {
 
 async function loadAssets() {
     const assets = [
-        ...Object.values(dataMap.AUDIO).map(a => ({ type: 'audio', ...a })),
-        ...Object.values(dataMap.UI).map(i => ({ type: 'image', ...i })),
-        ...Object.values(dataMap.ACCESSORIES).map(i => ({ type: 'image', ...i })),
-        ...Object.values(dataMap.OBJECTS).map(i => ({ type: 'image', ...i, name: i.imgName, src: i.imgSrc })),
-        ...Object.values(dataMap.otherImgs).map(i => ({ type: 'image', ...i })),
-        ...Object.values(dataMap.PLAYERS.imgs).map(i => ({ type: 'image', ...i })),
-        ...Object.values(dataMap.SWORDS.imgs).map(i => ({ type: 'image', ...i })),
-        ...Object.values(dataMap.MOBS).map(i => ({ type: 'image', ...i, name: i.imgName, src: i.imgSrc })),
-        ...Object.values(dataMap.STRUCTURES).map(i => ({ type: 'image', ...i, name: i.imgName, src: i.imgSrc })),
-        ...Object.values(dataMap.PROJECTILES).map(i => ({ type: 'image', ...i, name: i.imgName, src: i.imgSrc })),
+        ...Object.values(dataMap.AUDIO).map(a => ({
+            type: 'audio',
+            ...a
+        })),
+        ...Object.values(dataMap.UI).map(i => ({
+            type: 'image',
+            ...i
+        })),
+        ...Object.values(dataMap.ACCESSORIES).map(i => ({
+            type: 'image',
+            ...i
+        })),
+        ...Object.values(dataMap.OBJECTS).map(i => ({
+            type: 'image',
+            ...i,
+            name: i.imgName,
+            src: i.imgSrc
+        })),
+        ...Object.values(dataMap.otherImgs).map(i => ({
+            type: 'image',
+            ...i
+        })),
+        ...Object.values(dataMap.PLAYERS.imgs).map(i => ({
+            type: 'image',
+            ...i
+        })),
+        ...Object.values(dataMap.SWORDS.imgs).map(i => ({
+            type: 'image',
+            ...i
+        })),
+        ...Object.values(dataMap.MOBS).map(i => ({
+            type: 'image',
+            ...i,
+            name: i.imgName,
+            src: i.imgSrc
+        })),
+        ...Object.values(dataMap.STRUCTURES).map(i => ({
+            type: 'image',
+            ...i,
+            name: i.imgName,
+            src: i.imgSrc
+        })),
+        ...Object.values(dataMap.PROJECTILES).map(i => ({
+            type: 'image',
+            ...i,
+            name: i.imgName,
+            src: i.imgSrc
+        })),
     ];
 
     loadingState.totalAssets = assets.length;
@@ -95,9 +133,15 @@ async function loadAssets() {
     for (const asset of assets) {
         loadingState.subText = `Loading ${asset.src.split('/').pop()}...`;
         if (asset.type === 'audio') {
-            await LC.loadAudio({ name: asset.name, src: asset.src });
+            await LC.loadAudio({
+                name: asset.name,
+                src: asset.src
+            });
         } else {
-            await LC.loadImage({ name: asset.name, src: asset.src });
+            await LC.loadImage({
+                name: asset.name,
+                src: asset.src
+            });
         }
         loadingState.loadedAssets++;
         loadingState.progress = (loadingState.loadedAssets / loadingState.totalAssets) * 0.8; // 80% for assets
@@ -210,6 +254,25 @@ window.render = function () {
             loadingState.progress = 1;
         }
     };
+
+    const originalSend = ws.send;
+    let lastSentTime = 0;
+    const sendQueue = [];
+
+    ws.send = function (data) {
+        sendQueue.push(data);
+
+        const now = Date.now();
+
+        if (now - lastSentTime < 15) return;
+
+        lastSentTime = now;
+
+        while (sendQueue.length) {
+            originalSend.call(ws, sendQueue.shift());
+        }
+    };
+
 
     ws.onclose = () => {
         console.log('%cDisconnected from server', 'color: red; font-weight: bold;');
@@ -732,7 +795,11 @@ function render() {
         for (const mob of Object.values(ENTITIES.MOBS)) {
             const mmX = mmPosX + (mob.x / MAP_SIZE[0]) * mmSize;
             const mmY = mmPosY + (mob.y / MAP_SIZE[1]) * mmSize;
-            LC.drawCircle({ pos: [mmX, mmY], radius: 3, color: 'orange' });
+            LC.drawCircle({
+                pos: [mmX, mmY],
+                radius: 3,
+                color: 'orange'
+            });
         }
     }
 
@@ -742,7 +809,11 @@ function render() {
             if (object.type !== 1) continue; // Only chests
             const mmX = mmPosX + (object.x / MAP_SIZE[0]) * mmSize;
             const mmY = mmPosY + (object.y / MAP_SIZE[1]) * mmSize;
-            LC.drawCircle({ pos: [mmX, mmY], radius: 3, color: 'brown' });
+            LC.drawCircle({
+                pos: [mmX, mmY],
+                radius: 3,
+                color: 'brown'
+            });
         }
     }
 
@@ -752,7 +823,11 @@ function render() {
             if (!player.isAlive || player.id === Vars.myId) continue;
             const mmX = mmPosX + (player.x / MAP_SIZE[0]) * mmSize;
             const mmY = mmPosY + (player.y / MAP_SIZE[1]) * mmSize;
-            LC.drawCircle({ pos: [mmX, mmY], radius: 3, color: 'red' });
+            LC.drawCircle({
+                pos: [mmX, mmY],
+                radius: 3,
+                color: 'red'
+            });
         }
     }
 
