@@ -19,8 +19,8 @@ export class Cow extends Mob {
             });
 
             // Turn towards target if alarmed
-            let distanceFromTarget = Math.sqrt((this.target.x - this.x) ** 2 + (this.target.y - this.y) ** 2);
-            if (this.target && ENTITIES.PLAYERS[this.target.id] && this.target.isAlive && !targetInBush && distanceFromTarget < 1000 && this.x < MAP_SIZE[0] * 0.47 && !this.target.hasShield) {
+            let distanceSq = (this.target.x - this.x) ** 2 + (this.target.y - this.y) ** 2;
+            if (this.target && ENTITIES.PLAYERS[this.target.id] && this.target.isAlive && !targetInBush && distanceSq < 1000 ** 2 && this.x < MAP_SIZE[0] * 0.47 && !this.target.hasShield) {
                 this.angle = Math.atan2(this.target.y - this.y, this.target.x - this.x);
                 return;
             } else {

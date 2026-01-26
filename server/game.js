@@ -262,7 +262,7 @@ export function spawnObject(type, x, y) {
             y = Math.floor(Math.random() * MAP_SIZE[1]);
 
             const spawnZone = ENTITIES.STRUCTURES[1];
-            const distanceToSpawn = spawnZone ? Math.sqrt(Math.pow(x - spawnZone.x, 2) + Math.pow(y - spawnZone.y, 2)) : 2000;
+            const distanceToSpawnSq = spawnZone ? (x - spawnZone.x) ** 2 + (y - spawnZone.y) ** 2 : 2000 ** 2;
 
             const riverLeft = MAP_SIZE[0] * 0.47;
             const riverRight = MAP_SIZE[0] * 0.53;
@@ -273,7 +273,7 @@ export function spawnObject(type, x, y) {
             }
 
             const inRiver = x >= (riverLeft - radius - riverBuffer) && x <= (riverRight + radius + riverBuffer);
-            const nearSpawn = spawnZone ? distanceToSpawn < (spawnZone.radius + 200) : false;
+            const nearSpawn = spawnZone ? distanceToSpawnSq < (spawnZone.radius + 200) ** 2 : false;
             const outOfBounds = x < 100 || x > (MAP_SIZE[0] - 100) || y < 100 || y > (MAP_SIZE[1] - 100);
 
             if (!inRiver && !nearSpawn && !outOfBounds) {

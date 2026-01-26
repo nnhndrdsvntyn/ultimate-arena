@@ -49,12 +49,10 @@ export class Mob extends Entity {
         this.y += Math.sin(this.angle) * this.speed;
     }
     turn() {
-        if (performance.now() - this.lastTurnTime > this.nextTurnDelay) {
-            this.angle = Math.random() * Math.PI * 2 - Math.PI; // rand angle between -PI and PI
-            this.lastTurnTime = performance.now();
+        this.angle = Math.random() * Math.PI * 2 - Math.PI; // rand angle between -PI and PI
+        this.lastTurnTime = performance.now();
 
-            this.nextTurnDelay = Math.floor(Math.random() * 3001) + 3000;
-        }
+        this.nextTurnDelay = Math.floor(Math.random() * 3001) + 3000;
     }
     damage(health, attacker) {
         if (performance.now() - this.lastDamagedTime < 200) return false; // invincible for 10 ticks (200 / 20)
@@ -142,7 +140,7 @@ export class Mob extends Entity {
             }
         }
         // main stuff
-        this.turn();
+        if (performance.now() - this.lastTurnTime > this.nextTurnDelay || this.isAlarmed) this.turn();
         this.move();
         this.clamp();
     }

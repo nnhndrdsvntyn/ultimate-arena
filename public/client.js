@@ -144,13 +144,13 @@ async function loadAssets() {
             });
         }
         loadingState.loadedAssets++;
-        loadingState.progress = (loadingState.loadedAssets / loadingState.totalAssets) * 0.8; // 80% for assets
+        loadingState.progress = (loadingState.loadedAssets / loadingState.totalAssets) * 0.99; // 99% for assets
         await new Promise(r => r());
     }
 
     loadingState.header = 'Loaded Assets';
     loadingState.subText = '';
-    loadingState.progress = 0.8;
+    loadingState.progress = 0.99;
 }
 
 function drawLoadingScreen() {
@@ -247,7 +247,6 @@ window.render = function () {
     // Setup WebSocket Handlers IMMEDIATELY to avoid missing the ID message
     ws.onopen = () => {
         console.log('%cConnected to server', 'color: lime; font-weight: bold;');
-        loadingState.connected = true;
         if (loadingState.loadedAssets === loadingState.totalAssets) {
             loadingState.header = 'Connected!';
             loadingState.subText = '';
@@ -257,21 +256,24 @@ window.render = function () {
 
     ws.onclose = () => {
         console.log('%cDisconnected from server', 'color: red; font-weight: bold;');
-        if (!serverFull) {
-            window.location.reload();
+        if (!cantJoin) {
+            // window.location.reload();
         }
     };
 
     ws.onmessage = (event) => {
-        if (event.data == 0) {
-            alert("Server full");
-            serverFull = true;
-            location.reload();
-            return;
-        }
         if (!Vars.myId) {
-            Vars.myId = parseInt(event.data);
-            console.log("My ID:", event.data);
+            // If it's a string, it's our ID
+            if (typeof event.data === 'string') {
+                Vars.myId = parseInt(event.data);
+                console.log("My ID:", event.data);
+                loadingState.connected = true;
+                return;
+            }
+            // If it's not a string (i.e. binary), it's likely an error/kick packet
+            // Parse it to show the alert, then stop processing
+            parsePacket(event.data);
+            cantJoin = true;
             return;
         }
         parsePacket(event.data);
@@ -284,12 +286,17 @@ window.render = function () {
         loadingState.subText = '';
         loadingState.progress = 1;
     } else {
-        loadingState.header = 'Connecting to server...';
-        loadingState.subText = '';
+        if (cantJoin) {
+            loadingState.header = 'Unable to join server';
+            loadingState.subText = 'Either the game is full, or you have too many connections on this IP.';
+        } else {
+            loadingState.header = 'Connecting to server...';
+            loadingState.subText = '';
+        }
     }
 })();
 
-let serverFull = false;
+let cantJoin = false;
 
 const joinBtn = document.getElementById('joinBtn');
 const usernameInput = document.getElementById('homeUsrnInput');

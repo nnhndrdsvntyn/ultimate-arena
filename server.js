@@ -35,30 +35,9 @@ const ipTracker = new Map();
 
 wss.on('connection', (ws, req) => {
     const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
-    console.log('Client connected from IP:', ip);
+    // console.log('Client connected from IP:', ip);
 
-    // IP connection limiting (max 3)
-    const currentIps = ipTracker.get(ip) || 0;
-    if (currentIps >= 3) {
-        ws.close();
-        return;
-    }
-    ipTracker.set(ip, currentIps + 1);
-    ws.ip = ip;
-
-    if (ENTITIES.playerIds.size + 1 > 50) { // max players is 50
-        ws.send(0);
-        ws.close();
-        return;
-    }
-    let newId = getId('PLAYERS');
-    while (ENTITIES.PLAYERS[newId]) {
-        newId = getId('PLAYERS');
-    }
-    ws.id = newId;
-    ws.lastPacketTime = performance.now();
     ws.packetWriter = new PacketWriter(4096); // Pre-allocated buffer for this client
-    ws.seenEntities = new Set();
 
     ws.kick = (msg) => {
         const pw = ws.packetWriter;
@@ -68,6 +47,27 @@ wss.on('connection', (ws, req) => {
         ws.send(pw.getBuffer());
         ws.close();
     }
+
+    // IP connection limiting (max 3)
+    const currentIps = ipTracker.get(ip) || 0;
+    if (currentIps >= 3) {
+        ws.kick('Too many connections from this IP.');
+        return;
+    }
+    ipTracker.set(ip, currentIps + 1);
+    ws.ip = ip;
+
+    if (ENTITIES.playerIds.size + 1 > 50) { // max players is 50
+        ws.kick('Server is full.');
+        return;
+    }
+    let newId = getId('PLAYERS');
+    while (ENTITIES.PLAYERS[newId]) {
+        newId = getId('PLAYERS');
+    }
+    ws.id = newId;
+    ws.lastPacketTime = performance.now();
+    ws.seenEntities = new Set();
 
     ws.send(ws.id);
 
@@ -118,9 +118,26 @@ function update() {
         const player = ENTITIES.PLAYERS[id];
         player.process();
     }
+
+    let unprocessedEntityCount = 0;
     // process mobs
     for (const id in ENTITIES.MOBS) {
         const mob = ENTITIES.MOBS[id];
+        // check if this mob is too far away from any player, if yes, then don't process it
+        let tooFar = true;
+        for (const playerId in ENTITIES.PLAYERS) {
+            const player = ENTITIES.PLAYERS[playerId];
+            if (player.x - mob.x < 1500 && player.y - mob.y < 1500) {
+                tooFar = false;
+                break;
+            }
+        }
+        if (tooFar) {
+            unprocessedEntityCount++;
+            continue;
+        }
+
+        // if passed all checks, process it
         mob.process();
     }
     // process projectiles
@@ -129,14 +146,39 @@ function update() {
         projectile.process();
     }
 
-    // handle structure collisions
+    // handle structure collisions if they are within range of a player
     for (const id in ENTITIES.STRUCTURES) {
         const structure = ENTITIES.STRUCTURES[id];
+        let tooFar = true;
+        for (const playerId in ENTITIES.PLAYERS) {
+            const player = ENTITIES.PLAYERS[playerId];
+            if (player.x - structure.x < 700 && player.y - structure.y < 700) {
+                tooFar = false;
+                break;
+            }
+        }
+        if (tooFar) {
+            unprocessedEntityCount++;
+            continue;
+        }
         structure.resolveCollisions();
     }
-    // process objects
+
+    // process objects if they are within range of a player
     for (const id in ENTITIES.OBJECTS) {
         const object = ENTITIES.OBJECTS[id];
+        let tooFar = true;
+        for (const playerId in ENTITIES.PLAYERS) {
+            const player = ENTITIES.PLAYERS[playerId];
+            if (player.x - object.x < 700 && player.y - object.y < 700) {
+                tooFar = false;
+                break;
+            }
+        }
+        if (tooFar) {
+            unprocessedEntityCount++;
+            continue;
+        }
         object.process();
     }
 
@@ -178,6 +220,9 @@ function update() {
 
     // send updates
     wss.clients.forEach(ws => {
+        // CHECK IF ITS CLOSED, AND CONTINUE IF IT IS
+        if (ws.readyState !== WebSocket.OPEN) return;
+
         // kick inactive clients
         if (performance.now() - ws.lastPacketTime > 60000) {
             ws.kick('Kicked for inactivity.');
@@ -192,6 +237,7 @@ function update() {
         const lpY = localPlayer.y;
 
         const pw = ws.packetWriter;
+        if (!pw) return;
         pw.reset();
 
         // Packet type
@@ -242,6 +288,7 @@ function update() {
                 if (p.hasShield !== prev.hasShield) mask |= 0x200;   // HasShield
                 if (p.isAlive !== prev.isAlive) mask |= 0x400;       // IsAlive
                 if (p.chatMessage !== prev.chatMessage) mask |= 0x800; // Chat
+                if (p.username !== prev.username) mask |= 0x1000;      // Username
 
                 if (mask === 0 && !isFull) {
                     mask = 0; // No changes
@@ -277,6 +324,7 @@ function update() {
                 if (mask & 0x200) pw.writeU8(p.hasShield ? 1 : 0);
                 if (mask & 0x400) pw.writeU8(p.isAlive ? 1 : 0);
                 if (mask & 0x800) pw.writeStr(p.chatMessage);
+                if (mask & 0x1000) pw.writeStr(p.username);
             }
             playerCount++;
         }
@@ -471,7 +519,8 @@ function saveHistory() {
             hp: p.hp, maxHp: p.maxHp, isAlive: p.isAlive,
             score: p.score, level: p.level,
             swingState: p.swingState, hasWeapon: p.hasWeapon, hasShield: p.hasShield,
-            chatMessage: p.chatMessage
+
+            chatMessage: p.chatMessage, username: p.username
         };
     }
     for (const m of Object.values(ENTITIES.MOBS)) {

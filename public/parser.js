@@ -189,6 +189,12 @@ export function parsePacket(buffer) {
                     offset += cLen;
                     if (p) p.chatMessage = chatMessage;
                 }
+                if (mask & 0x1000) {
+                    const uLen = view.getUint8(offset++);
+                    const username = new TextDecoder().decode(new Uint8Array(view.buffer, offset, uLen));
+                    offset += uLen;
+                    if (p) p.username = username;
+                }
             }
         }
         for (const player of Object.values(ENTITIES.PLAYERS)) {
@@ -445,6 +451,7 @@ export function parsePacket(buffer) {
         offset += messageLength;
 
         alert(`KICKED: ${message}`);
+        console.log(message);
     } else if (packetType === 9) { // ping response packet
         Vars.ping = Date.now() - Vars.lastSentPing;
     } else if (packetType === 10) { // upgrade response packet

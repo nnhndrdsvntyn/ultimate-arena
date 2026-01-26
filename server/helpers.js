@@ -125,16 +125,22 @@ export function validateUsername(username) {
 const helperWriter = new PacketWriter();
 
 export function playSfx(xorigin, yorigin, type, range) {
+    const rangeSqrd = range * range;
+
     wss.clients.forEach(client => {
-        const dx = ENTITIES.PLAYERS[client.id].x - xorigin;
-        const dy = ENTITIES.PLAYERS[client.id].y - yorigin;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        const volume = Math.max(0.1, 1 - distance / 1000); // closer => louder, farther => quieter
-        if (distance <= range) {
+        const player = ENTITIES.PLAYERS[client.id];
+        const dx = player.x - xorigin;
+        const dy = player.y - yorigin;
+        const distanceSqrd = dx * dx + dy * dy;
+
+        if (distanceSqrd <= rangeSqrd) {
+            const volume = Math.max(0.1, 1 - distanceSqrd / rangeSqrd);
+
             helperWriter.reset();
             helperWriter.writeU8(7);
             helperWriter.writeU8(type);
-            helperWriter.writeU8(parseInt(volume * 100));
+            helperWriter.writeU8(Math.floor(volume * 100));
+
             client.send(helperWriter.getBuffer());
         }
     });

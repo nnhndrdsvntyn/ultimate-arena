@@ -31,7 +31,7 @@ export class GameObject extends Entity {
             const structure = ENTITIES.STRUCTURES[id];
             if (structure.type === 2) {
                 if (colliding(this, structure)) {
-                    /* chests shouldn't move
+                    /*
                     const angle = Math.atan2(this.y - structure.y, this.x - structure.x);
                     this.x += Math.cos(angle) * 10;
                     this.y += Math.sin(angle) * 10;

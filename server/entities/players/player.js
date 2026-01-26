@@ -232,7 +232,7 @@ export class Player extends Entity {
                 mob.y += dy;
 
                 // damage ONLY the target player
-                if (mob.isAlarmed && mob.target && mob.target.id === this.id && !this.hasShield) {
+                if (mob.isAlarmed && dataMap.MOBS[mob.type].isNeutral && mob.target && mob.target.id === this.id && !this.hasShield) {
                     this.damage(dataMap.MOBS[mob.type].damage, mob);
                 }
             }
