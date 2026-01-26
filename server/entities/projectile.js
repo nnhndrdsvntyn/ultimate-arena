@@ -5,7 +5,7 @@ import {
     dataMap
 } from '../../public/shared/datamap.js';
 import {
-    colliding
+    colliding, playSfx
 } from '../helpers.js';
 import {
     Entity
@@ -70,6 +70,8 @@ export class Projectile extends Entity {
                     }
                 } else {
                     // other structures block the projectile
+                    const sfx = dataMap.sfxMap.indexOf('slash-clash');
+                    playSfx(this.x, this.y, sfx, 1000);
                     ENTITIES.deleteEntity('projectile', this.id);
                     return;
                 }

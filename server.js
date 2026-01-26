@@ -18,7 +18,10 @@ import http from 'http';
 const app = express();
 const PORT = 3000;
 
-app.use(express.static('public'));
+app.use(express.static('public', {
+    maxAge: 86400000, // 1 day in milliseconds
+    immutable: true
+}));
 
 const httpserver = http.createServer(app);
 

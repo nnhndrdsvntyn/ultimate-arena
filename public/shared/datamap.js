@@ -1,7 +1,7 @@
 // just some constants... doesn't really belong here.
 export const TPS = {
     clientReal: 0,
-    clientCapped: 60,
+    clientCapped: 75,
     server: 20
 }
 
@@ -59,6 +59,12 @@ export const dataMap = {
             defaultTimestamp: 0,
             defaultVolume: 0.7,
             defaultSpeed: 1.5,
+        },
+        'slash-clash': {
+            name: 'slash-clash',
+            src: './audios/slash-clash.mp3',
+            defaultTimestamp: 0.7,
+            defaultVolume: 0.15,
         }
     },
     sfxMap: [
@@ -69,7 +75,8 @@ export const dataMap = {
         'bubble-pop',
         'wood-hit',
         'coin-collect',
-        'heart-beat'
+        'heart-beat',
+        'slash-clash'
     ],
     UI: {
         'pause-button': {

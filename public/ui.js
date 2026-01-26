@@ -408,12 +408,14 @@ function setupMobileTouchActions(joyContainer, chatBtn) {
         const myPlayer = ENTITIES.PLAYERS[Vars.myId];
         if (!myPlayer?.isAlive || ws?.readyState !== ws.OPEN) return;
 
+        if (myPlayer.swingState !== 0) return;
+
         let angle = Math.atan2(y - innerHeight / 2, x - innerWidth / 2);
         writer.reset();
         writer.writeU8(2);
         writer.writeF32(angle);
         ws.send(writer.getBuffer());
-        if (myPlayer.swingState === 0) myPlayer.angle = angle;
+        myPlayer.angle = angle;
     };
 
     const sendAttack = (state) => {

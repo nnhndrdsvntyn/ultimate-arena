@@ -7,7 +7,7 @@ import {
 import {
     Entity
 } from '../entity.js';
-import { colliding } from '../../helpers.js';
+import { colliding, playSfx } from '../../helpers.js';
 
 export class Structure extends Entity {
     constructor(id, x, y, type) {
