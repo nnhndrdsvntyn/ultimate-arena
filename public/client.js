@@ -42,10 +42,11 @@ export const Vars = {
     lastDiedTime: 0,
     myId: 0,
     ping: 0,
-    lastSentPing: 0
+    lastSentPing: 0,
+    isAdmin: false
 }
 
-export const ws = new WebSocket(`ws://${location.host}`);
+export const ws = new WebSocket(`wss://${location.host}`);
 ws.binaryType = 'arraybuffer';
 window.ws = ws;
 
@@ -335,6 +336,7 @@ function render() {
     // 1. Update all entity states (lerps) FIRST
     for (const player of Object.values(ENTITIES.PLAYERS)) player.update?.();
     for (const mob of Object.values(ENTITIES.MOBS)) mob.update?.();
+    for (const object of Object.values(ENTITIES.OBJECTS)) object.update?.();
     for (const projectile of Object.values(ENTITIES.PROJECTILES)) projectile.update?.();
 
     // 2. Smooth Zoom Logic (Fixes dilation jitter)
@@ -606,39 +608,6 @@ function render() {
         });
     }
 
-    // level percentage bar
-    const currentLevelScore = dataMap.PLAYERS.levels[localPlayer.level].score;
-    let nextLevelScore = dataMap.PLAYERS.levels[localPlayer.level + 1]?.score;
-    if (nextLevelScore === undefined) {
-        nextLevelScore = currentLevelScore; // Use current score if next level doesn't exist
-    }
-
-    let percentage = Math.max(0, (localPlayer.score - currentLevelScore) / (nextLevelScore - currentLevelScore));
-    if (percentage === Infinity || nextLevelScore === currentLevelScore) {
-        percentage = 1;
-    }
-    const barWidth = LC.width / 1.15;
-    const barHeight = LC.height / 20;
-    LC.drawRect({
-        pos: [LC.width / 2 - barWidth / 2, LC.height - barHeight - 30],
-        size: [barWidth, barHeight],
-        color: 'gray',
-        cornerRadius: 15
-    });
-    if (percentage > 0) {
-        LC.drawRect({
-            pos: [LC.width / 2 - barWidth / 2, LC.height - barHeight - 30],
-            size: [barWidth * percentage, barHeight],
-            color: 'rgba(0, 186, 199, 1)',
-            cornerRadius: 15
-        });
-    }
-    LC.drawText({
-        text: (percentage * 100).toFixed() + '%',
-        pos: [LC.width / 2, LC.height - barHeight],
-        font: 'bold 30px Arial',
-        color: 'white'
-    });
 
     // Draw Throw Button
     if (localPlayer.hasWeapon && isMobile) {
@@ -794,7 +763,7 @@ function render() {
     // Chests (brown)
     if (Settings.showChestsOnMinimap) {
         for (const object of Object.values(ENTITIES.OBJECTS)) {
-            if (object.type !== 1) continue; // Only chests
+            if (object.type < 1 || object.type > 4) continue; // Only chests (types 1-4)
             const mmX = mmPosX + (object.x / MAP_SIZE[0]) * mmSize;
             const mmY = mmPosY + (object.y / MAP_SIZE[1]) * mmSize;
             LC.drawCircle({

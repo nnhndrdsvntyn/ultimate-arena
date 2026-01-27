@@ -5,37 +5,40 @@ import {
     dataMap
 } from '../../public/shared/datamap.js';
 import {
-    colliding, playSfx
+    colliding,
+    playSfx
 } from '../helpers.js';
 import {
     Entity
 } from './entity.js';
 
 export class Projectile extends Entity {
-    constructor(id, x, y, angle, type, shooter) {
-        const statsType = (type === -1) ? (dataMap.PROJECTILES[shooter.level] ? shooter.level : 1) : type;
+    constructor(id, x, y, angle, type, shooter, groupId) {
+        const statsType = (type === -1) ? (dataMap.PROJECTILES[shooter.weapon.rank] ? shooter.weapon.rank : 1) : type;
         const speed = dataMap.PROJECTILES[statsType]?.speed;
         const radius = dataMap.PROJECTILES[statsType]?.radius;
         super(id, x, y, radius, speed, 0, 0);
 
+        this.groupId = groupId;
         this.angle = angle;
         this.type = type;
-        this.damage = dataMap.PROJECTILES[statsType]?.damage;
+        this.damage = (shooter.strength + dataMap.PROJECTILES[statsType]?.damage) * 1.15;
         this.maxDistance = dataMap.PROJECTILES[statsType]?.maxDistance;
 
         if (type === -1) {
             this.damage *= 2;
-            this.radius = dataMap.SWORDS.imgs[shooter.level].swordWidth;
+            this.radius = dataMap.SWORDS.imgs[shooter.weapon.rank].swordWidth;
             this.speed /= 1.25;
             this.maxDistance *= 4;
-            this.level = shooter.level;
+            this.weaponRank = shooter.weapon.rank;
         }
         this.distanceTraveled = 0;
-
         this.shooter = shooter;
+        this.weaponRank = shooter.weapon.rank;
 
         ENTITIES.PROJECTILES[id] = this;
     }
+
     move() {
         this.lastX = this.x;
         this.lastY = this.y;
@@ -51,37 +54,103 @@ export class Projectile extends Entity {
             if (this.speed < 10) this.maxDistance = 0; // abort when it gets too slow.
         }
     }
+
     resolveCollisions() {
         // check structures
         for (const id in ENTITIES.STRUCTURES) {
             const structure = ENTITIES.STRUCTURES[id];
+            if (!structure) continue;
             let buffer = 0;
             if (this.type === -1) buffer += 50; // a little buffer for thrown swords
 
             if (colliding(this, structure, buffer)) {
                 if (structure.type === 3) {
                     // bushes slow it down, and make its damage half
-                    this.speed = dataMap.PROJECTILES[this.shooter.level].speed / 2;
-                    this.damage = dataMap.PROJECTILES[this.shooter.level].damage / 2;
+                    this.speed = dataMap.PROJECTILES[this.shooter.weapon.rank].speed / 2;
+                    this.damage = (this.shooter.strength + dataMap.PROJECTILES[this.shooter.weapon.rank]?.damage) * 1.15 / 2;
                     if (this.type == -1) {
-                        this.maxDistance = dataMap.PROJECTILES[this.shooter.level].maxDistance / 1.25;
+                        this.maxDistance = dataMap.PROJECTILES[this.shooter.weapon.rank].maxDistance / 1.25;
                     } else {
-                        this.maxDistance = dataMap.PROJECTILES[this.shooter.level].maxDistance / 1.5;
+                        this.maxDistance = dataMap.PROJECTILES[this.shooter.weapon.rank].maxDistance / 1.5;
                     }
                 } else {
                     // other structures block the projectile
                     const sfx = dataMap.sfxMap.indexOf('slash-clash');
-                    playSfx(this.x, this.y, sfx, 1000);
+
+                    const now = performance.now();
+                    if (this.shooter) {
+                        if (!this.shooter._groupHitSounds) this.shooter._groupHitSounds = new Map();
+                        const lastSoundTime = this.shooter._groupHitSounds.get(this.groupId) || 0;
+
+                        if (now - lastSoundTime > 50) { // only play one sound every 50ms for this group
+                            playSfx(this.x, this.y, sfx, 1000);
+                            this.shooter._groupHitSounds.set(this.groupId, now);
+
+                            // basic cleanup
+                            if (this.shooter._groupHitSounds.size > 20) {
+                                for (const [gid, time] of this.shooter._groupHitSounds) {
+                                    if (now - time > 10000) this.shooter._groupHitSounds.delete(gid);
+                                }
+                            }
+                        }
+                    }
+
                     ENTITIES.deleteEntity('projectile', this.id);
                     return;
                 }
             }
         }
 
+        // check with other projectiles
+        for (const pid in ENTITIES.PROJECTILES) {
+            const other = ENTITIES.PROJECTILES[pid];
+            if (!other || other.id === this.id || other.shooter.id === this.shooter.id) continue;
+
+            if (colliding(this, other)) {
+                // If either is a throw, both disappear
+                if (this.type === -1 || other.type === -1) {
+                    ENTITIES.deleteEntity('projectile', this.id);
+                    ENTITIES.deleteEntity('projectile', other.id);
+                    return;
+                }
+
+                // Both are slashes - handle clash
+                const sfx = dataMap.sfxMap.indexOf('slash-clash');
+
+                const now = performance.now();
+                // Throttle clash sound and knockback per group
+                if (this.shooter && (!this.shooter._groupClashSounds || !this.shooter._groupClashSounds.has(this.groupId) || now - this.shooter._groupClashSounds.get(this.groupId) > 100)) {
+                    if (!this.shooter._groupClashSounds) this.shooter._groupClashSounds = new Map();
+                    this.shooter._groupClashSounds.set(this.groupId, now);
+
+                    playSfx(this.x, this.y, sfx, 1000);
+
+                    // Knockback shooters (don't damage)
+                    const kbStrength = 60;
+                    const angle = Math.atan2(this.shooter.y - other.shooter.y, this.shooter.x - other.shooter.x);
+
+                    if (this.shooter.isAlive) {
+                        this.shooter.x += Math.cos(angle) * kbStrength;
+                        this.shooter.y += Math.sin(angle) * kbStrength;
+                        this.shooter.clamp();
+                    }
+                    if (other.shooter.isAlive) {
+                        other.shooter.x -= Math.cos(angle) * kbStrength;
+                        other.shooter.y -= Math.sin(angle) * kbStrength;
+                        other.shooter.clamp();
+                    }
+                }
+
+                ENTITIES.deleteEntity('projectile', this.id);
+                ENTITIES.deleteEntity('projectile', other.id);
+                return;
+            }
+        }
+
         // check with players
         for (const id in ENTITIES.PLAYERS) {
             const player = ENTITIES.PLAYERS[id];
-            if (player.id === this.shooter.id || !player.isAlive) continue;
+            if (!player || player.id === this.shooter.id || !player.isAlive) continue;
 
             let buffer = 0;
             if (this.type === -1) buffer += 50; // a little buffer for thrown swords
@@ -96,8 +165,8 @@ export class Projectile extends Entity {
                 if (tookDamage) {
                     // knock player back
                     const knockbackAngle = Math.atan2(player.y - this.shooter.y, player.x - this.shooter.x);
-                    player.x += Math.cos(knockbackAngle) * dataMap.PROJECTILES[this.shooter.level].knockbackStrength;
-                    player.y += Math.sin(knockbackAngle) * dataMap.PROJECTILES[this.shooter.level].knockbackStrength;
+                    player.x += Math.cos(knockbackAngle) * dataMap.PROJECTILES[this.shooter.weapon.rank].knockbackStrength;
+                    player.y += Math.sin(knockbackAngle) * dataMap.PROJECTILES[this.shooter.weapon.rank].knockbackStrength;
                     player.clamp();
                 }
 
@@ -108,7 +177,7 @@ export class Projectile extends Entity {
         // check mobs
         for (const id in ENTITIES.MOBS) {
             const mob = ENTITIES.MOBS[id];
-            if (mob.id === this.shooter.id) continue;
+            if (!mob || mob.id === this.shooter.id) continue;
 
             let buffer = 0;
             if (this.type === -1) buffer += 50; // a little buffer for thrown swords
@@ -120,8 +189,8 @@ export class Projectile extends Entity {
                 if (tookDamage) {
                     // knock mob back
                     const knockbackAngle = Math.atan2(mob.y - this.shooter.y, mob.x - this.shooter.x);
-                    mob.x += Math.cos(knockbackAngle) * dataMap.PROJECTILES[this.shooter.level].knockbackStrength;
-                    mob.y += Math.sin(knockbackAngle) * dataMap.PROJECTILES[this.shooter.level].knockbackStrength;
+                    mob.x += Math.cos(knockbackAngle) * dataMap.PROJECTILES[this.shooter.weapon.rank].knockbackStrength;
+                    mob.y += Math.sin(knockbackAngle) * dataMap.PROJECTILES[this.shooter.weapon.rank].knockbackStrength;
                     mob.clamp();
                 }
 
@@ -134,7 +203,7 @@ export class Projectile extends Entity {
         // check objects
         for (const id in ENTITIES.OBJECTS) {
             const object = ENTITIES.OBJECTS[id];
-            if (![1].includes(object.type)) continue; // only collide with chests.
+            if (!object || object.type < 1 || object.type > 4) continue; // only collide with chests (types 1-4).
 
             let buffer = -10;
             if (this.type === -1) buffer += 30; // a little buffer for thrown swords
@@ -147,6 +216,7 @@ export class Projectile extends Entity {
             }
         }
     }
+
     process() {
         if (this.distanceTraveled > this.maxDistance) {
             ENTITIES.deleteEntity('projectile', this.id);

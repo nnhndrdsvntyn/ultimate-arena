@@ -1,6 +1,14 @@
-import { ENTITIES } from './game.js';
-import { dataMap } from './shared/datamap.js';
-import { LC, camera, Settings } from './client.js';
+import {
+    ENTITIES
+} from './game.js';
+import {
+    dataMap
+} from './shared/datamap.js';
+import {
+    LC,
+    camera,
+    Settings
+} from './client.js';
 
 export class Structure {
     constructor(id, x, y, type) {

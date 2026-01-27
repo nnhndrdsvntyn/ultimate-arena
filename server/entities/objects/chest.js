@@ -16,7 +16,7 @@ import {
     spawnObject
 } from '../../game.js';
 
-export class Chest1 extends GameObject {
+export class Chest extends GameObject {
     constructor(id, x, y, type) {
         super(id, x, y, type);
 
@@ -43,12 +43,39 @@ export class Chest1 extends GameObject {
     die(killer) {
         super.die(killer);
 
+        const coinDropRange = dataMap.OBJECTS[this.type].coinDropRange;
+        const [min, max] = coinDropRange;
+        const coinCount = Math.floor(Math.random() * (max - min + 1)) + min;
+
         // spawn coins in random positions 
-        for (let i = 0; i < 10; i++) {
+        for (let i = 0; i < coinCount; i++) {
             const x = Math.random() * (this.radius * 2) + (this.x - this.radius);
             const y = Math.random() * (this.radius * 2) + (this.y - this.radius);
 
-            spawnObject(2, x, y);
+            spawnObject(5, x, y); // gold-coin is type 5
+        }
+
+        // weapon drops based on rank probabilities (3 attempts)
+        const dropWeights = dataMap.OBJECTS[this.type].swordRankDrops;
+
+        for (let i = 0; i < 3; i++) {
+            const roll = Math.random();
+            let cumulative = 0;
+            let selectedRank = null;
+
+            for (const rank in dropWeights) {
+                cumulative += dropWeights[rank];
+                if (roll < cumulative) {
+                    selectedRank = Number(rank);
+                    break;
+                }
+            }
+
+            if (selectedRank !== null) {
+                const x = Math.random() * (this.radius * 2) + (this.x - this.radius);
+                const y = Math.random() * (this.radius * 2) + (this.y - this.radius);
+                spawnObject(selectedRank + 5, x, y); // sword types are 6-12 (rank+5)
+            }
         }
     }
 }

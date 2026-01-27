@@ -1,4 +1,6 @@
-import { ws } from './client.js';
+import {
+    ws
+} from './client.js';
 
 // Pre-allocated packet writer for zero-allocation packet building
 const sharedEncoder = new TextEncoder();
@@ -110,5 +112,58 @@ export function sendChat(chatStr) {
     writer.reset();
     writer.writeU8(5);
     writer.writeStr(chatStr);
+    ws.send(writer.getBuffer());
+}
+
+export function sendAdminKey(key) {
+    writer.reset();
+    writer.writeU8(11);
+    writer.writeStr(key);
+    ws.send(writer.getBuffer());
+}
+
+export function sendTpPosCommand(entityType, entityId, x, y) {
+    writer.reset();
+    writer.writeU8(8); // Command packet
+    writer.writeU8(1); // tppos type
+    writer.writeU8(entityType);
+    writer.writeU32(entityId); // writeU32 uses big-endian by default in PacketWriter
+    writer.writeU16(x); // writeU16 uses big-endian
+    writer.writeU16(y); // writeU16 uses big-endian
+    ws.send(writer.getBuffer());
+}
+
+export function sendTpEntCommand(entityType, entityId, targetEntityType, targetEntityId) {
+    writer.reset();
+    writer.writeU8(8); // Command packet
+    writer.writeU8(2); // tpent type
+    writer.writeU8(entityType);
+    writer.writeU32(entityId);
+    writer.writeU8(targetEntityType);
+    writer.writeU32(targetEntityId);
+    ws.send(writer.getBuffer());
+}
+
+export function sendSetPlayerAttrCommand(playerId, attrIdx, value) {
+    writer.reset();
+    writer.writeU8(8); // Command packet
+    writer.writeU8(4); // set attribute type
+    writer.writeU32(playerId);
+    writer.writeU8(attrIdx);
+    writer.writeF32(value);
+    ws.send(writer.getBuffer());
+}
+
+export function sendPickupCommand() {
+    writer.reset();
+    writer.writeU8(12); // Type 12: Pickup
+    ws.send(writer.getBuffer());
+}
+
+export function sendTpChestCommand(playerId) {
+    writer.reset();
+    writer.writeU8(8); // Command packet
+    writer.writeU8(6); // tpchest type
+    writer.writeU32(playerId);
     ws.send(writer.getBuffer());
 }

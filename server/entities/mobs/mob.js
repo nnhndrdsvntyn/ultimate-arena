@@ -14,7 +14,9 @@ import {
 import {
     Entity
 } from '../entity.js';
-import { MAP_SIZE } from '../../game.js';
+import {
+    MAP_SIZE
+} from '../../game.js';
 
 export class Mob extends Entity {
     constructor(id, x, y, type) {

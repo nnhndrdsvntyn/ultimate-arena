@@ -14,23 +14,31 @@ import {
 import {
     Entity
 } from '../entity.js';
-import { MAP_SIZE } from '../../game.js';
+import {
+    MAP_SIZE,
+    spawnObject
+} from '../../game.js';
 
 export class Player extends Entity {
     constructor(id, x, y) {
         super(id, x, y, dataMap.PLAYERS.baseRadius, dataMap.PLAYERS.baseMovementSpeed, 100, 100);
 
         this.isAdmin = false;
+        this.invincible = false;
         this.angle = 0;
 
         this.hasShield = false;
         this.isAlive = true;
 
         this.score = 10;
-        this.level = 1;
+        this.weapon = {
+            rank: 1
+        };
 
         this.speed = dataMap.PLAYERS.baseMovementSpeed;
         this.defaultSpeed = dataMap.PLAYERS.baseMovementSpeed;
+
+        this.strength = dataMap.PLAYERS.baseStrength;
 
         this.attributeBuffs = {
             speed: 0,
@@ -72,9 +80,11 @@ export class Player extends Entity {
 
         this.lastProcessTime = 0;
 
+        this.lastPickUpCoinTime = 0;
+
         ENTITIES.PLAYERS[id] = this;
 
-        this.spawnProjectile = (angleOffset, shooter, thrown) => {
+        this.spawnProjectile = (angleOffset, shooter, thrown, groupId) => {
             let projectileId = Math.floor(Math.random() * 100000); // Use a larger range for IDs
             while (projectileId in ENTITIES.PROJECTILES) {
                 projectileId = Math.floor(Math.random() * 100000);
@@ -89,8 +99,8 @@ export class Player extends Entity {
             } else {
                 projectileType = 1;
             }
-            if (dataMap.PROJECTILES[this.level] && !thrown) {
-                projectileType = this.level;
+            if (dataMap.PROJECTILES[this.weapon.rank] && !thrown) {
+                projectileType = this.weapon.rank;
             }
 
 
@@ -101,7 +111,8 @@ export class Player extends Entity {
                 y: shooter.y + yOffset,
                 angle: projectileAngle,
                 type: projectileType,
-                shooter: shooter
+                shooter: shooter,
+                groupId: groupId
             });
         }
     }
@@ -170,7 +181,8 @@ export class Player extends Entity {
         const sfx = dataMap.sfxMap.indexOf('throw');
         playSfx(this.x, this.y, sfx, 1000);
 
-        this.spawnProjectile(0, this, true);
+        const groupId = Math.random();
+        this.spawnProjectile(0, this, true, groupId);
     }
     attack() {
         const now = Date.now();
@@ -181,9 +193,10 @@ export class Player extends Entity {
         const sfx = dataMap.sfxMap.indexOf('sword-slash');
         playSfx(this.x, this.y, sfx, 1000);
 
+        const groupId = Math.random();
         let angleOffset = -Math.PI / 3; // Start from -60 degrees
         while (angleOffset <= Math.PI / 3) { // Go up to 60 degrees
-            this.spawnProjectile(angleOffset, this, false);
+            this.spawnProjectile(angleOffset, this, false, groupId);
             angleOffset += Math.PI / 12; // Increment by 15 degrees (PI/12 radians)
         }
     }
@@ -238,38 +251,73 @@ export class Player extends Entity {
             }
         }
 
+        // Pick up coins (still automatic)
+        for (const id in ENTITIES.OBJECTS) {
+            const object = ENTITIES.OBJECTS[id];
+            if (colliding(this, object)) {
+                if (object.type === 5) {
+                    // picked up in GoldCoin.process()
+                }
+            }
+        }
+
         if (this.touchingSafeZone) {
             this.hasShield = true;
         } else {
             this.hasShield = false;
         }
     }
+    tryPickup() {
+        if (!this.isAlive || !this.hasWeapon) return;
+
+        for (const id in ENTITIES.OBJECTS) {
+            const object = ENTITIES.OBJECTS[id];
+            if (!object) continue;
+
+            // Check if player is near the object (using a slightly larger radius for easier pickup)
+            if (colliding(this, object, 15)) {
+                if (object.type >= 6 && object.type <= 12) {
+                    // Pick up weapon
+                    const oldRank = this.weapon.rank;
+                    const newRank = object.type - 5;
+
+                    if (newRank !== oldRank) {
+                        // Drop current weapon
+                        if (oldRank >= 1) {
+                            const dropObj = spawnObject(oldRank + 5, this.x, this.y);
+                            if (dropObj) {
+                                dropObj.targetX = this.x + Math.cos(this.angle) * 100;
+                                dropObj.targetY = this.y + Math.sin(this.angle) * 100;
+                                dropObj.teleportTicks = 2;
+                            }
+                        }
+
+                        // Pick up new weapon
+                        this.weapon.rank = newRank;
+                        ENTITIES.deleteEntity('object', object.id);
+
+                        const sfx = dataMap.sfxMap.indexOf('coin-collect'); // play consistent pickup sound
+                        playSfx(this.x, this.y, sfx, 1000);
+                        break; // Only pick up one item per press
+                    }
+                }
+            }
+        }
+    }
     addScore(points) {
-        // determine new level
         this.score += points;
 
         const maxScore = 1000000000;
         if (this.score > maxScore) this.score = maxScore;
-
-        let bestLevel = 1;
-        for (const [level, data] of Object.entries(dataMap.PLAYERS.levels)) {
-            if (this.score >= data.score) {
-                const lvl = parseInt(level);
-                if (lvl > bestLevel) bestLevel = lvl;
-            }
-        }
-        const oldLevel = this.level
-        this.level = bestLevel;
-        if (this.level != oldLevel) {
-            this.hp = this.maxHp;
-        }
     }
     damage(health, attacker) {
         if (performance.now() - this.lastDamagedTime < 200) return false; // invincible for 10 ticks (200 / 20)
 
         this.lastDamagedTime = performance.now();
         this.lastEntToDmg = attacker;
-        this.hp -= health;
+        if (!this.invincible) {
+            this.hp -= health;
+        }
         if (this.hp <= 0) {
             this.die(this.lastEntToDmg);
             const sfx = dataMap.sfxMap.indexOf('bubble-pop');
@@ -301,13 +349,23 @@ export class Player extends Entity {
                 pw.reset();
                 pw.writeU8(6);
                 const killerType = entNumMap.indexOf(killer.constructor.name.toLowerCase());
-                // Handle case where killer type is not found (although unlikely given the context)
                 pw.writeU8(killerType !== -1 ? killerType : 0);
                 pw.writeU32(killer.id);
                 ws.send(pw.getBuffer())
-                return;
             }
-        })
+        });
+
+        // Drop weapon on death
+        if (this.weapon.rank > 1) {
+            const dropObj = spawnObject(this.weapon.rank + 5, this.x, this.y);
+            const randomAngle = Math.random() * Math.PI * 2;
+            if (dropObj) {
+                dropObj.targetX = this.x + Math.cos(randomAngle) * 100;
+                dropObj.targetY = this.y + Math.sin(randomAngle) * 100;
+                dropObj.teleportTicks = 5;
+            }
+            this.weapon.rank = 1; // reset to default
+        }
 
         this.hp = 100;
         this.maxHp = 100;
@@ -318,20 +376,6 @@ export class Player extends Entity {
         };
 
         this.score = Math.max(0, this.score - scoreLost); // lose score
-        let bestLevel = 1;
-        for (const [level, data] of Object.entries(dataMap.PLAYERS.levels)) {
-            if (this.score >= data.score) {
-                const lvl = parseInt(level);
-                if (lvl > bestLevel) bestLevel = lvl;
-            }
-        }
-        const oldLevel = this.level
-        this.level = bestLevel;
-
-        if (this.level != oldLevel) {
-            this.hp = this.maxHp;
-        }
-
         this.attacking = false;
         this.keys = {
             w: 0,

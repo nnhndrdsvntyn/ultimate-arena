@@ -1,7 +1,15 @@
-import { ENTITIES } from './game.js';
+import {
+    ENTITIES
+} from './game.js';
 
-import { LC, camera } from './client.js';
-import { TPS, dataMap } from './shared/datamap.js';
+import {
+    LC,
+    camera
+} from './client.js';
+import {
+    TPS,
+    dataMap
+} from './shared/datamap.js';
 
 export class Mob {
     constructor(id, x, y, type) {
@@ -54,7 +62,9 @@ export class Mob {
         const screenPosX = this.x - camera.x;
         const screenPosY = this.y - camera.y;
 
-        let proportions = { ...dataMap.MOBS[this.type].imgProportions };
+        let proportions = {
+            ...dataMap.MOBS[this.type].imgProportions
+        };
 
         LC.drawImage({
             name: dataMap.MOBS[this.type].imgName,

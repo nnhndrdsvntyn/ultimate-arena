@@ -32,8 +32,8 @@ import {
     GoldCoin
 } from './entities/objects/gold-coin.js';
 import {
-    Chest1
-} from './entities/objects/chest1.js';
+    Chest
+} from './entities/objects/chest.js';
 import {
     wss
 } from '../server.js';
@@ -41,7 +41,9 @@ import {
     PacketWriter
 } from './helpers.js';
 const initWriter = new PacketWriter(1024 * 512);
-import { dataMap } from '../public/shared/datamap.js';
+import {
+    dataMap
+} from '../public/shared/datamap.js';
 export const MAP_SIZE = [15000, 15000];
 export const ENTITIES = {
     PLAYERS: {},
@@ -58,7 +60,8 @@ export const ENTITIES = {
         angle,
         type,
         shooter,
-        username
+        username,
+        groupId
     }) => {
         if (entityType === 'player') {
             entityType = 1;
@@ -67,7 +70,7 @@ export const ENTITIES = {
             ENTITIES.playerIds.add(id)
         } else if (entityType === 'projectile') {
             entityType = 2;
-            new Projectile(id, x, y, angle, type, shooter)
+            new Projectile(id, x, y, angle, type, shooter, groupId)
         } else if (entityType === 'mob') {
             entityType = 3;
             switch (type) {
@@ -99,9 +102,9 @@ export const ENTITIES = {
             }
         } else if (entityType === 'object') {
             entityType = 5;
-            if (type === 1) {
-                new Chest1(id, x, y, type);
-            } else if (type === 2) {
+            if (type >= 1 && type <= 4) {
+                new Chest(id, x, y, type);
+            } else if (type === 5) {
                 new GoldCoin(id, x, y, type);
             } else {
                 new GameObject(id, x, y, type);
@@ -268,7 +271,7 @@ export function spawnObject(type, x, y) {
             const riverRight = MAP_SIZE[0] * 0.53;
 
             let riverBuffer = 0;
-            if (type === 1) { // chest especially make sure they are at least 200 distance from the river
+            if (type >= 1 && type <= 4) { // chests especially make sure they are at least 200 distance from the river
                 riverBuffer = 200;
             }
 
@@ -276,31 +279,64 @@ export function spawnObject(type, x, y) {
             const nearSpawn = spawnZone ? distanceToSpawnSq < (spawnZone.radius + 200) ** 2 : false;
             const outOfBounds = x < 100 || x > (MAP_SIZE[0] - 100) || y < 100 || y > (MAP_SIZE[1] - 100);
 
-            if (!inRiver && !nearSpawn && !outOfBounds) {
+            let inRock = false;
+            for (const struct of Object.values(ENTITIES.STRUCTURES)) {
+                if (struct.type === 2) { // Rock
+                    const dx = x - struct.x;
+                    const dy = y - struct.y;
+                    if (dx * dx + dy * dy < (radius + struct.radius) ** 2) {
+                        inRock = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!inRiver && !nearSpawn && !outOfBounds && !inRock) {
                 validPosition = true;
             }
         }
     }
 
-    // Generate a unique ID (finding next available starting from 1000)
-    let id = Math.floor(Math.random() * 1000000) + 1;
+    // Generate a unique ID (within 32-bit range)
+    let id = Math.floor(Math.random() * 4_000_000_000)
     while (ENTITIES.OBJECTS[id]) {
-        id = Math.floor(Math.random() * 1000000) + 1;
+        id = Math.floor(Math.random() * 4_000_000_000);
     }
 
-    const object = ENTITIES.newEntity({
+    ENTITIES.newEntity({
         entityType: 'object',
         id,
         x,
         y,
         type
     });
-    return object;
+    return ENTITIES.OBJECTS[id];
 }
 
-// spawn 100 objects randomly using the new function
-for (let i = 0; i < 100; i++) {
-    spawnObject(1);
+// spawn chests (types 1-4)
+for (let type = 1; type <= 4; type++) {
+    switch (type) {
+        case 1:
+            for (let i = 0; i < 75; i++) {
+                spawnObject(type);
+            }
+            break;
+        case 2:
+            for (let i = 0; i < 50; i++) {
+                spawnObject(type);
+            }
+            break;
+        case 3:
+            for (let i = 0; i < 25; i++) {
+                spawnObject(type);
+            }
+            break;
+        case 4:
+            for (let i = 0; i < 10; i++) {
+                spawnObject(type);
+            }
+            break;
+    }
 }
 
 export const brokenObjects = {};

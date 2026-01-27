@@ -1,38 +1,60 @@
-import { dataMap } from "./shared/datamap.js";
-import { Vars, camera } from "./client.js";
-import { ENTITIES } from "./game.js";
-import { LC } from "./client.js";
+import {
+    Vars,
+    camera,
+    Settings
+} from "./client.js";
+import {
+    ENTITIES
+} from "./game.js";
+import {
+    LC
+} from "./client.js";
+import {
+    dataMap,
+    TPS
+} from "./shared/datamap.js";
 export class GameObject {
     constructor(id, x, y, type) {
         this.id = id;
         this.x = x;
         this.y = y;
-        if ([1].includes(type)) { // only chests have health
+        this.newX = x;
+        this.newY = y;
+
+        if (type >= 1 && type <= 4) { // chests (types 1-4) have health
             this.health = dataMap.OBJECTS[type].maxHealth;
             this.maxHealth = dataMap.OBJECTS[type].maxHealth;
         }
-        this.imgSrc = dataMap.OBJECTS[type].imgSrc;
         this.imgName = dataMap.OBJECTS[type].imgName;
         this.type = type;
         this.radius = dataMap.OBJECTS[type].radius;
+        this.rotation = (id % 100) / 100 * Math.PI * 2; // Unique but static rotation
 
         ENTITIES.OBJECTS[id] = this;
     }
-    draw() {
-        // target is local player
-        if (ENTITIES.PLAYERS[Vars.myId]) {
-            camera.target.x = ENTITIES.PLAYERS[Vars.myId].x;
-            camera.target.y = ENTITIES.PLAYERS[Vars.myId].y;
+    update() {
+        const lerpFactor = (TPS.clientCapped / TPS.server) / 10;
 
-            camera.x = camera.target.x - (LC.width / 2);
-            camera.y = camera.target.y - (LC.height / 2);
+        if (typeof this.newX === 'undefined' || typeof this.newY === 'undefined') return;
+
+        if (typeof this.x !== 'undefined') {
+            this.x = this.x + (this.newX - this.x) * lerpFactor;
+        } else {
+            this.x = this.newX
         }
+        if (typeof this.y !== 'undefined') {
+            this.y = this.y + (this.newY - this.y) * lerpFactor;
+        } else {
+            this.y = this.newY
+        };
+    }
+    draw() {
 
         const screenPosX = this.x - camera.x;
         const screenPosY = this.y - camera.y;
 
         // draw health as bar
-        let proportions = { ...dataMap.OBJECTS[this.type].imgProportions };
+        const proportions = dataMap.OBJECTS[this.type].imgProportions;
         if (this.health !== undefined && this.maxHealth !== undefined) {
             const barWidth = this.radius * 2;
             const barHeight = 5;
@@ -56,12 +78,14 @@ export class GameObject {
         }
 
         // draw image
+        const imgWidth = this.radius * proportions[0];
+        const imgHeight = this.radius * proportions[1];
+
         LC.drawImage({
-            src: this.imgSrc,
-            pos: [screenPosX - this.radius * (proportions[0] / 2), screenPosY - this.radius * (proportions[1] / 2)],
-            size: [this.radius * proportions[0], this.radius * proportions[1]],
             name: this.imgName,
-            proportions: dataMap.OBJECTS[this.type].imgProportions
+            pos: [screenPosX - imgWidth / 2, screenPosY - imgHeight / 2],
+            size: [imgWidth, imgHeight],
+            rotation: this.type >= 6 ? this.rotation : 0, // only rotate weapons (types 6-12)
         });
 
         if (Settings.drawHitboxes) {

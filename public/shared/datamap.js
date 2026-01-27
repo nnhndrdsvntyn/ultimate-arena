@@ -5,6 +5,8 @@ export const TPS = {
     server: 20
 }
 
+export const version = '1.1.0';
+
 export const dataMap = {
     otherImgs: {
         'spawn-zone-shield': {
@@ -135,7 +137,7 @@ export const dataMap = {
             name: 'viking-hat',
             src: './images/accessories/viking-hat.png',
             hatOffset: {
-                x: -14,
+                x: -18,
                 y: -0.5
             },
             size: [70, 65],
@@ -151,47 +153,24 @@ export const dataMap = {
             size: [25, 96],
             rotation: 0,
         },
+        'dark-cloak': {
+            name: 'dark-cloak',
+            src: './images/accessories/dark-cloak.png',
+            hatOffset: {
+                x: -11,
+                y: 0
+            },
+            size: [85, 82],
+            rotation: 0,
+        }
     },
     PLAYERS: {
         baseRadius: 30,
-        baseMovementSpeed: 15,
+        baseMovementSpeed: 20,
+        baseStrength: 10,
         baseAttackCooldown: 900, // in milliseconds
         baseThrowSwordCooldown: 1500, // in milliseconds
-        levels: {
-            1: {
-                score: 0,
-                maxHealth: 100,
-            }, // default
-            2: {
-                score: 100,
-                maxHealth: 115,
-                defaultAccessory: 'bush-cloak'
-            }, // warrior
-            3: {
-                score: 250,
-                maxHealth: 130,
-                defaultAccessory: 'sunglasses'
-            }, // hitman
-            4: {
-                score: 500,
-                maxHealth: 145,
-                defaultAccessory: 'viking-hat'
-            }, // viking
-            5: {
-                score: 750,
-                maxHealth: 160,
-                defaultAccessory: 'pirate-hat'
-            }, // pirate
-            6: {
-                score: 1000,
-                maxHealth: 175,
-                defaultAccessory: 'alien-antennas'
-            }, // alien man
-            7: {
-                score: 1500,
-                maxHealth: 200,
-            }, // reaper
-        },
+        maxHealth: 100,
         imgs: {
             '1': {
                 name: 'player-default',
@@ -317,7 +296,7 @@ export const dataMap = {
         '1': {
             radius: 10,
             speed: 30,
-            damage: 10,
+            damage: 3,
             maxDistance: 100,
             knockbackStrength: 50,
             imgProportions: [1, 10],
@@ -327,7 +306,7 @@ export const dataMap = {
         '2': {
             radius: 10,
             speed: 35,
-            damage: 15,
+            damage: 5,
             maxDistance: 110,
             knockbackStrength: 50,
             imgProportions: [1, 10],
@@ -337,7 +316,7 @@ export const dataMap = {
         '3': {
             radius: 10,
             speed: 40,
-            damage: 20,
+            damage: 8,
             maxDistance: 120,
             knockbackStrength: 50,
             imgProportions: [1, 10],
@@ -347,7 +326,7 @@ export const dataMap = {
         '4': {
             radius: 10,
             speed: 45,
-            damage: 25,
+            damage: 12,
             maxDistance: 130,
             knockbackStrength: 50,
             imgProportions: [1, 10],
@@ -357,7 +336,7 @@ export const dataMap = {
         '5': {
             radius: 10,
             speed: 50,
-            damage: 30,
+            damage: 15,
             maxDistance: 140,
             knockbackStrength: 50,
             imgProportions: [1, 10],
@@ -367,7 +346,7 @@ export const dataMap = {
         '6': {
             radius: 10,
             speed: 55,
-            damage: 35,
+            damage: 18,
             maxDistance: 150,
             knockbackStrength: 50,
             imgProportions: [1, 10],
@@ -377,7 +356,7 @@ export const dataMap = {
         '7': {
             radius: 10,
             speed: 60,
-            damage: 40,
+            damage: 23,
             maxDistance: 160,
             knockbackStrength: 50,
             imgProportions: [1, 10],
@@ -409,19 +388,124 @@ export const dataMap = {
             radius: 50,
             maxHealth: 100,
             score: 10,
+            coinDropRange: [10, 15],
+            swordRankDrops: {
+                1: 0.5,
+                2: 0.25,
+            },
             imgSrc: './images/objects/chest1.png',
             imgName: 'chest1',
             imgProportions: [3, 2]
         },
         '2': {
+            radius: 60,
+            maxHealth: 250,
+            score: 25,
+            coinDropRange: [25, 75],
+            swordRankDrops: {
+                1: 0.4,
+                2: 0.3,
+                3: 0.1,
+            },
+            imgSrc: './images/objects/chest2.png',
+            imgName: 'chest2',
+            imgProportions: [3, 2]
+        },
+        '3': {
+            radius: 75,
+            maxHealth: 500,
+            score: 75,
+            coinDropRange: [50, 150],
+            swordRankDrops: {
+                2: 0.5,
+                3: 0.35,
+                4: 0.25,
+            },
+            imgSrc: './images/objects/chest3.png',
+            imgName: 'chest3',
+            imgProportions: [3, 2]
+        },
+        '4': {
+            radius: 100,
+            maxHealth: 1000,
+            score: 100,
+            coinDropRange: [100, 300],
+            swordRankDrops: {
+                5: 0.6,
+                6: 0.25,
+                7: 0.15,
+            },
+            imgSrc: './images/objects/chest4.png',
+            imgName: 'chest4',
+            imgProportions: [3, 2]
+        },
+        '5': {
             radius: 15,
             maxHealth: 1,
-            score: 10,
+            score: 5,
             imgSrc: './images/objects/gold-coin.png',
             imgName: 'gold-coin',
             imgProportions: [2, 2]
+        },
+        '6': {
+            radius: 45,
+            maxHealth: 1,
+            score: 0,
+            imgSrc: './images/swords/sword1.png',
+            imgName: 'swords-sword1',
+            imgProportions: [2, 1]
+        },
+        '7': {
+            radius: 45,
+            maxHealth: 1,
+            score: 0,
+            imgSrc: './images/swords/sword2.png',
+            imgName: 'swords-sword2',
+            imgProportions: [2, 1]
+        },
+        '8': {
+            radius: 45,
+            maxHealth: 1,
+            score: 0,
+            imgSrc: './images/swords/sword3.png',
+            imgName: 'swords-sword3',
+            imgProportions: [2, 1]
+        },
+        '9': {
+            radius: 45,
+            maxHealth: 1,
+            score: 0,
+            imgSrc: './images/swords/sword4.png',
+            imgName: 'swords-sword4',
+            imgProportions: [2, 1]
+        },
+        '10': {
+            radius: 45,
+            maxHealth: 1,
+            score: 0,
+            imgSrc: './images/swords/sword5.png',
+            imgName: 'swords-sword5',
+            imgProportions: [2, 1]
+        },
+        '11': {
+            radius: 45,
+            maxHealth: 1,
+            score: 0,
+            imgSrc: './images/swords/sword6.png',
+            imgName: 'swords-sword6',
+            imgProportions: [2, 1]
+        },
+        '12': {
+            radius: 45,
+            maxHealth: 1,
+            score: 0,
+            imgSrc: './images/swords/sword7.png',
+            imgName: 'swords-sword7',
+            imgProportions: [2, 1]
         }
     }
 };
 
-// window.dataMap = dataMap;
+if (typeof window !== 'undefined') {
+    // window.dataMap = dataMap;
+}

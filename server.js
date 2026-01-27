@@ -7,12 +7,18 @@ import {
     parsePacket
 } from './server/parser.js';
 import {
-    getId, PacketWriter
+    getId,
+    PacketWriter
 } from './server/helpers.js';
 import {
-    deadMobs, brokenObjects, ENTITIES, spawnObject
+    deadMobs,
+    brokenObjects,
+    ENTITIES,
+    spawnObject
 } from './server/game.js';
-import { MAP_SIZE } from './server/game.js';
+import {
+    MAP_SIZE
+} from './server/game.js';
 
 import http from 'http';
 const app = express();
@@ -91,7 +97,9 @@ wss.on('connection', (ws, req) => {
         try {
             parsePacket(data, ws);
         } catch (e) {
+            console.log(e);
             ws.kick("Do not modify your client.");
+            console.log("KICKED CLIENT DUE TO ERROR");
         }
     });
 
@@ -126,6 +134,7 @@ function update() {
     // process mobs
     for (const id in ENTITIES.MOBS) {
         const mob = ENTITIES.MOBS[id];
+        if (!mob) continue;
         // check if this mob is too far away from any player, if yes, then don't process it
         let tooFar = true;
         for (const playerId in ENTITIES.PLAYERS) {
@@ -146,16 +155,18 @@ function update() {
     // process projectiles
     for (const id in ENTITIES.PROJECTILES) {
         const projectile = ENTITIES.PROJECTILES[id];
+        if (!projectile) continue;
         projectile.process();
     }
 
     // handle structure collisions if they are within range of a player
     for (const id in ENTITIES.STRUCTURES) {
         const structure = ENTITIES.STRUCTURES[id];
+        if (!structure) continue;
         let tooFar = true;
         for (const playerId in ENTITIES.PLAYERS) {
             const player = ENTITIES.PLAYERS[playerId];
-            if (player.x - structure.x < 700 && player.y - structure.y < 700) {
+            if (Math.abs(player.x - structure.x) < 700 && Math.abs(player.y - structure.y) < 700) {
                 tooFar = false;
                 break;
             }
@@ -167,13 +178,14 @@ function update() {
         structure.resolveCollisions();
     }
 
-    // process objects if they are within range of a player
+    // process objects if they are within range of any player
     for (const id in ENTITIES.OBJECTS) {
         const object = ENTITIES.OBJECTS[id];
+        if (!object) continue;
         let tooFar = true;
         for (const playerId in ENTITIES.PLAYERS) {
             const player = ENTITIES.PLAYERS[playerId];
-            if (player.x - object.x < 700 && player.y - object.y < 700) {
+            if (Math.abs(player.x - object.x) < 1000 && Math.abs(player.y - object.y) < 1000) {
                 tooFar = false;
                 break;
             }
@@ -227,12 +239,15 @@ function update() {
         if (ws.readyState !== WebSocket.OPEN) return;
 
         // kick inactive clients
-        if (performance.now() - ws.lastPacketTime > 60000) {
+        if (performance.now() - ws.lastPacketTime > 1000 * 60 * 5) {
             ws.kick('Kicked for inactivity.');
             return;
         }
 
-        const localPlayer = ENTITIES.PLAYERS[ws.id] || { x: MAP_SIZE[0] / 2, y: MAP_SIZE[1] / 2 };
+        const localPlayer = ENTITIES.PLAYERS[ws.id] || {
+            x: MAP_SIZE[0] / 2,
+            y: MAP_SIZE[1] / 2
+        };
         let renderDistance = 1000;
         if (!localPlayer.isAlive) renderDistance /= 0.7;
         const renderDistanceSq = renderDistance * renderDistance;
@@ -275,23 +290,27 @@ function update() {
             const prev = p.prev || {};
             const isFull = fullUpdate(p.id);
 
+            if (!p.weapon) p.weapon = {
+                rank: 1
+            }; // Ensure weapon exists
+
             // Calculate Mask
             if (isFull) {
                 mask = 0x8000; // Full Update Bit (Bit 15)
             } else {
-                if (Math.abs(p.x - prev.x) > 1) mask |= 0x01;        // X
-                if (Math.abs(p.y - prev.y) > 1) mask |= 0x02;        // Y
+                if (Math.abs(p.x - prev.x) > 1) mask |= 0x01; // X
+                if (Math.abs(p.y - prev.y) > 1) mask |= 0x02; // Y
                 if (Math.abs(p.angle - prev.angle) > 0.01) mask |= 0x04; // Angle
-                if (p.hp !== prev.hp) mask |= 0x08;                  // HP
-                if (p.maxHp !== prev.maxHp) mask |= 0x10;            // MaxHP
-                if (p.score !== prev.score) mask |= 0x20;            // Score
-                if (p.level !== prev.level) mask |= 0x40;            // Level
-                if (p.swingState !== prev.swingState) mask |= 0x80;  // SwingState
-                if (p.hasWeapon !== prev.hasWeapon) mask |= 0x100;   // HasWeapon
-                if (p.hasShield !== prev.hasShield) mask |= 0x200;   // HasShield
-                if (p.isAlive !== prev.isAlive) mask |= 0x400;       // IsAlive
+                if (p.hp !== prev.hp) mask |= 0x08; // HP
+                if (p.maxHp !== prev.maxHp) mask |= 0x10; // MaxHP
+                if (p.score !== prev.score) mask |= 0x20; // Score
+                if (p.weapon.rank !== prev.weaponRank) mask |= 0x40; // Weapon Rank
+                if (p.swingState !== prev.swingState) mask |= 0x80; // SwingState
+                if (p.hasWeapon !== prev.hasWeapon) mask |= 0x100; // HasWeapon
+                if (p.hasShield !== prev.hasShield) mask |= 0x200; // HasShield
+                if (p.isAlive !== prev.isAlive) mask |= 0x400; // IsAlive
                 if (p.chatMessage !== prev.chatMessage) mask |= 0x800; // Chat
-                if (p.username !== prev.username) mask |= 0x1000;      // Username
+                if (p.username !== prev.username) mask |= 0x1000; // Username
 
                 if (mask === 0 && !isFull) {
                     mask = 0; // No changes
@@ -307,7 +326,7 @@ function update() {
                 pw.writeU16(p.hp);
                 pw.writeU16(p.maxHp);
                 pw.writeU32(p.score);
-                pw.writeU8(p.level);
+                pw.writeU8(p.weapon.rank);
                 pw.writeU8(p.swingState);
                 pw.writeU8(p.hasShield ? 1 : 0);
                 pw.writeU8(p.isAlive ? 1 : 0);
@@ -321,7 +340,7 @@ function update() {
                 if (mask & 0x08) pw.writeU16(p.hp);
                 if (mask & 0x10) pw.writeU16(p.maxHp);
                 if (mask & 0x20) pw.writeU32(p.score);
-                if (mask & 0x40) pw.writeU8(p.level);
+                if (mask & 0x40) pw.writeU8(p.weapon.rank);
                 if (mask & 0x80) pw.writeU8(p.swingState);
                 if (mask & 0x100) pw.writeU8(p.hasWeapon ? 1 : 0);
                 if (mask & 0x200) pw.writeU8(p.hasShield ? 1 : 0);
@@ -401,7 +420,7 @@ function update() {
                     if (Math.abs(p.y - prev.y) > 1) mask |= 0x02;
                     if (Math.abs(p.angle - prev.angle) > 0.01) mask |= 0x04;
                     if (p.type !== prev.type) mask |= 0x08;
-                    if (p.level !== prev.level) mask |= 0x10;
+                    if (p.weaponRank !== prev.weaponRank) mask |= 0x10;
                 }
 
                 pw.writeU8(mask);
@@ -411,7 +430,7 @@ function update() {
                     pw.writeU16(p.y);
                     pw.writeF32(p.angle);
                     pw.writeI8(p.type);
-                    pw.writeU8(p.level);
+                    pw.writeU8(p.weaponRank);
                 } else {
                     if (mask & 0x01) pw.writeU16(p.x);
                     if (mask & 0x02) pw.writeU16(p.y);
@@ -518,22 +537,46 @@ import {
 function saveHistory() {
     for (const p of Object.values(ENTITIES.PLAYERS)) {
         p.prev = {
-            x: p.x, y: p.y, angle: p.angle,
-            hp: p.hp, maxHp: p.maxHp, isAlive: p.isAlive,
-            score: p.score, level: p.level,
-            swingState: p.swingState, hasWeapon: p.hasWeapon, hasShield: p.hasShield,
+            x: p.x,
+            y: p.y,
+            angle: p.angle,
+            hp: p.hp,
+            maxHp: p.maxHp,
+            isAlive: p.isAlive,
+            score: p.score,
+            weaponRank: p.weapon.rank,
+            swingState: p.swingState,
+            hasWeapon: p.hasWeapon,
+            hasShield: p.hasShield,
 
-            chatMessage: p.chatMessage, username: p.username
+            chatMessage: p.chatMessage,
+            username: p.username
         };
     }
     for (const m of Object.values(ENTITIES.MOBS)) {
-        m.prev = { x: m.x, y: m.y, angle: m.angle, hp: m.hp, maxHp: m.maxHp };
+        m.prev = {
+            x: m.x,
+            y: m.y,
+            angle: m.angle,
+            hp: m.hp,
+            maxHp: m.maxHp
+        };
     }
     for (const p of Object.values(ENTITIES.PROJECTILES)) {
-        p.prev = { x: p.x, y: p.y, angle: p.angle };
+        p.prev = {
+            x: p.x,
+            y: p.y,
+            angle: p.angle,
+            type: p.type,
+            weaponRank: p.weaponRank
+        };
     }
     for (const o of Object.values(ENTITIES.OBJECTS)) {
-        o.prev = { x: o.x, y: o.y, health: o.health };
+        o.prev = {
+            x: o.x,
+            y: o.y,
+            health: o.health
+        };
     }
 }
 

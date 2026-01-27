@@ -21,15 +21,22 @@ import {
 import {
     showNotification
 } from './ui.js';
-import { Vars } from './client.js';
-import { dataMap } from './shared/datamap.js';
-import { LC } from './client.js';
+import {
+    Vars
+} from './client.js';
+import {
+    dataMap
+} from './shared/datamap.js';
+import {
+    LC
+} from './client.js';
 
 export function parsePacket(buffer) {
     const view = new DataView(buffer);
     let offset = 0;
 
     const packetType = view.getUint8(offset++);
+    // console.log(`Client received packet type ${packetType}`);
     if (packetType === 1) { // init packet
         // init players
         const playerCount = view.getUint8(offset++);
@@ -93,20 +100,28 @@ export function parsePacket(buffer) {
         const playerCount = view.getUint8(offset++);
         const playerIdsThisUpdate = [];
         for (let i = 0; i < playerCount; i++) {
-            const id = view.getUint32(offset); offset += 4;
+            const id = view.getUint32(offset);
+            offset += 4;
             playerIdsThisUpdate.push(id);
-            const mask = view.getUint16(offset); offset += 2;
+            const mask = view.getUint16(offset);
+            offset += 2;
 
             let p = ENTITIES.PLAYERS[id];
 
             if (mask & 0x8000) { // Full Update
-                const x = view.getUint16(offset); offset += 2;
-                const y = view.getUint16(offset); offset += 2;
-                const angle = view.getFloat32(offset); offset += 4;
-                const hp = view.getUint16(offset); offset += 2;
-                const maxHp = view.getUint16(offset); offset += 2;
-                const score = view.getUint32(offset); offset += 4;
-                const level = view.getUint8(offset++);
+                const x = view.getUint16(offset);
+                offset += 2;
+                const y = view.getUint16(offset);
+                offset += 2;
+                const angle = view.getFloat32(offset);
+                offset += 4;
+                const hp = view.getUint16(offset);
+                offset += 2;
+                const maxHp = view.getUint16(offset);
+                offset += 2;
+                const score = view.getUint32(offset);
+                offset += 4;
+                const weaponRank = view.getUint8(offset++);
                 const swingState = view.getUint8(offset++);
                 const hasShield = view.getUint8(offset++);
                 const isAlive = view.getUint8(offset++);
@@ -130,7 +145,7 @@ export function parsePacket(buffer) {
                 p.health = hp;
                 p.maxHealth = maxHp;
                 p.newScore = score;
-                p.level = level;
+                p.weaponRank = weaponRank;
                 p.newSwingState = swingState;
                 p.hasShield = hasShield;
                 p.isAlive = isAlive;
@@ -140,32 +155,38 @@ export function parsePacket(buffer) {
 
             } else { // Delta
                 if (mask & 0x01) {
-                    const x = view.getUint16(offset); offset += 2;
+                    const x = view.getUint16(offset);
+                    offset += 2;
                     if (p) p.newX = x;
                 }
                 if (mask & 0x02) {
-                    const y = view.getUint16(offset); offset += 2;
+                    const y = view.getUint16(offset);
+                    offset += 2;
                     if (p) p.newY = y;
                 }
                 if (mask & 0x04) {
-                    const angle = view.getFloat32(offset); offset += 4;
+                    const angle = view.getFloat32(offset);
+                    offset += 4;
                     if (p) p.newAngle = angle;
                 }
                 if (mask & 0x08) {
-                    const hp = view.getUint16(offset); offset += 2;
+                    const hp = view.getUint16(offset);
+                    offset += 2;
                     if (p) p.health = hp;
                 }
                 if (mask & 0x10) {
-                    const maxHp = view.getUint16(offset); offset += 2;
+                    const maxHp = view.getUint16(offset);
+                    offset += 2;
                     if (p) p.maxHealth = maxHp;
                 }
                 if (mask & 0x20) {
-                    const score = view.getUint32(offset); offset += 4;
+                    const score = view.getUint32(offset);
+                    offset += 4;
                     if (p) p.newScore = score;
                 }
                 if (mask & 0x40) {
-                    const level = view.getUint8(offset++);
-                    if (p) p.level = level;
+                    const weaponRank = view.getUint8(offset++);
+                    if (p) p.weaponRank = weaponRank;
                 }
                 if (mask & 0x80) {
                     const swingState = view.getUint8(offset++);
@@ -202,21 +223,28 @@ export function parsePacket(buffer) {
         }
 
         // update mobs
-        const mobCount = view.getUint16(offset); offset += 2;
+        const mobCount = view.getUint16(offset);
+        offset += 2;
         const mobIdsThisUpdate = [];
         for (let i = 0; i < mobCount; i++) {
-            const id = view.getUint32(offset); offset += 4;
+            const id = view.getUint32(offset);
+            offset += 4;
             mobIdsThisUpdate.push(id);
             const mask = view.getUint8(offset++);
 
             let m = ENTITIES.MOBS[id];
 
             if (mask & 0x80) { // Full
-                const x = view.getUint16(offset); offset += 2;
-                const y = view.getUint16(offset); offset += 2;
-                const angle = view.getFloat32(offset); offset += 4;
-                const hp = view.getUint16(offset); offset += 2;
-                const maxHp = view.getUint16(offset); offset += 2;
+                const x = view.getUint16(offset);
+                offset += 2;
+                const y = view.getUint16(offset);
+                offset += 2;
+                const angle = view.getFloat32(offset);
+                offset += 4;
+                const hp = view.getUint16(offset);
+                offset += 2;
+                const maxHp = view.getUint16(offset);
+                offset += 2;
                 const type = view.getUint8(offset++);
 
                 if (!m) {
@@ -229,26 +257,33 @@ export function parsePacket(buffer) {
                 m.maxHealth = maxHp;
                 m.type = type;
                 // Ensure helper works for texture if type changes
-                if (m.type !== m.lastType) { m.lastType = m.type; /* update texture if needed */ }
+                if (m.type !== m.lastType) {
+                    m.lastType = m.type; /* update texture if needed */
+                }
             } else { // Delta
                 if (mask & 0x01) {
-                    const x = view.getUint16(offset); offset += 2;
+                    const x = view.getUint16(offset);
+                    offset += 2;
                     if (m) m.newX = x;
                 }
                 if (mask & 0x02) {
-                    const y = view.getUint16(offset); offset += 2;
+                    const y = view.getUint16(offset);
+                    offset += 2;
                     if (m) m.newY = y;
                 }
                 if (mask & 0x04) {
-                    const angle = view.getFloat32(offset); offset += 4;
+                    const angle = view.getFloat32(offset);
+                    offset += 4;
                     if (m) m.newAngle = angle;
                 }
                 if (mask & 0x08) {
-                    const hp = view.getUint16(offset); offset += 2;
+                    const hp = view.getUint16(offset);
+                    offset += 2;
                     if (m) m.health = hp;
                 }
                 if (mask & 0x10) {
-                    const maxHp = view.getUint16(offset); offset += 2;
+                    const maxHp = view.getUint16(offset);
+                    offset += 2;
                     if (m) m.maxHealth = maxHp;
                 }
                 if (mask & 0x20) {
@@ -262,41 +297,49 @@ export function parsePacket(buffer) {
         }
 
         // update projectiles
-        const projCount = view.getUint16(offset); offset += 2;
+        const projCount = view.getUint16(offset);
+        offset += 2;
         const projIdsThisUpdate = [];
         for (let i = 0; i < projCount; i++) {
-            const id = view.getUint32(offset); offset += 4;
+            const id = view.getUint32(offset);
+            offset += 4;
             projIdsThisUpdate.push(id);
             const mask = view.getUint8(offset++);
 
             let p = ENTITIES.PROJECTILES[id];
 
             if (mask & 0x80) {
-                const x = view.getUint16(offset); offset += 2;
-                const y = view.getUint16(offset); offset += 2;
-                const angle = view.getFloat32(offset); offset += 4;
+                const x = view.getUint16(offset);
+                offset += 2;
+                const y = view.getUint16(offset);
+                offset += 2;
+                const angle = view.getFloat32(offset);
+                offset += 4;
                 const type = view.getInt8(offset++);
-                const level = view.getUint8(offset++);
+                const weaponRank = view.getUint8(offset++);
 
                 if (!p) {
-                    p = new Projectile(id, x, y, angle, type, level);
+                    p = new Projectile(id, x, y, angle, type, weaponRank);
                 }
                 p.newX = x;
                 p.newY = y;
                 p.newAngle = angle;
                 p.type = type;
-                p.level = level;
+                p.weaponRank = weaponRank;
             } else {
                 if (mask & 0x01) {
-                    const x = view.getUint16(offset); offset += 2;
+                    const x = view.getUint16(offset);
+                    offset += 2;
                     if (p) p.newX = x;
                 }
                 if (mask & 0x02) {
-                    const y = view.getUint16(offset); offset += 2;
+                    const y = view.getUint16(offset);
+                    offset += 2;
                     if (p) p.newY = y;
                 }
                 if (mask & 0x04) {
-                    const angle = view.getFloat32(offset); offset += 4;
+                    const angle = view.getFloat32(offset);
+                    offset += 4;
                     if (p) p.newAngle = angle;
                 }
                 if (mask & 0x08) {
@@ -304,8 +347,8 @@ export function parsePacket(buffer) {
                     if (p) p.type = type;
                 }
                 if (mask & 0x10) {
-                    const level = view.getUint8(offset++);
-                    if (p) p.level = level;
+                    const weaponRank = view.getUint8(offset++);
+                    if (p) p.weaponRank = weaponRank;
                 }
             }
         }
@@ -314,39 +357,47 @@ export function parsePacket(buffer) {
         }
 
         // update objects
-        const objCount = view.getUint16(offset); offset += 2;
+        const objCount = view.getUint16(offset);
+        offset += 2;
         const objIdsThisUpdate = [];
         for (let i = 0; i < objCount; i++) {
-            const id = view.getUint32(offset); offset += 4;
+            const id = view.getUint32(offset);
+            offset += 4;
             objIdsThisUpdate.push(id);
             const mask = view.getUint8(offset++);
 
             let o = ENTITIES.OBJECTS[id];
 
             if (mask & 0x80) {
-                const x = view.getUint16(offset); offset += 2;
-                const y = view.getUint16(offset); offset += 2;
+                const x = view.getUint16(offset);
+                offset += 2;
+                const y = view.getUint16(offset);
+                offset += 2;
                 const type = view.getInt8(offset++);
-                const health = view.getUint16(offset); offset += 2;
+                const health = view.getUint16(offset);
+                offset += 2;
 
                 if (!o) {
                     o = new GameObject(id, x, y, type);
                 }
-                o.x = x;
-                o.y = y;
+                o.newX = x;
+                o.newY = y;
                 o.type = type;
                 o.health = health;
             } else {
                 if (mask & 0x01) {
-                    const x = view.getUint16(offset); offset += 2;
-                    if (o) o.x = x;
+                    const x = view.getUint16(offset);
+                    offset += 2;
+                    if (o) o.newX = x;
                 }
                 if (mask & 0x02) {
-                    const y = view.getUint16(offset); offset += 2;
-                    if (o) o.y = y;
+                    const y = view.getUint16(offset);
+                    offset += 2;
+                    if (o) o.newY = y;
                 }
                 if (mask & 0x04) {
-                    const health = view.getUint16(offset); offset += 2;
+                    const health = view.getUint16(offset);
+                    offset += 2;
                     if (o) o.health = health;
                 }
                 if (mask & 0x08) {
@@ -358,7 +409,6 @@ export function parsePacket(buffer) {
         for (const o of Object.values(ENTITIES.OBJECTS)) {
             if (!objIdsThisUpdate.includes(o.id)) delete ENTITIES.OBJECTS[o.id];
         }
-
     }
     /*else if (packetType === 3) { // add packet
            // make new entity based on entity type
@@ -461,6 +511,18 @@ export function parsePacket(buffer) {
         const player = ENTITIES.PLAYERS[Vars.myId];
         if (player) {
             player.serverAttributes[attributeMap[attributeType]] += amount;
+        }
+    } else if (packetType === 11) { // receive admin key packet
+        const success = view.getUint8(offset++);
+        if (success) {
+            Vars.isAdmin = true;
+            showNotification("You're now admin!", 'green');
+            // Inform UI to update if settings is open
+            if (typeof window.updateSettingsBody === 'function') {
+                window.updateSettingsBody();
+            }
+        } else {
+            showNotification("That key is invalid!", 'red');
         }
     }
 }

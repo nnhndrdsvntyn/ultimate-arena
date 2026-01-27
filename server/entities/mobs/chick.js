@@ -1,7 +1,15 @@
-import { Mob } from "./mob.js";
-import { ENTITIES } from '../../game.js';
-import { dataMap } from '../../../public/shared/datamap.js';
-import { colliding } from '../../helpers.js';
+import {
+    Mob
+} from "./mob.js";
+import {
+    ENTITIES
+} from '../../game.js';
+import {
+    dataMap
+} from '../../../public/shared/datamap.js';
+import {
+    colliding
+} from '../../helpers.js';
 
 export class Chick extends Mob {
     constructor(id, x, y) {

@@ -1,5 +1,9 @@
-import { ENTITIES } from './game.js';
-import { wss } from '../server.js';
+import {
+    ENTITIES
+} from './game.js';
+import {
+    wss
+} from '../server.js';
 
 // networking
 // Pre-allocated packet writer for zero-allocation packet building
@@ -177,11 +181,21 @@ class CommandMap {
             ENTITIES[entityListName][entityId].y = ENTITIES[targetEntityListName][targetEntityId].y;
         }
     }
-    setscore(entityType, entityId, scoreAmount) {
-        const entityListName = this.entityTypeMap[entityType];
-        if (ENTITIES[entityListName][entityId]) {
-            ENTITIES[entityListName][entityId].score = 0;
-            ENTITIES[entityListName][entityId].addScore(scoreAmount);
+    setattr(playerId, attrIdx, value) {
+        const player = ENTITIES.PLAYERS[playerId];
+        if (player) {
+            if (attrIdx === 1) { // defaultSpeed
+                player.defaultSpeed = value;
+            } else if (attrIdx === 2) { // score
+                player.score = 0;
+                player.addScore(Math.floor(value));
+            } else if (attrIdx === 3) { // invincible
+                player.invincible = value;
+            } else if (attrIdx === 4) { // weapon rank
+                player.weapon.rank = Math.max(1, Math.min(7, Math.floor(value)));
+            } else if (attrIdx === 5) { // strength
+                player.strength = Math.floor(value);
+            }
         }
     }
     agro(mobId, playerId, mobType, mobSpeedMult) {
@@ -197,6 +211,31 @@ class CommandMap {
             }
         } else if (mob && player) { // Specific mob
             mob.alarm(player);
+        }
+    }
+    tpchest(playerId) {
+        const player = ENTITIES.PLAYERS[playerId];
+        if (!player) return;
+
+        let nearestChest = null;
+        let minDistanceSq = Infinity;
+
+        for (const objectId in ENTITIES.OBJECTS) {
+            const object = ENTITIES.OBJECTS[objectId];
+            if (object.type >= 1 && object.type <= 4) { // Types 1-4 are chests
+                const dx = object.x - player.x;
+                const dy = object.y - player.y;
+                const distSq = dx * dx + dy * dy;
+                if (distSq < minDistanceSq) {
+                    minDistanceSq = distSq;
+                    nearestChest = object;
+                }
+            }
+        }
+
+        if (nearestChest) {
+            player.x = nearestChest.x;
+            player.y = nearestChest.y;
         }
     }
 

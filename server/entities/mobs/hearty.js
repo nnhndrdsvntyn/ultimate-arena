@@ -1,7 +1,17 @@
-import { Mob } from "./mob.js";
-import { ENTITIES } from '../../game.js';
-import { dataMap } from '../../../public/shared/datamap.js';
-import { colliding, playSfx } from '../../helpers.js';
+import {
+    Mob
+} from "./mob.js";
+import {
+    ENTITIES
+} from '../../game.js';
+import {
+    dataMap
+} from '../../../public/shared/datamap.js';
+
+import {
+    colliding,
+    playSfx
+} from '../../helpers.js';
 
 export class Hearty extends Mob {
     constructor(id, x, y) {

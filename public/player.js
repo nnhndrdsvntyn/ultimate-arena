@@ -35,7 +35,7 @@ export class Player {
             damage: 0,
         };
 
-        this.level = 1;
+        this.weaponRank = 1;
 
         this.health = undefined;
         this.maxHealth = undefined;
@@ -111,16 +111,17 @@ export class Player {
         this.swordAngleOffset = (this.swingState * (Math.PI / 6)) - (Math.PI / 2);
         const angleRad = this.angle + this.swordAngleOffset;
 
-        const swordWidth = dataMap.SWORDS.imgs[this.level].swordWidth;
-        const swordHeight = dataMap.SWORDS.imgs[this.level].swordHeight;
+        const currentRank = this.weaponRank || 1;
+        const swordWidth = dataMap.SWORDS.imgs[currentRank]?.swordWidth || 100;
+        const swordHeight = dataMap.SWORDS.imgs[currentRank]?.swordHeight || 50;
 
         // move origin to the handle instead of center
         const offsetX = Math.cos(angleRad) * (this.radius + swordWidth / 2);
         const offsetY = Math.sin(angleRad) * (this.radius + swordWidth / 2);
 
-        let swordImgName = `swords-wipsword`
-        if (LC.images[`swords-sword${this.level}`]) {
-            swordImgName = `swords-sword${this.level}`
+        let swordImgName = `swords-sword${currentRank}`;
+        if (!LC.images[swordImgName]) {
+            swordImgName = `swords-wipsword`;
         }
 
         if (this.hasWeapon) {
@@ -142,32 +143,6 @@ export class Player {
             size: [this.radius * 2, this.radius * 2],
             rotation: this.angle,
         });
-
-        // draw accessory
-        if (this.level > 1) {
-            const accessory = dataMap.ACCESSORIES[dataMap.PLAYERS.levels[this.level].defaultAccessory];
-            let playerScale = this.radius / dataMap.PLAYERS.baseRadius;
-            if (accessory) {
-                const cos = Math.cos(this.angle);
-                const sin = Math.sin(this.angle);
-
-                // Standard rotation matrix:
-                // x' = x*cos - y*sin
-                // y' = x*sin + y*cos
-                const rotatedX = accessory.hatOffset.x * cos - accessory.hatOffset.y * playerScale * sin;
-                const rotatedY = accessory.hatOffset.x * sin + accessory.hatOffset.y * playerScale * cos;
-
-                LC.drawImage({
-                    name: accessory.name,
-                    pos: [
-                        screenPosX + rotatedX - accessory.size[0] * (playerScale / 2) + playerScale,
-                        screenPosY + rotatedY - accessory.size[1] * (playerScale / 2) + playerScale
-                    ],
-                    size: [accessory.size[0] * playerScale, accessory.size[1] * playerScale],
-                    rotation: this.angle,
-                });
-            }
-        }
 
         // draw health as bar
         if (this.health !== undefined && this.maxHealth !== undefined) {
@@ -217,7 +192,7 @@ export class Player {
         }
 
         // draw username as text
-        const usernameText = `${this.level} | ${this.username}`;
+        const usernameText = this.username;
         const usernameMetrics = LC.measureText({
             text: usernameText,
             font: 'bold 16px Arial'

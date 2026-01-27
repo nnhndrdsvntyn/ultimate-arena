@@ -1,4 +1,6 @@
-import { MAP_SIZE } from '../game.js';
+import {
+    MAP_SIZE
+} from '../game.js';
 
 export class Entity {
     constructor(id, x, y, radius, speed, hp, maxHp) {

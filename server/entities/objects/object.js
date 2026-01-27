@@ -21,24 +21,54 @@ export class GameObject extends Entity {
         this.score = dataMap.OBJECTS[type].score;
         this.type = type;
         this.timeBroken;
+        this.spawnTime = performance.now();
+
+        this.targetX = undefined;
+        this.targetY = undefined;
+        this.teleportTicks = 0;
 
         ENTITIES.OBJECTS[id] = this;
     }
 
+    process() {
+        if (this.teleportTicks > 0) {
+            this.teleportTicks--;
+            if (this.teleportTicks === 0 && this.targetX !== undefined && this.targetY !== undefined) {
+                this.x = this.targetX;
+                this.y = this.targetY;
+                this.targetX = undefined;
+                this.targetY = undefined;
+            }
+        }
+
+        this.resolveCollisions();
+
+        // dropped swords despawn after 10 seconds
+        if (this.type >= 6 && this.type <= 12) {
+            if (performance.now() - this.spawnTime > 10000) {
+                this.die(null);
+                return;
+            }
+        }
+    }
+
     resolveCollisions() {
+        if (this.lastX === this.x && this.lastY === this.y) return;
+
         // Simple collision resolution with structures of type 2 (Rocks)
         for (const id in ENTITIES.STRUCTURES) {
             const structure = ENTITIES.STRUCTURES[id];
             if (structure.type === 2) {
                 if (colliding(this, structure)) {
-                    /*
                     const angle = Math.atan2(this.y - structure.y, this.x - structure.x);
                     this.x += Math.cos(angle) * 10;
                     this.y += Math.sin(angle) * 10;
-                    */
                 }
             }
         }
+
+        this.lastX = this.x;
+        this.lastY = this.y;
     }
 
     die(killer) {
@@ -46,13 +76,13 @@ export class GameObject extends Entity {
             killer.addScore(this.score);
         }
 
-        this.timeBroken = performance.now();
-        brokenObjects[this.id] = { ...this };
+        if (this.type >= 1 && this.type <= 4) { // only chests will respawn later
+            this.timeBroken = performance.now();
+            brokenObjects[this.id] = {
+                ...this
+            };
+        }
 
         ENTITIES.deleteEntity('object', this.id);
-    }
-
-    process() {
-        this.resolveCollisions();
     }
 }

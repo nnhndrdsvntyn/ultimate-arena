@@ -5,10 +5,19 @@ import {
     StringDecoder
 } from 'string_decoder';
 import {
-    validateUsername, getRandomUsername, cmdRun
+    validateUsername,
+    getRandomUsername,
+    cmdRun
 } from './helpers.js';
-import { wss } from '../server.js';
-import { MAP_SIZE } from './game.js';
+import {
+    wss
+} from '../server.js';
+import {
+    adminKey
+} from './constants.js';
+import {
+    MAP_SIZE
+} from './game.js';
 
 export function parsePacket(buffer, ws) {
     let offset = 0;
@@ -19,7 +28,7 @@ export function parsePacket(buffer, ws) {
         buffer.byteLength
     );
 
-    const packetType = buffer.readUint8(offset++);
+    const packetType = view.getUint8(offset++);
     if (packetType != 9) {
         ws.lastPacketTime = performance.now();
     }
@@ -108,12 +117,14 @@ export function parsePacket(buffer, ws) {
         ENTITIES.PLAYERS[ws.id].throwSword();
         return;
     }
-    if (packetType === 8) { // type 8 is command packet
-        const adminPassword = 'admin123'; // Example admin password
+    if (packetType === 8) { // type 8 is command packet        
+        if (!ws.isAdmin) return;
+
         const cmdType = buffer.readUint8(offset++);
         if (cmdType === 1) { // tp pos to entity packet
             const entityType = buffer.readUint8(offset++);
-            const entityId = buffer.readUInt32BE(offset); offset += 4;
+            const entityId = buffer.readUInt32BE(offset);
+            offset += 4;
             const x = buffer.readUint16BE(offset);
             offset += 2;
             const y = buffer.readUint16BE(offset);
@@ -121,29 +132,40 @@ export function parsePacket(buffer, ws) {
             cmdRun.tppos(entityType, entityId, x, y);
         } else if (cmdType === 2) { // tp entity to entity packet
             const entityType = buffer.readUint8(offset++);
-            const entityId = buffer.readUInt32BE(offset); offset += 4;
+            const entityId = buffer.readUInt32BE(offset);
+            offset += 4;
             const targetEntityType = buffer.readUint8(offset++);
-            const targetEntityId = buffer.readUInt32BE(offset); offset += 4;
+            const targetEntityId = buffer.readUInt32BE(offset);
+            offset += 4;
             cmdRun.tpent(entityType, entityId, targetEntityType, targetEntityId);
         } else if (cmdType === 3) { // kick player packet
-            const entityId = buffer.readUInt32BE(offset); offset += 4;
+            const entityId = buffer.readUInt32BE(offset);
+            offset += 4;
             wss.clients.forEach(client => {
                 if (client.id === entityId) {
                     client.close();
                     delete ENTITIES.PLAYERS[entityId];
                 }
             });
-        } else if (cmdType === 4) { // set xp of an entity
-            const entityType = buffer.readUint8(offset++);
-            const entityId = buffer.readUInt32BE(offset); offset += 4;
-            const scoreAmount = view.getUint32(offset, false); offset += 4;
-            cmdRun.setscore(entityType, entityId, scoreAmount);
+        } else if (cmdType === 4) { // set player attribute
+            const playerId = buffer.readUInt32BE(offset);
+            offset += 4;
+            const attrIdx = buffer.readUint8(offset++);
+            const value = view.getFloat32(offset, false);
+            offset += 4;
+            cmdRun.setattr(playerId, attrIdx, value);
         } else if (cmdType === 5) { // agro an entity towards a player
-            const mobId = buffer.readUInt32BE(offset); offset += 4;
-            const playerId = buffer.readUInt32BE(offset); offset += 4;
+            const mobId = buffer.readUInt32BE(offset);
+            offset += 4;
+            const playerId = buffer.readUInt32BE(offset);
+            offset += 4;
             const mobType = buffer.readUint8(offset++);
             const mobSpeedMult = buffer.readUint8(offset++);
             cmdRun.agro(mobId, playerId, mobType, mobSpeedMult);
+        } else if (cmdType === 6) { // tp to nearest chest
+            const playerId = buffer.readUInt32BE(offset);
+            offset += 4;
+            cmdRun.tpchest(playerId);
         }
     } else if (packetType == 9) { // receive ping request packet
         // send ping back
@@ -154,5 +176,28 @@ export function parsePacket(buffer, ws) {
     } else if (packetType == 10) { // receive upgrade attribute packet
         const attributeType = buffer.readUint8(offset++);
         cmdRun.upgrade(ws, attributeType);
+    } else if (packetType == 11) { // receive admin key packet
+        const pw = ws.packetWriter;
+        pw.reset();
+        let keyLength = view.getUint8(offset++);
+        let attemptKey = new TextDecoder().decode(new Uint8Array(buffer.buffer, buffer.byteOffset + offset, keyLength));
+
+        // console.log(`Admin key attempt from ${ws.id}. Attempt: "${attemptKey}" Expected: "${adminKey}"`);
+
+        if (attemptKey === adminKey) {
+            ws.isAdmin = true;
+            pw.writeU8(11);
+            pw.writeU8(1);
+            // console.log("Player " + ws.id + " successfully authenticated as admin.");
+        } else {
+            // console.log("Player " + ws.id + " failed admin authentication.");
+            if (performance.now() - ws.lastAdminKeyAttempt < 5000 || ws.isAdmin) return;
+            ws.lastAdminKeyAttempt = performance.now();
+            pw.writeU8(11);
+            pw.writeU8(0);
+        }
+        ws.send(pw.getBuffer());
+    } else if (packetType === 12) { // pick up packet
+        ENTITIES.PLAYERS[ws.id].tryPickup();
     }
 }

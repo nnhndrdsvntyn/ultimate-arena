@@ -1,7 +1,13 @@
-import { sendChat, writer, encodeUsername } from './helpers.js';
+import {
+    sendChat, writer, encodeUsername, sendAdminKey, sendTpPosCommand,
+    sendTpEntCommand,
+    sendSetPlayerAttrCommand,
+    sendPickupCommand,
+    sendTpChestCommand
+} from './helpers.js';
 import { ENTITIES } from './game.js';
 import { ws, Vars, Settings, LC } from './client.js';
-import { dataMap } from './shared/datamap.js';
+import { dataMap, version } from './shared/datamap.js';
 // --- Configuration & Constants ---
 export const THROW_BTN_CONFIG = {
     xOffset: 50,
@@ -11,16 +17,98 @@ export const THROW_BTN_CONFIG = {
 
 export const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
-// --- State ---
 export let isChatOpen = false;
 export let isSettingsOpen = false;
 let activeTab = 'Visuals';
+let tempAdminKey = '';
+let adminState = {
+    tpPos: { type: 'PLAYER', id: '', x: '', y: '' },
+    tpEnt: { type: 'PLAYER', id: '', targetType: 'PLAYER', targetId: '' },
+    setAttr: { id: '', attr: 'SCORE', value: '' },
+    tpChest: { id: '' }
+};
 let settingsBody;
 let shieldIcon;
 let chatInput;
 let chatInputWrapper;
 let settingsModal;
 let settingsOverlay;
+
+// --- Input State ---
+const keys = new Set();
+const activeJoystickKeys = { w: 0, a: 0, s: 0, d: 0 };
+
+// --- Rotation Limiting ---
+let lastRotationTime = 0;
+let rotationQueue = null;
+let rotationTimeout = null;
+
+function sendRotation(angle) {
+    const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+    if (!myPlayer?.isAlive || ws?.readyState !== ws.OPEN) return;
+
+    const now = performance.now();
+    const minInterval = 1000 / 30; // 60 FPS
+
+    if (now - lastRotationTime >= minInterval) {
+        // Send immediately
+        _doSendRotation(angle);
+        lastRotationTime = now;
+
+        // If there was something queued, it's now stale
+        rotationQueue = null;
+        if (rotationTimeout) {
+            clearTimeout(rotationTimeout);
+            rotationTimeout = null;
+        }
+    } else {
+        // Queue it
+        rotationQueue = angle;
+        if (!rotationTimeout) {
+            rotationTimeout = setTimeout(() => {
+                const pendingAngle = rotationQueue;
+                rotationQueue = null;
+                rotationTimeout = null;
+                if (pendingAngle !== null) {
+                    sendRotation(pendingAngle);
+                }
+            }, minInterval - (now - lastRotationTime));
+        }
+    }
+}
+
+function _doSendRotation(angle) {
+    const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+    if (!myPlayer) return;
+    writer.reset();
+    writer.writeU8(2);
+    writer.writeF32(angle);
+    ws.send(writer.getBuffer());
+    if (myPlayer.swingState === 0) myPlayer.angle = angle;
+}
+
+function resetInputs() {
+    if (ws?.readyState !== ws.OPEN) return;
+
+    // Reset movement keys (W, A, S, D)
+    [1, 2, 3, 4].forEach(keyCode => {
+        writer.reset();
+        writer.writeU8(3);
+        writer.writeU8(keyCode);
+        writer.writeU8(0);
+        ws.send(writer.getBuffer());
+    });
+
+    // Reset attack state
+    writer.reset();
+    writer.writeU8(4);
+    writer.writeU8(0);
+    ws.send(writer.getBuffer());
+
+    // Clear local input state
+    keys.clear();
+    Object.keys(activeJoystickKeys).forEach(k => activeJoystickKeys[k] = 0);
+}
 
 // --- DOM Utilities ---
 function createEl(tag, styles = {}, parent = null, props = {}) {
@@ -42,12 +130,28 @@ export function initializeUI() {
     createHomeBlurButton();
     createSettingsModal(hudContainer);
     createChatUI(hudContainer);
-    setupSharedInputListeners();
+    setupKeyboardControls();
+    setupVersion();
+    window.updateSettingsBody = updateSettingsBody;
 
     if (isMobile) {
         setupMobileControls(hudContainer);
     } else {
         setupDesktopControls();
+    }
+}
+
+function setupVersion() {
+    const credits = document.getElementById('credits');
+    if (credits) {
+        createEl('div', {
+            fontSize: '0.7rem',
+            marginTop: '5px',
+            opacity: '0.6',
+            letterSpacing: '0.05rem',
+            textAlign: 'center',
+            width: '100%'
+        }, credits, { textContent: `v${version}` });
     }
 }
 function createSettingsButton(parent) {
@@ -92,15 +196,46 @@ function createSettingsModal(parent) {
     settingsOverlay = createEl('div', {}, parent, { className: 'modal-overlay' });
     settingsModal = createEl('div', {}, settingsOverlay, { className: 'settings-modal' });
 
-    // Header
+    // Header (Draggable Handle)
     const header = createEl('div', {}, settingsModal, { className: 'settings-header' });
+    header.style.cursor = 'move';
     createEl('h2', {}, header, { textContent: 'SETTINGS' });
     const closeBtn = createEl('button', {}, header, { className: 'close-settings', innerHTML: '&times;' });
     closeBtn.onclick = () => toggleSettingsModal(false);
 
+    // Draggable Logic
+    let isDragging = false;
+    let offset = { x: 0, y: 0 };
+
+    header.onmousedown = (e) => {
+        if (e.target === closeBtn) return;
+        isDragging = true;
+        const rect = settingsModal.getBoundingClientRect();
+        offset.x = e.clientX - rect.left;
+        offset.y = e.clientY - rect.top;
+
+        // Remove 'align-items' and 'justify-content' from overlay to allow absolute positioning
+        settingsOverlay.style.alignItems = 'flex-start';
+        settingsOverlay.style.justifyContent = 'flex-start';
+        settingsModal.style.position = 'absolute';
+        settingsModal.style.left = rect.left + 'px';
+        settingsModal.style.top = rect.top + 'px';
+        settingsModal.style.margin = '0';
+    };
+
+    window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        settingsModal.style.left = (e.clientX - offset.x) + 'px';
+        settingsModal.style.top = (e.clientY - offset.y) + 'px';
+    });
+
+    window.addEventListener('mouseup', () => {
+        isDragging = false;
+    });
+
     // Tabs
     const tabsContainer = createEl('div', {}, settingsModal, { className: 'settings-tabs' });
-    const tabs = ['Visuals', 'Stats'];
+    const tabs = ['Visuals', 'Stats', 'Admin'];
     tabs.forEach((tab) => {
         const tabEl = createEl('div', {}, tabsContainer, {
             className: `settings-tab ${tab === activeTab ? 'active' : ''}`,
@@ -117,11 +252,6 @@ function createSettingsModal(parent) {
     // Body
     settingsBody = createEl('div', {}, settingsModal, { className: 'settings-body' });
     updateSettingsBody();
-
-    // Close on overlay click
-    settingsOverlay.onclick = (e) => {
-        if (e.target === settingsOverlay) toggleSettingsModal(false);
-    };
 }
 
 function updateSettingsBody() {
@@ -156,8 +286,8 @@ function updateSettingsBody() {
             return;
         }
 
-        const level = myPlayer.level;
-        const projStats = dataMap.PROJECTILES[level] || dataMap.PROJECTILES[1];
+        const weaponRank = myPlayer.weaponRank || 1;
+        const projStats = dataMap.PROJECTILES[weaponRank] || dataMap.PROJECTILES[1];
 
         const damagePerHit = projStats.damage;
         const damagePerThrow = damagePerHit * 2;
@@ -169,6 +299,168 @@ function updateSettingsBody() {
         createStatItem(settingsBody, 'DMG (throw sword)', damagePerThrow);
         createStatItem(settingsBody, 'SPEED', speed);
         createStatItem(settingsBody, 'HP', `${health} / ${maxHealth}`);
+    } else if (activeTab === 'Admin') {
+        if (!Vars.isAdmin) {
+            createEl('div', {}, settingsBody, { className: 'settings-section-header', textContent: 'Authentication' });
+            const input = addInputSetting(settingsBody, 'Admin Key', tempAdminKey, (val) => {
+                tempAdminKey = val;
+            }, 'password');
+
+            const btn = createEl('button', {
+                marginTop: '20px',
+                width: '100%',
+                padding: '12px',
+                background: '#38bdf8',
+                border: 'none',
+                borderRadius: '10px',
+                color: '#0f172a',
+                fontWeight: '800',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                fontSize: '1rem',
+                textTransform: 'uppercase',
+                letterSpacing: '1px'
+            }, settingsBody, { textContent: 'Apply Key' });
+
+            btn.onmouseover = () => btn.style.filter = 'brightness(1.1)';
+            btn.onmouseout = () => btn.style.filter = 'none';
+            btn.onclick = () => {
+                if (!tempAdminKey) return;
+                sendAdminKey(tempAdminKey);
+            };
+        } else {
+            createEl('div', {}, settingsBody, { className: 'settings-section-header', textContent: 'Admin Dashboard' });
+
+            // --- TPPOS SECTION ---
+            createEl('div', { marginBottom: '10px', fontSize: '0.9rem', color: '#38bdf8', fontWeight: 'bold' }, settingsBody, { textContent: 'COMMAND: TPPOS TO POS' });
+            const posTypeSelect = addSelectSetting(settingsBody, 'Target Type', ['PLAYER', 'MOB'], (val) => adminState.tpPos.type = val);
+            posTypeSelect.value = adminState.tpPos.type;
+
+            const posIdInput = addInputSetting(settingsBody, 'Target ID', adminState.tpPos.id, (val) => adminState.tpPos.id = val, 'number');
+            const posXInput = addInputSetting(settingsBody, 'X Pos', adminState.tpPos.x, (val) => adminState.tpPos.x = val, 'number');
+            const posYInput = addInputSetting(settingsBody, 'Y Pos', adminState.tpPos.y, (val) => adminState.tpPos.y = val, 'number');
+
+            const applyPosBtn = createEl('button', {
+                width: '100%', padding: '10px', background: '#38bdf8', border: 'none', borderRadius: '8px',
+                color: '#0f172a', fontWeight: '700', cursor: 'pointer', marginBottom: '25px'
+            }, settingsBody, { textContent: 'TP ENTITY TO POS' });
+
+            applyPosBtn.onclick = () => {
+                const type = adminState.tpPos.type === 'PLAYER' ? 1 : 2;
+                const id = parseInt(adminState.tpPos.id);
+                const x = parseInt(posXInput.value);
+                const y = parseInt(posYInput.value);
+                if (isNaN(id) || isNaN(x) || isNaN(y)) return showNotification("Invalid values!", "red");
+                sendTpPosCommand(type, id, x, y);
+            };
+
+            // --- TPENT SECTION ---
+            createEl('div', { marginBottom: '10px', fontSize: '0.9rem', color: '#38bdf8', fontWeight: 'bold' }, settingsBody, { textContent: 'COMMAND: TP ENTITY TO ENTITY' });
+            const entTypeSelect = addSelectSetting(settingsBody, 'Entity Type', ['PLAYER', 'MOB'], (val) => adminState.tpEnt.type = val);
+            entTypeSelect.value = adminState.tpEnt.type;
+            const entIdInput = addInputSetting(settingsBody, 'Entity ID', adminState.tpEnt.id, (val) => adminState.tpEnt.id = val, 'number');
+
+            const targetTypeSelect = addSelectSetting(settingsBody, 'Target Type', ['PLAYER', 'MOB'], (val) => adminState.tpEnt.targetType = val);
+            targetTypeSelect.value = adminState.tpEnt.targetType;
+            const targetIdInput = addInputSetting(settingsBody, 'Target ID', adminState.tpEnt.targetId, (val) => adminState.tpEnt.targetId = val, 'number');
+
+            const applyEntBtn = createEl('button', {
+                width: '100%', padding: '10px', background: '#38bdf8', border: 'none', borderRadius: '8px',
+                color: '#0f172a', fontWeight: '700', cursor: 'pointer', marginBottom: '10px'
+            }, settingsBody, { textContent: 'TP ENTITY TO ENTITY' });
+
+            applyEntBtn.onclick = () => {
+                const type = adminState.tpEnt.type === 'PLAYER' ? 1 : 2;
+                const id = parseInt(adminState.tpEnt.id);
+                const targetType = adminState.tpEnt.targetType === 'PLAYER' ? 1 : 2;
+                const targetId = parseInt(adminState.tpEnt.targetId);
+                if (isNaN(id) || isNaN(targetId)) return showNotification("Invalid IDs!", "red");
+                sendTpEntCommand(type, id, targetType, targetId);
+            };
+
+            // --- SETATTR SECTION ---
+            createEl('div', { marginBottom: '10px', fontSize: '0.9rem', color: '#38bdf8', fontWeight: 'bold' }, settingsBody, { textContent: 'COMMAND: SET PLAYER ATTRIBUTE' });
+            const attrIdInput = addInputSetting(settingsBody, 'Player ID', adminState.setAttr.id, (val) => adminState.setAttr.id = val, 'number');
+            const attrSelect = addSelectSetting(settingsBody, 'Attribute', ['SCORE', 'SPEED', 'INVINCIBLE', 'WEAPON', 'STRENGTH'], (val) => {
+                adminState.setAttr.attr = val;
+                if (val === 'INVINCIBLE') {
+                    attrValueInput.min = '0';
+                    attrValueInput.max = '1';
+                    attrValueInput.placeholder = '0 or 1';
+                    attrValueInput.type = 'number';
+                } else if (val === 'WEAPON') {
+                    attrValueInput.min = '1';
+                    attrValueInput.max = '7';
+                    attrValueInput.placeholder = '1-7 (Rank)';
+                    attrValueInput.type = 'number';
+                } else if (val === 'STRENGTH') {
+                    attrValueInput.removeAttribute('min');
+                    attrValueInput.removeAttribute('max');
+                    attrValueInput.placeholder = 'Any integer (incl. negative)';
+                    attrValueInput.type = 'number';
+                } else {
+                    attrValueInput.removeAttribute('min');
+                    attrValueInput.removeAttribute('max');
+                    attrValueInput.placeholder = 'Enter...';
+                    attrValueInput.type = 'number'; // Default to number for SCORE/SPEED
+                }
+            });
+            attrSelect.value = adminState.setAttr.attr;
+            const attrValueInput = addInputSetting(settingsBody, 'Value', adminState.setAttr.value, (val) => adminState.setAttr.value = val, 'number');
+
+            // Initial state for value input
+            if (attrSelect.value === 'INVINCIBLE') {
+                attrValueInput.min = '0';
+                attrValueInput.max = '1';
+                attrValueInput.placeholder = '0 or 1';
+            } else if (attrSelect.value === 'WEAPON') {
+                attrValueInput.min = '1';
+                attrValueInput.max = '7';
+                attrValueInput.placeholder = '1-7 (Rank)';
+            }
+
+            const applyAttrBtn = createEl('button', {
+                width: '100%', padding: '10px', background: '#38bdf8', border: 'none', borderRadius: '8px',
+                color: '#0f172a', fontWeight: '700', cursor: 'pointer', marginBottom: '10px'
+            }, settingsBody, { textContent: 'SET ATTRIBUTE' });
+
+            applyAttrBtn.onclick = () => {
+                const id = parseInt(adminState.setAttr.id);
+                const attr = adminState.setAttr.attr;
+                let attrIdx = 2; // SCORE
+                if (attr === 'SPEED') attrIdx = 1;
+                else if (attr === 'INVINCIBLE') attrIdx = 3;
+                else if (attr === 'WEAPON') attrIdx = 4;
+                else if (attr === 'STRENGTH') attrIdx = 5;
+
+                const value = parseFloat(adminState.setAttr.value);
+                if (isNaN(id) || isNaN(value)) return showNotification("Invalid values!", "red");
+
+                if (attrIdx === 3) {
+                    if (value !== 0 && value !== 1) return showNotification("Invincible must be 0 or 1!", "red");
+                }
+                if (attrIdx === 4) {
+                    if (value < 1 || value > 7) return showNotification("Weapon rank must be between 1 and 7!", "red");
+                }
+
+                sendSetPlayerAttrCommand(id, attrIdx, value);
+            };
+
+            // --- TPCHEST SECTION ---
+            createEl('div', { marginBottom: '10px', fontSize: '0.9rem', color: '#38bdf8', fontWeight: 'bold' }, settingsBody, { textContent: 'COMMAND: TP TO NEAREST CHEST' });
+            const chestPlayerIdInput = addInputSetting(settingsBody, 'Player ID', adminState.tpChest.id, (val) => adminState.tpChest.id = val, 'number');
+
+            const applyChestBtn = createEl('button', {
+                width: '100%', padding: '10px', background: '#38bdf8', border: 'none', borderRadius: '8px',
+                color: '#0f172a', fontWeight: '700', cursor: 'pointer', marginBottom: '10px'
+            }, settingsBody, { textContent: 'TP TO CHEST' });
+
+            applyChestBtn.onclick = () => {
+                const id = parseInt(adminState.tpChest.id);
+                if (isNaN(id)) return showNotification("Invalid ID!", "red");
+                sendTpChestCommand(id);
+            };
+        }
     }
 }
 
@@ -193,9 +485,52 @@ function addToggleSetting(parent, label, settingKey, onChange) {
     };
 }
 
+function addInputSetting(parent, label, initialValue, onChange, type = 'text') {
+    const item = createEl('div', {}, parent, { className: 'setting-item' });
+    createEl('div', {}, item, { className: 'setting-label', textContent: label });
+
+    const input = createEl('input', {}, item, {
+        className: 'setting-input',
+        type: type,
+        value: initialValue,
+        placeholder: 'Enter...'
+    });
+
+    input.oninput = () => {
+        onChange(input.value);
+    };
+    return input;
+}
+
+function addSelectSetting(parent, label, options, onChange) {
+    const item = createEl('div', {}, parent, { className: 'setting-item' });
+    createEl('div', {}, item, { className: 'setting-label', textContent: label });
+
+    const select = createEl('select', {
+        background: 'rgba(15, 23, 42, 0.5)',
+        border: '2px solid rgba(255, 255, 255, 0.1)',
+        borderRadius: '8px',
+        color: 'white',
+        padding: '8px',
+        outline: 'none',
+    }, item, { className: 'setting-input' });
+
+    options.forEach(opt => {
+        const option = createEl('option', {}, select, { value: opt, textContent: opt });
+    });
+
+    select.onchange = () => {
+        onChange(select.value);
+    };
+    return select;
+}
+
 function toggleSettingsModal(show) {
     isSettingsOpen = show;
     settingsOverlay.style.display = show ? 'flex' : 'none';
+    if (show) {
+        resetInputs();
+    }
 }
 
 function createShieldIcon(parent) {
@@ -237,27 +572,64 @@ function createChatUI(parent) {
     });
 }
 
-// --- Shared Input Listeners ---
-function setupSharedInputListeners() {
-    window.addEventListener('keydown', (e) => {
-        const homeUsrnInput = document.getElementById('homeUsrnInput');
-        const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+// --- Keyboard Input Logic ---
+function setupKeyboardControls() {
+    const keyMap = {
+        'w': 1, 'arrowup': 1,
+        'a': 2, 'arrowleft': 2,
+        's': 3, 'arrowdown': 3,
+        'd': 4, 'arrowright': 4
+    };
 
-        if (e.key === 'Escape') {
-            if (isSettingsOpen) toggleSettingsModal(false);
+    const handleKey = (e, isDown) => {
+        const keyName = e.key.toLowerCase();
+        const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+        const homeUsrnInput = document.getElementById('homeUsrnInput');
+
+        // Always handle Escape (UI)
+        if (keyName === 'escape') {
+            if (isDown && isSettingsOpen) toggleSettingsModal(false);
             return;
         }
 
-        if (isSettingsOpen) return;
+        // Always handle Enter (Chat / Join)
+        if (keyName === 'enter') {
+            if (isDown) handleChatToggle(myPlayer, homeUsrnInput);
+            return;
+        }
 
-        if (e.key === 'Enter') {
-            handleChatToggle(myPlayer, homeUsrnInput);
-        } else if (e.key.toLowerCase() === 'e' && myPlayer?.isAlive && !isChatOpen) {
+        // If settings or chat is open, block all gameplay keys
+        if (isSettingsOpen || isChatOpen) return;
+
+        // Action Keys
+        if (isDown) {
+            if (keys.has(keyName)) return; // Prevent repeat packets
+            keys.add(keyName);
+
+            if (keyName === 'e' && myPlayer?.isAlive) {
+                writer.reset();
+                writer.writeU8(7);
+                ws.send(writer.getBuffer());
+            } else if (keyName === 'r' && myPlayer?.isAlive) {
+                sendPickupCommand();
+            }
+        } else {
+            if (!keys.has(keyName)) return;
+            keys.delete(keyName);
+        }
+
+        // Movement Keys (Packet type 3)
+        if (keyMap[keyName]) {
             writer.reset();
-            writer.writeU8(7);
+            writer.writeU8(3);
+            writer.writeU8(keyMap[keyName]);
+            writer.writeU8(isDown ? 1 : 0);
             ws.send(writer.getBuffer());
         }
-    });
+    };
+
+    document.addEventListener('keydown', e => handleKey(e, true));
+    document.addEventListener('keyup', e => handleKey(e, false));
 }
 
 function handleChatToggle(myPlayer, homeUsrnInput) {
@@ -331,7 +703,6 @@ function setupJoystickLogic(container, knob) {
     let startX, startY;
     let moveId = null;
     const maxDist = 45;
-    const activeKeys = { w: 0, a: 0, s: 0, d: 0 };
 
     const updateKeys = (dx, dy) => {
         const newKeys = { w: 0, a: 0, s: 0, d: 0 };
@@ -350,10 +721,10 @@ function setupJoystickLogic(container, knob) {
             }
         };
 
-        if (newKeys.w !== activeKeys.w) { sendKey(1, newKeys.w); activeKeys.w = newKeys.w; }
-        if (newKeys.a !== activeKeys.a) { sendKey(2, newKeys.a); activeKeys.a = newKeys.a; }
-        if (newKeys.s !== activeKeys.s) { sendKey(3, newKeys.s); activeKeys.s = newKeys.s; }
-        if (newKeys.d !== activeKeys.d) { sendKey(4, newKeys.d); activeKeys.d = newKeys.d; }
+        if (newKeys.w !== activeJoystickKeys.w) { sendKey(1, newKeys.w); activeJoystickKeys.w = newKeys.w; }
+        if (newKeys.a !== activeJoystickKeys.a) { sendKey(2, newKeys.a); activeJoystickKeys.a = newKeys.a; }
+        if (newKeys.s !== activeJoystickKeys.s) { sendKey(3, newKeys.s); activeJoystickKeys.s = newKeys.s; }
+        if (newKeys.d !== activeJoystickKeys.d) { sendKey(4, newKeys.d); activeJoystickKeys.d = newKeys.d; }
     };
 
     container.addEventListener('touchstart', e => {
@@ -411,11 +782,7 @@ function setupMobileTouchActions(joyContainer, chatBtn) {
         if (myPlayer.swingState !== 0) return;
 
         let angle = Math.atan2(y - innerHeight / 2, x - innerWidth / 2);
-        writer.reset();
-        writer.writeU8(2);
-        writer.writeF32(angle);
-        ws.send(writer.getBuffer());
-        myPlayer.angle = angle;
+        sendRotation(angle);
     };
 
     const sendAttack = (state) => {
@@ -456,6 +823,7 @@ function setupMobileTouchActions(joyContainer, chatBtn) {
     });
 
     window.addEventListener('touchmove', e => {
+        if (isSettingsOpen) return;
         for (let i = 0; i < e.changedTouches.length; i++) {
             const t = e.changedTouches[i];
             if (e.target === joyContainer || t.identifier === throwTouchId) continue;
@@ -485,11 +853,7 @@ function setupDesktopControls() {
         if (!myPlayer?.isAlive || ws?.readyState !== ws.OPEN || isSettingsOpen) return;
 
         const angle = Math.atan2(e.clientY - innerHeight / 2, e.clientX - innerWidth / 2);
-        writer.reset();
-        writer.writeU8(2);
-        writer.writeF32(angle);
-        ws.send(writer.getBuffer());
-        if (myPlayer.swingState === 0) myPlayer.angle = angle;
+        sendRotation(angle);
     });
 
     const sendAttack = (state) => {
@@ -504,16 +868,9 @@ function setupDesktopControls() {
     };
 
     const isUIElement = (target) => {
-        // Elements that should block game input
         const interactableTags = ['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'];
         if (interactableTags.includes(target.tagName)) return true;
-
-        // Modal components
         if (target.classList.contains('modal-overlay') || target.closest('.settings-modal')) return true;
-
-        // If it's the HUD container itself or the body, it's not a UI element blocking input
-        if (target.id === 'game-hud' || target === document.body) return false;
-
         return false;
     };
 
@@ -525,42 +882,8 @@ function setupDesktopControls() {
     window.addEventListener("mouseup", e => {
         if (e.button === 0) sendAttack(0);
     });
-
-    setupKeyboardControls();
 }
 
-function setupKeyboardControls() {
-    const keys = new Set();
-    const keyMap = {
-        'w': 1, 'arrowup': 1,
-        'a': 2, 'arrowleft': 2,
-        's': 3, 'arrowdown': 3,
-        'd': 4, 'arrowright': 4
-    };
-
-    const handleKey = (e, isDown) => {
-        if (isChatOpen || isSettingsOpen || ws?.readyState !== ws.OPEN) return;
-        const keyName = e.key.toLowerCase();
-        if (!keyMap[keyName]) return;
-
-        if (isDown) {
-            if (keys.has(keyName)) return;
-            keys.add(keyName);
-        } else {
-            if (!keys.has(keyName)) return;
-            keys.delete(keyName);
-        }
-
-        writer.reset();
-        writer.writeU8(3);
-        writer.writeU8(keyMap[keyName]);
-        writer.writeU8(isDown ? 1 : 0);
-        ws.send(writer.getBuffer());
-    };
-
-    document.addEventListener('keydown', e => handleKey(e, true));
-    document.addEventListener('keyup', e => handleKey(e, false));
-}
 
 // --- Public Utility Functions ---
 export function showNotification(text, color) {
