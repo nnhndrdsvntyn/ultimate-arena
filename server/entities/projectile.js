@@ -66,12 +66,12 @@ export class Projectile extends Entity {
             if (colliding(this, structure, buffer)) {
                 if (structure.type === 3) {
                     // bushes slow it down, and make its damage half
-                    this.speed = dataMap.PROJECTILES[this.shooter.weapon.rank].speed / 2;
-                    this.damage = (this.shooter.strength + dataMap.PROJECTILES[this.shooter.weapon.rank]?.damage) * 1.15 / 2;
+                    this.speed = dataMap.PROJECTILES[this.weaponRank].speed / 2;
+                    this.damage = (this.shooter.strength + dataMap.PROJECTILES[this.weaponRank]?.damage) * 1.15 / 2;
                     if (this.type == -1) {
-                        this.maxDistance = dataMap.PROJECTILES[this.shooter.weapon.rank].maxDistance / 1.25;
+                        this.maxDistance = dataMap.PROJECTILES[this.weaponRank].maxDistance / 1.25;
                     } else {
-                        this.maxDistance = dataMap.PROJECTILES[this.shooter.weapon.rank].maxDistance / 1.5;
+                        this.maxDistance = dataMap.PROJECTILES[this.weaponRank].maxDistance / 1.5;
                     }
                 } else {
                     // other structures block the projectile
@@ -165,8 +165,8 @@ export class Projectile extends Entity {
                 if (tookDamage) {
                     // knock player back
                     const knockbackAngle = Math.atan2(player.y - this.shooter.y, player.x - this.shooter.x);
-                    player.x += Math.cos(knockbackAngle) * dataMap.PROJECTILES[this.shooter.weapon.rank].knockbackStrength;
-                    player.y += Math.sin(knockbackAngle) * dataMap.PROJECTILES[this.shooter.weapon.rank].knockbackStrength;
+                    player.x += Math.cos(knockbackAngle) * dataMap.PROJECTILES[this.weaponRank].knockbackStrength;
+                    player.y += Math.sin(knockbackAngle) * dataMap.PROJECTILES[this.weaponRank].knockbackStrength;
                     player.clamp();
                 }
 
@@ -189,8 +189,8 @@ export class Projectile extends Entity {
                 if (tookDamage) {
                     // knock mob back
                     const knockbackAngle = Math.atan2(mob.y - this.shooter.y, mob.x - this.shooter.x);
-                    mob.x += Math.cos(knockbackAngle) * dataMap.PROJECTILES[this.shooter.weapon.rank].knockbackStrength;
-                    mob.y += Math.sin(knockbackAngle) * dataMap.PROJECTILES[this.shooter.weapon.rank].knockbackStrength;
+                    mob.x += Math.cos(knockbackAngle) * dataMap.PROJECTILES[this.weaponRank].knockbackStrength;
+                    mob.y += Math.sin(knockbackAngle) * dataMap.PROJECTILES[this.weaponRank].knockbackStrength;
                     mob.clamp();
                 }
 

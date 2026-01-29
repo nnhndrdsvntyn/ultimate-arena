@@ -1,5 +1,6 @@
 import {
-    ENTITIES
+    ENTITIES,
+    MAP_SIZE
 } from './game.js';
 import {
     dataMap
@@ -28,8 +29,16 @@ export class Structure {
         const screenPosX = this.x - camera.x;
         const screenPosY = this.y - camera.y;
 
+        let imgName = dataMap.STRUCTURES[this.type].imgName;
+
+        const riverStart = MAP_SIZE[0] * 0.47;
+        // if its on the left side (snow biome), use the snowy rock texture
+        if (this.type === 2 && this.x > riverStart) {
+            imgName = 'rock1-snow';
+        }
+
         LC.drawImage({
-            name: dataMap.STRUCTURES[this.type].imgName,
+            name: imgName,
             pos: [screenPosX - this.radius, screenPosY - this.radius],
             size: [this.radius * 2, this.radius * 2]
         });

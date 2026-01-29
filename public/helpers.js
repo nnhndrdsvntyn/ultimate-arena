@@ -127,9 +127,10 @@ export function sendTpPosCommand(entityType, entityId, x, y) {
     writer.writeU8(8); // Command packet
     writer.writeU8(1); // tppos type
     writer.writeU8(entityType);
-    writer.writeU32(entityId); // writeU32 uses big-endian by default in PacketWriter
-    writer.writeU16(x); // writeU16 uses big-endian
-    writer.writeU16(y); // writeU16 uses big-endian
+    if (entityType === 1) writer.writeU8(entityId);
+    else writer.writeU16(entityId);
+    writer.writeU16(x);
+    writer.writeU16(y);
     ws.send(writer.getBuffer());
 }
 
@@ -138,9 +139,11 @@ export function sendTpEntCommand(entityType, entityId, targetEntityType, targetE
     writer.writeU8(8); // Command packet
     writer.writeU8(2); // tpent type
     writer.writeU8(entityType);
-    writer.writeU32(entityId);
+    if (entityType === 1) writer.writeU8(entityId);
+    else writer.writeU16(entityId);
     writer.writeU8(targetEntityType);
-    writer.writeU32(targetEntityId);
+    if (targetEntityType === 1) writer.writeU8(targetEntityId);
+    else writer.writeU16(targetEntityId);
     ws.send(writer.getBuffer());
 }
 
@@ -148,7 +151,7 @@ export function sendSetPlayerAttrCommand(playerId, attrIdx, value) {
     writer.reset();
     writer.writeU8(8); // Command packet
     writer.writeU8(4); // set attribute type
-    writer.writeU32(playerId);
+    writer.writeU8(playerId);
     writer.writeU8(attrIdx);
     writer.writeF32(value);
     ws.send(writer.getBuffer());
@@ -160,10 +163,21 @@ export function sendPickupCommand() {
     ws.send(writer.getBuffer());
 }
 
-export function sendTpChestCommand(playerId) {
+export function sendTpChestCommand(playerId, chestType = 0) {
     writer.reset();
     writer.writeU8(8); // Command packet
     writer.writeU8(6); // tpchest type
-    writer.writeU32(playerId);
+    writer.writeU8(playerId);
+    if (chestType !== 0) {
+        writer.writeU8(chestType);
+    }
+    ws.send(writer.getBuffer());
+}
+
+export function sendBreakAllChestsCommand(dropLoot = false) {
+    writer.reset();
+    writer.writeU8(8); // Command packet
+    writer.writeU8(7); // breakChests type
+    writer.writeU8(dropLoot ? 1 : 0);
     ws.send(writer.getBuffer());
 }

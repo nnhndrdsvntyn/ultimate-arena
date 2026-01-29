@@ -111,29 +111,36 @@ export class Player {
         this.swordAngleOffset = (this.swingState * (Math.PI / 6)) - (Math.PI / 2);
         const angleRad = this.angle + this.swordAngleOffset;
 
-        const currentRank = this.weaponRank || 1;
-        const swordWidth = dataMap.SWORDS.imgs[currentRank]?.swordWidth || 100;
-        const swordHeight = dataMap.SWORDS.imgs[currentRank]?.swordHeight || 50;
-
-        // move origin to the handle instead of center
-        const offsetX = Math.cos(angleRad) * (this.radius + swordWidth / 2);
-        const offsetY = Math.sin(angleRad) * (this.radius + swordWidth / 2);
-
-        let swordImgName = `swords-sword${currentRank}`;
-        if (!LC.images[swordImgName]) {
-            swordImgName = `swords-wipsword`;
+        let currentRank = this.weaponRank || 0;
+        // If we are dragging the currently selected item OR if it's currently thrown, hide it from the player's hand
+        if ((this.id === Vars.myId && Vars.dragSlot !== -1 && Vars.dragSlot === Vars.selectedSlot) || currentRank > 127) {
+            currentRank = 0;
         }
 
-        if (this.hasWeapon) {
-            LC.drawImage({
-                name: swordImgName,
-                pos: [
-                    screenPosX + offsetX - swordWidth / 2,
-                    screenPosY + offsetY - swordHeight / 2
-                ],
-                size: [swordWidth, swordHeight],
-                rotation: angleRad
-            });
+        if (currentRank > 0) {
+            const swordWidth = dataMap.SWORDS.imgs[currentRank]?.swordWidth || 100;
+            const swordHeight = dataMap.SWORDS.imgs[currentRank]?.swordHeight || 50;
+
+            // move origin to the handle instead of center
+            const offsetX = Math.cos(angleRad) * (this.radius + swordWidth / 2);
+            const offsetY = Math.sin(angleRad) * (this.radius + swordWidth / 2);
+
+            let swordImgName = `swords-sword${currentRank}`;
+            if (!LC.images[swordImgName]) {
+                swordImgName = `swords-wipsword`;
+            }
+
+            if (this.hasWeapon) {
+                LC.drawImage({
+                    name: swordImgName,
+                    pos: [
+                        screenPosX + offsetX - swordWidth / 2,
+                        screenPosY + offsetY - swordHeight / 2
+                    ],
+                    size: [swordWidth, swordHeight],
+                    rotation: angleRad
+                });
+            }
         }
 
         // actual image

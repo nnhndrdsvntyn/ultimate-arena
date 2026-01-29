@@ -22,12 +22,6 @@ export class GoldCoin extends GameObject {
     }
 
     process() {
-        // despawn after 10 seconds
-        if (performance.now() - this.spawnTime > 10000) {
-            this.die(null);
-            return;
-        }
-
         // Check collisions with players to "pick up" the coin
         for (const id in ENTITIES.PLAYERS) {
             const player = ENTITIES.PLAYERS[id];

@@ -21,16 +21,32 @@ export class GameObject {
         this.newX = x;
         this.newY = y;
 
-        if (type >= 1 && type <= 4) { // chests (types 1-4) have health
-            this.health = dataMap.OBJECTS[type].maxHealth;
-            this.maxHealth = dataMap.OBJECTS[type].maxHealth;
-        }
-        this.imgName = dataMap.OBJECTS[type].imgName;
-        this.type = type;
-        this.radius = dataMap.OBJECTS[type].radius;
-        this.rotation = (id % 100) / 100 * Math.PI * 2; // Unique but static rotation
+        this.setType(type);
+        // Pseudo-random rotation based on ID using a simple hash
+        // This spreads consecutive IDs across different rotations
+        const hash = ((id * 2654435761) >>> 0) % 1000;
+        this.rotation = (hash / 1000) * Math.PI * 2;
 
         ENTITIES.OBJECTS[id] = this;
+    }
+
+    setType(type) {
+        if (this.type === type) return; // No change needed
+
+        this.type = type;
+        const objData = dataMap.OBJECTS[type];
+        if (!objData) return;
+
+        this.imgName = objData.imgName;
+        this.radius = objData.radius;
+
+        if (type >= 1 && type <= 4) { // chests (types 1-4) have health
+            this.health = objData.maxHealth;
+            this.maxHealth = objData.maxHealth;
+        } else {
+            this.health = undefined;
+            this.maxHealth = undefined;
+        }
     }
     update() {
         const lerpFactor = (TPS.clientCapped / TPS.server) / 10;

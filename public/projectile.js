@@ -11,7 +11,7 @@ import {
 } from './client.js';
 
 export class Projectile {
-    constructor(id, x, y, angle, type, level) {
+    constructor(id, x, y, angle, type, weaponRank) {
         this.id = id;
 
         this.x = x;
@@ -24,7 +24,7 @@ export class Projectile {
         this.newAngle = angle;
 
         this.type = type;
-        this.level = level;
+        this.weaponRank = weaponRank;
         this.radius = 10;
 
         ENTITIES.PROJECTILES[id] = this;
@@ -70,13 +70,13 @@ export class Projectile {
             // Draw sword
             let swordWidth = 100;
             let swordHeight = 33;
-            if (dataMap.SWORDS.imgs[this.level]) {
-                swordWidth = dataMap.SWORDS.imgs[this.level].swordWidth;
-                swordHeight = dataMap.SWORDS.imgs[this.level].swordHeight;
+            if (dataMap.SWORDS.imgs[this.weaponRank]) {
+                swordWidth = dataMap.SWORDS.imgs[this.weaponRank].swordWidth;
+                swordHeight = dataMap.SWORDS.imgs[this.weaponRank].swordHeight;
             }
 
             LC.drawImage({
-                name: dataMap.SWORDS.imgs[this.level].name,
+                name: dataMap.SWORDS.imgs[this.weaponRank].name,
                 pos: [screenPosX - swordWidth / 2, screenPosY - swordHeight / 2],
                 size: [swordWidth, swordHeight],
                 rotation: this.angle + this.angleOffset,
@@ -96,8 +96,8 @@ export class Projectile {
         if (Settings.drawHitboxes) {
             if (this.type == -1) {
                 let swordWidth = 100;
-                if (dataMap.SWORDS.imgs[this.level]) {
-                    swordWidth = dataMap.SWORDS.imgs[this.level].swordWidth;
+                if (dataMap.SWORDS.imgs[this.weaponRank]) {
+                    swordWidth = dataMap.SWORDS.imgs[this.weaponRank].swordWidth;
                 }
                 LC.drawCircle({
                     pos: [screenPosX, screenPosY],

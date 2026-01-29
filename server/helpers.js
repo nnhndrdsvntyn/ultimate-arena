@@ -101,11 +101,16 @@ export class PacketWriter {
     }
 }
 
+
 export function getId(entityType) {
+    const list = ENTITIES[entityType];
     let id = 1;
-    while (ENTITIES[entityType][id]) {
+
+    // Find the smallest available ID
+    while (list[id]) {
         id++;
     }
+
     return id;
 }
 
@@ -192,10 +197,13 @@ class CommandMap {
             } else if (attrIdx === 3) { // invincible
                 player.invincible = value;
             } else if (attrIdx === 4) { // weapon rank
-                player.weapon.rank = Math.max(1, Math.min(7, Math.floor(value)));
+                const rank = Math.max(1, Math.min(7, Math.floor(value)));
+                player.inventory[player.selectedSlot] = rank;
+                player.sendInventoryUpdate();
             } else if (attrIdx === 5) { // strength
                 player.strength = Math.floor(value);
             }
+            player.sendStatsUpdate();
         }
     }
     agro(mobId, playerId, mobType, mobSpeedMult) {
@@ -213,29 +221,40 @@ class CommandMap {
             mob.alarm(player);
         }
     }
-    tpchest(playerId) {
+    tpchest(playerId, chestType = null) {
         const player = ENTITIES.PLAYERS[playerId];
         if (!player) return;
 
-        let nearestChest = null;
+        let targetChest = null;
         let minDistanceSq = Infinity;
 
         for (const objectId in ENTITIES.OBJECTS) {
             const object = ENTITIES.OBJECTS[objectId];
             if (object.type >= 1 && object.type <= 4) { // Types 1-4 are chests
+                if (chestType !== null && object.type !== chestType) continue;
+
                 const dx = object.x - player.x;
                 const dy = object.y - player.y;
                 const distSq = dx * dx + dy * dy;
                 if (distSq < minDistanceSq) {
                     minDistanceSq = distSq;
-                    nearestChest = object;
+                    targetChest = object;
                 }
             }
         }
 
-        if (nearestChest) {
-            player.x = nearestChest.x;
-            player.y = nearestChest.y;
+        if (targetChest) {
+            player.x = targetChest.x;
+            player.y = targetChest.y;
+        }
+    }
+    breakChests(dropLoot = false) {
+        for (const objectId in ENTITIES.OBJECTS) {
+            const object = ENTITIES.OBJECTS[objectId];
+            if (object.type >= 1 && object.type <= 4) { // Types 1-4 are chests
+                if (!dropLoot) object.shouldDropLoop = false;
+                object.die(null);
+            }
         }
     }
 
@@ -245,11 +264,22 @@ class CommandMap {
         const player = ENTITIES.PLAYERS[ws.id];
         if (player) {
             player.attributeBuffs[attributeMap[attributeType]] += 1;
+
+            // Apply buffs to base attributes
+            if (attributeType === 1) { // maxHp
+                player.maxHp += 10;
+                player.hp += 10;
+            } else if (attributeType === 3) { // damage
+                player.strength += 1;
+            }
+
             helperWriter.reset();
             helperWriter.writeU8(10);
             helperWriter.writeU8(attributeType);
             helperWriter.writeU8(1);
             ws.send(helperWriter.getBuffer());
+
+            player.sendStatsUpdate();
         }
     }
 }

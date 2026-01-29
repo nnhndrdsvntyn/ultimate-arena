@@ -9,7 +9,8 @@ import {
 } from '../../../server.js';
 import {
     playSfx,
-    colliding
+    colliding,
+    getId
 } from '../../helpers.js';
 import {
     Entity
@@ -23,416 +24,397 @@ export class Player extends Entity {
     constructor(id, x, y) {
         super(id, x, y, dataMap.PLAYERS.baseRadius, dataMap.PLAYERS.baseMovementSpeed, 100, 100);
 
+        // --- State Variables ---
         this.isAdmin = false;
         this.invincible = false;
         this.angle = 0;
-
-        this.hasShield = false;
         this.isAlive = true;
-
-        this.score = 10;
-        this.weapon = {
-            rank: 1
-        };
-
-        this.speed = dataMap.PLAYERS.baseMovementSpeed;
-        this.defaultSpeed = dataMap.PLAYERS.baseMovementSpeed;
-
-        this.strength = dataMap.PLAYERS.baseStrength;
-
-        this.attributeBuffs = {
-            speed: 0,
-            maxHealth: 0,
-        }
-
+        this.hasShield = false;
+        this.inWater = false;
+        this.touchingSafeZone = false;
         this.updateCount = -2;
 
-        this.lastDamagedTime = 0;
-        this.lastEntToDmg = null;
-        this.lastDiedTime = 0;
-        this.recentKiller = null;
-
-        this.lastHealedTime = 0;
-
-        this.swingState = 0;
-
-        this.touchingSafeZone = false;
-
-        this.username;
-        this.chatMessage = '';
-        this.lastChatTime = 0;
-
-        this.lastThrowSwordTime = 0;
-        this.hasWeapon = true;
-        this.throwSwordCoolDownTime = dataMap.PLAYERS.baseThrowSwordCooldown;
-
-        this.lastAttackTime = 0;
-        this.attackCooldownTime = dataMap.PLAYERS.baseAttackCooldown;
-        this.attacking = false;
-        this.keys = {
-            w: 0,
-            a: 0,
-            s: 0,
-            d: 0
+        // --- Inventory & Combat ---
+        this.inventory = [1, 0, 0];
+        this.selectedSlot = 0;
+        this.weapon = {
+            get rank() { return this.owner.inventory[this.owner.selectedSlot] & 0x7F; },
+            owner: this
         };
+        this.hasWeapon = true;
+        this.manuallyUnequippedWeapon = false;
+        this.attacking = false;
+        this.swingState = 0;
+        this.lastAttackTime = 0;
+        this.lastThrowSwordTime = 0;
 
-        this.inWater = false;
+        // --- Attributes & Buffs ---
+        this.defaultSpeed = dataMap.PLAYERS.baseMovementSpeed;
+        this.speed = this.defaultSpeed;
+        this.strength = dataMap.PLAYERS.baseStrength;
+        this.attributeBuffs = { speed: 0, maxHp: 0, damage: 0 };
 
+        // --- Timers & Cooldowns ---
+        this.lastDamagedTime = 0;
+        this.lastHealedTime = 0;
+        this.lastDiedTime = 0;
+        this.lastChatTime = 0;
         this.lastProcessTime = 0;
 
-        this.lastPickUpCoinTime = 0;
+        this.attackCooldownTime = dataMap.PLAYERS.baseAttackCooldown;
+        this.throwSwordCoolDownTime = dataMap.PLAYERS.baseThrowSwordCooldown;
+
+        // --- Social & Movement ---
+        this.username = '';
+        this.chatMessage = '';
+        this.keys = { w: 0, a: 0, s: 0, d: 0 };
 
         ENTITIES.PLAYERS[id] = this;
 
-        this.spawnProjectile = (angleOffset, shooter, thrown, groupId) => {
-            let projectileId = Math.floor(Math.random() * 100000); // Use a larger range for IDs
-            while (projectileId in ENTITIES.PROJECTILES) {
-                projectileId = Math.floor(Math.random() * 100000);
-            }
-
-            const projectileAngle = shooter.angle + angleOffset;
-            const xOffset = Math.cos(projectileAngle) * shooter.radius; // spawn outside player
-            const yOffset = Math.sin(projectileAngle) * shooter.radius; // spawn outside player
-            let projectileType;
-            if (thrown) {
-                projectileType = -1;
-            } else {
-                projectileType = 1;
-            }
-            if (dataMap.PROJECTILES[this.weapon.rank] && !thrown) {
-                projectileType = this.weapon.rank;
-            }
-
-
-            ENTITIES.newEntity({
-                entityType: 'projectile',
-                id: projectileId,
-                x: shooter.x + xOffset,
-                y: shooter.y + yOffset,
-                angle: projectileAngle,
-                type: projectileType,
-                shooter: shooter,
-                groupId: groupId
-            });
-        }
+        // Sync initial state
+        setTimeout(() => {
+            this.sendInventoryUpdate();
+            this.sendStatsUpdate();
+        }, 100);
     }
-    move() {
-        if (performance.now() - this.lastDiedTime < 1000) {
-            // stay in place for a few seconds (don't continue with other logic below)
-            return;
-        }
 
-        // for players that are dead
-        let bestScore = -Infinity;
-        let topPlayer = null;
-        for (const id in ENTITIES.PLAYERS) {
-            const player = ENTITIES.PLAYERS[id];
-            if (player.score > bestScore && player.isAlive) {
-                bestScore = player.score;
-                topPlayer = player;
-            }
-        }
+    // --- Core Logic ---
+
+    process() {
+        this.move();
+        this.resolveCollisions();
+        this.clamp();
+        this.updateEnvironment();
+        this.updateEquippedState();
+        this.updateAnimations();
+        this.heal();
+        this.attack();
+        this.updateChat();
+    }
+
+    move() {
+        const now = performance.now();
+        if (now - this.lastDiedTime < 1000) return;
 
         if (!this.isAlive) {
-            if (topPlayer) {
-                // Follow the top player smoothly
-                this.x = topPlayer.x;
-                this.y = topPlayer.y;
-            } else {
-                // If no alive players, roam randomly
-                const roamSpeed = 10; // Speed of random roaming
-                const roamChangeDirectionDelay = 7500; // milliseconds
-
-                if (performance.now() - this.lastProcessTime > roamChangeDirectionDelay) {
-                    this.lastProcessTime = performance.now();
-                    this.angle = Math.random() * Math.PI * 2; // New random angle
-                }
-
-                this.x += Math.cos(this.angle) * roamSpeed;
-                this.y += Math.sin(this.angle) * roamSpeed;
-
-                // Keep within map bounds
-                this.x = Math.max(0, Math.min(MAP_SIZE[0], this.x));
-                this.y = Math.max(0, Math.min(MAP_SIZE[1], this.y));
-            }
+            this.spectate();
             return;
         }
 
-        // for players that are alive
         this.lastX = this.x;
         this.lastY = this.y;
-        if (this.keys['w']) this.y -= this.speed;
-        if (this.keys['a']) this.x -= this.speed;
-        if (this.keys['s']) this.y += this.speed;
-        if (this.keys['d']) this.x += this.speed;
+        if (this.keys.w) this.y -= this.speed;
+        if (this.keys.a) this.x -= this.speed;
+        if (this.keys.s) this.y += this.speed;
+        if (this.keys.d) this.x += this.speed;
     }
-    heal() {
-        const now = performance.now();
-        if (now - this.lastHealedTime > 1000) {
-            this.hp = Math.min(this.hp + 5, this.maxHp);
-            this.lastHealedTime = now;
+
+    spectate() {
+        const topPlayer = Object.values(ENTITIES.PLAYERS)
+            .filter(p => p.isAlive)
+            .sort((a, b) => b.score - a.score)[0];
+
+        if (topPlayer) {
+            this.x = topPlayer.x;
+            this.y = topPlayer.y;
+        } else {
+            // Roam randomly if everyone is dead
+            if (performance.now() - this.lastProcessTime > 7500) {
+                this.lastProcessTime = performance.now();
+                this.angle = Math.random() * Math.PI * 2;
+            }
+            this.x = Math.max(0, Math.min(MAP_SIZE[0], this.x + Math.cos(this.angle) * 10));
+            this.y = Math.max(0, Math.min(MAP_SIZE[1], this.y + Math.sin(this.angle) * 10));
         }
     }
-    throwSword() {
-        const now = performance.now();
-        if (now - this.lastThrowSwordTime < this.throwSwordCoolDownTime || this.hasShield || !this.isAlive || this.swingState != 0 || this.inWater) return;
-        this.lastThrowSwordTime = now;
 
-        const sfx = dataMap.sfxMap.indexOf('throw');
-        playSfx(this.x, this.y, sfx, 1000);
+    updateEnvironment() {
+        const waterxr = [MAP_SIZE[0] * 0.47, MAP_SIZE[0] * 0.53];
+        this.inWater = this.x > waterxr[0] && this.x < waterxr[1] && !this.touchingSafeZone;
 
-        const groupId = Math.random();
-        this.spawnProjectile(0, this, true, groupId);
+        if (this.inWater) {
+            this.speed = (this.defaultSpeed + this.attributeBuffs.speed) * 0.5;
+            const dx = (MAP_SIZE[0] / 2) - this.x;
+            this.x += dx * 0.005;
+            this.y += 3;
+        } else {
+            this.speed = this.defaultSpeed + this.attributeBuffs.speed;
+        }
     }
+
+    updateEquippedState() {
+        const cooldown = performance.now() - this.lastThrowSwordTime < this.throwSwordCoolDownTime;
+        const invalidEnv = this.inWater || this.touchingSafeZone;
+        this.hasWeapon = !cooldown && !invalidEnv && !this.manuallyUnequippedWeapon && this.weapon.rank > 0;
+        this.hasShield = this.touchingSafeZone;
+    }
+
+    updateAnimations() {
+        if (this.swingState > 0) {
+            this.swingState = Math.floor(this.swingState + 1);
+            this.speed = 0;
+        }
+        if (this.swingState >= 7) {
+            this.swingState = 0;
+            this.speed = this.defaultSpeed + this.attributeBuffs.speed;
+        }
+    }
+
+    updateChat() {
+        if (this.chatMessage && performance.now() - this.lastChatTime > 10000) {
+            this.chatMessage = '';
+        }
+    }
+
+    // --- Actions ---
+
     attack() {
         const now = Date.now();
-        if (now - this.lastAttackTime < this.attackCooldownTime || !this.attacking || this.hasShield || !this.isAlive || !this.hasWeapon || this.inWater) return;
-        this.lastAttackTime = now;
-        this.swingState = 0.1;
+        const curRank = this.inventory[this.selectedSlot];
+        const canAttack = this.attacking && !this.hasShield && this.isAlive && this.hasWeapon && !this.inWater && curRank > 0 && curRank < 128;
 
-        const sfx = dataMap.sfxMap.indexOf('sword-slash');
-        playSfx(this.x, this.y, sfx, 1000);
+        if (!canAttack || now - this.lastAttackTime < this.attackCooldownTime) return;
+
+        this.lastAttackTime = now;
+        this.swingState = 1;
+        playSfx(this.x, this.y, dataMap.sfxMap.indexOf('sword-slash'), 1000);
 
         const groupId = Math.random();
-        let angleOffset = -Math.PI / 3; // Start from -60 degrees
-        while (angleOffset <= Math.PI / 3) { // Go up to 60 degrees
-            this.spawnProjectile(angleOffset, this, false, groupId);
-            angleOffset += Math.PI / 12; // Increment by 15 degrees (PI/12 radians)
+        for (let angleOffset = -Math.PI / 3; angleOffset <= Math.PI / 3; angleOffset += Math.PI / 12) {
+            this.spawnProjectile(angleOffset, false, groupId);
         }
     }
-    resolveCollisions() {
+
+    throwSword() {
+        const now = performance.now();
+        const curRank = this.inventory[this.selectedSlot];
+        const canThrow = !this.hasShield && this.isAlive && this.swingState === 0 && !this.inWater && curRank > 0 && curRank < 128;
+
+        if (!canThrow || now - this.lastThrowSwordTime < this.throwSwordCoolDownTime) return;
+
+        this.lastThrowSwordTime = now;
+        playSfx(this.x, this.y, dataMap.sfxMap.indexOf('throw'), 1000);
+
+        this.spawnProjectile(0, true, Math.random());
+
+        // Mark as ghost (thrown)
+        this.inventory[this.selectedSlot] |= 0x80;
+        this.sendInventoryUpdate();
+        this.sendStatsUpdate();
+    }
+
+    spawnProjectile(angleOffset, thrown, groupId) {
+        const projectileAngle = this.angle + angleOffset;
+        let type = thrown ? -1 : this.weapon.rank;
+        if (!dataMap.PROJECTILES[this.weapon.rank] && !thrown) type = 1;
+
+        ENTITIES.newEntity({
+            entityType: 'projectile',
+            id: getId('PROJECTILES'),
+            x: this.x + Math.cos(projectileAngle) * this.radius,
+            y: this.y + Math.sin(projectileAngle) * this.radius,
+            angle: projectileAngle,
+            type: type,
+            shooter: this,
+            groupId: groupId
+        });
+    }
+
+    dropItem() {
+        const rank = this.inventory[this.selectedSlot];
+        if (rank > 0 && rank < 128) {
+            const dropObj = spawnObject(rank + 5, this.x, this.y);
+            if (dropObj) {
+                dropObj.targetX = this.x + Math.cos(this.angle) * 100;
+                dropObj.targetY = this.y + Math.sin(this.angle) * 100;
+                dropObj.teleportTicks = 2;
+            }
+            this.inventory[this.selectedSlot] = 0;
+            this.manuallyUnequippedWeapon = false;
+            this.sendInventoryUpdate();
+            this.sendStatsUpdate();
+        }
+    }
+
+    tryPickup() {
         if (!this.isAlive) return;
 
-        for (const id in ENTITIES.PLAYERS) {
-            const player = ENTITIES.PLAYERS[id];
-            if (player.id === this.id || !player.isAlive) continue; // don't check collisions with self or dead players.
+        const emptySlot = this.inventory.indexOf(0);
+        if (emptySlot === -1) return;
 
-            // check if touching
-            if (colliding(this, player, 15)) {
-                // resolve collision
-                const angle = Math.atan2(player.y - this.y, player.x - this.x);
-                const dx = Math.cos(angle) * 3
-                const dy = Math.sin(angle) * 3
-                this.x -= dx;
-                this.y -= dy;
-                player.x += dx;
-                player.y += dy;
-            }
-        }
-
-        this.touchingSafeZone = false;
-
-        for (const id in ENTITIES.STRUCTURES) {
-            const structure = ENTITIES.STRUCTURES[id];
-            if (dataMap.STRUCTURES[structure.type].isSafeZone) {
-                if (colliding(structure, this, 15)) {
-                    this.touchingSafeZone = true;
-                    break;
-                }
-            }
-        }
-
-        for (const id in ENTITIES.MOBS) {
-            const mob = ENTITIES.MOBS[id];
-            if (colliding(mob, this, 15)) {
-                // resolve collision
-                const angle = Math.atan2(mob.y - this.y, mob.x - this.x);
-                const dx = Math.cos(angle) * 10
-                const dy = Math.sin(angle) * 10
-                this.x -= dx;
-                this.y -= dy;
-                mob.x += dx;
-                mob.y += dy;
-
-                // damage ONLY the target player
-                if (mob.isAlarmed && dataMap.MOBS[mob.type].isNeutral && mob.target && mob.target.id === this.id && !this.hasShield) {
-                    this.damage(dataMap.MOBS[mob.type].damage, mob);
-                }
-            }
-        }
-
-        // Pick up coins (still automatic)
         for (const id in ENTITIES.OBJECTS) {
-            const object = ENTITIES.OBJECTS[id];
-            if (colliding(this, object)) {
-                if (object.type === 5) {
-                    // picked up in GoldCoin.process()
-                }
+            const obj = ENTITIES.OBJECTS[id];
+            if (obj && obj.type >= 6 && obj.type <= 12 && colliding(this, obj)) {
+                this.inventory[emptySlot] = obj.type - 5;
+                ENTITIES.deleteEntity('object', obj.id);
+                playSfx(this.x, this.y, dataMap.sfxMap.indexOf('coin-collect'), 1000);
+                this.sendInventoryUpdate();
+                this.sendStatsUpdate();
+                return;
             }
         }
+    }
 
-        if (this.touchingSafeZone) {
-            this.hasShield = true;
+    returnWeapon(rank) {
+        if (!this.isAlive) return;
+
+        // Try to return to ghost slot
+        const ghostIdx = this.inventory.indexOf(rank | 0x80);
+        if (ghostIdx !== -1) {
+            this.inventory[ghostIdx] = rank;
         } else {
-            this.hasShield = false;
+            // Find any empty slot
+            const emptyIdx = this.inventory.indexOf(0);
+            if (emptyIdx !== -1) this.inventory[emptyIdx] = rank;
+            else spawnObject(rank + 5, this.x, this.y); // Floor if full
         }
+        this.sendInventoryUpdate();
+        this.sendStatsUpdate();
     }
-    tryPickup() {
-        if (!this.isAlive || !this.hasWeapon) return;
 
-        for (const id in ENTITIES.OBJECTS) {
-            const object = ENTITIES.OBJECTS[id];
-            if (!object) continue;
+    // --- Interaction ---
 
-            // Check if player is near the object (using a slightly larger radius for easier pickup)
-            if (colliding(this, object, 15)) {
-                if (object.type >= 6 && object.type <= 12) {
-                    // Pick up weapon
-                    const oldRank = this.weapon.rank;
-                    const newRank = object.type - 5;
-
-                    if (newRank !== oldRank) {
-                        // Drop current weapon
-                        if (oldRank >= 1) {
-                            const dropObj = spawnObject(oldRank + 5, this.x, this.y);
-                            if (dropObj) {
-                                dropObj.targetX = this.x + Math.cos(this.angle) * 100;
-                                dropObj.targetY = this.y + Math.sin(this.angle) * 100;
-                                dropObj.teleportTicks = 2;
-                            }
-                        }
-
-                        // Pick up new weapon
-                        this.weapon.rank = newRank;
-                        ENTITIES.deleteEntity('object', object.id);
-
-                        const sfx = dataMap.sfxMap.indexOf('coin-collect'); // play consistent pickup sound
-                        playSfx(this.x, this.y, sfx, 1000);
-                        break; // Only pick up one item per press
-                    }
-                }
-            }
-        }
-    }
-    addScore(points) {
-        this.score += points;
-
-        const maxScore = 1000000000;
-        if (this.score > maxScore) this.score = maxScore;
-    }
     damage(health, attacker) {
-        if (performance.now() - this.lastDamagedTime < 200) return false; // invincible for 10 ticks (200 / 20)
+        if (this.invincible || performance.now() - this.lastDamagedTime < 200) return false;
 
         this.lastDamagedTime = performance.now();
-        this.lastEntToDmg = attacker;
-        if (!this.invincible) {
-            this.hp -= health;
-        }
+        this.hp -= health;
+
         if (this.hp <= 0) {
-            this.die(this.lastEntToDmg);
-            const sfx = dataMap.sfxMap.indexOf('bubble-pop');
-            playSfx(this.x, this.y, sfx, 1000);
+            this.die(attacker);
+            playSfx(this.x, this.y, dataMap.sfxMap.indexOf('bubble-pop'), 1000);
         } else {
-            const sfx = dataMap.sfxMap.indexOf('hurt');
-            playSfx(this.x, this.y, sfx, 1000);
+            playSfx(this.x, this.y, dataMap.sfxMap.indexOf('hurt'), 1000);
         }
         return true;
     }
+
     die(killer) {
-        // set last died time
         this.lastDiedTime = performance.now();
-        this.recentKiller = killer;
         this.isAlive = false;
 
-        const scoreLost = Math.max(1, Math.floor(this.score * 0.3)); // lose 30%
+        const lost = Math.max(1, Math.floor(this.score * 0.3));
+        if (killer instanceof Player) killer.addScore(lost);
 
-        // give killer score if they are a player
-        if (killer instanceof Player) {
-            killer.addScore(scoreLost);
-        }
-
-        const entNumMap = [0, 'player', 'mob'];
+        // Send death notification
+        const killerTypeMap = { player: 1, mob: 2 };
+        const killerType = killerTypeMap[killer.constructor.name.toLowerCase()] || 0;
 
         wss.clients.forEach(ws => {
             if (ws.id === this.id) {
                 const pw = ws.packetWriter;
                 pw.reset();
                 pw.writeU8(6);
-                const killerType = entNumMap.indexOf(killer.constructor.name.toLowerCase());
-                pw.writeU8(killerType !== -1 ? killerType : 0);
-                pw.writeU32(killer.id);
-                ws.send(pw.getBuffer())
+                pw.writeU8(killerType);
+                if (killerType === 1) pw.writeU8(killer.id);
+                else pw.writeU16(killer.id);
+                ws.send(pw.getBuffer());
             }
         });
 
-        // Drop weapon on death
-        if (this.weapon.rank > 1) {
-            const dropObj = spawnObject(this.weapon.rank + 5, this.x, this.y);
-            const randomAngle = Math.random() * Math.PI * 2;
-            if (dropObj) {
-                dropObj.targetX = this.x + Math.cos(randomAngle) * 100;
-                dropObj.targetY = this.y + Math.sin(randomAngle) * 100;
-                dropObj.teleportTicks = 5;
-            }
-            this.weapon.rank = 1; // reset to default
-        }
-
+        // Reset state
+        this.inventory = [1, 0, 0];
+        this.selectedSlot = 0;
         this.hp = 100;
         this.maxHp = 100;
-
-        this.attributeBuffs = {
-            speed: 0,
-            damage: 0,
-        };
-
-        this.score = Math.max(0, this.score - scoreLost); // lose score
+        this.score = Math.max(0, this.score - lost);
+        this.attributeBuffs = { speed: 0, maxHp: 0, damage: 0 };
         this.attacking = false;
-        this.keys = {
-            w: 0,
-            a: 0,
-            s: 0,
-            d: 0
-        };
+        this.keys = { w: 0, a: 0, s: 0, d: 0 };
+
+        this.sendInventoryUpdate();
     }
-    process() {
-        this.move();
-        this.resolveCollisions();
-        this.clamp();
 
-        // check if inside center vertical river
-        const waterxr = [MAP_SIZE[0] * 0.47, MAP_SIZE[0] * 0.53];
-        const wateryr = [0, MAP_SIZE[1]];
-        this.inWater = this.x > waterxr[0] && this.x < waterxr[1] && this.y > wateryr[0] && this.y < wateryr[1] && !this.touchingSafeZone;
+    heal() {
+        if (performance.now() - this.lastHealedTime > 1000) {
+            this.hp = Math.min(this.hp + 5, this.maxHp);
+            this.lastHealedTime = performance.now();
+        }
+    }
 
-        if (this.inWater) {
-            this.speed = (this.defaultSpeed + this.attributeBuffs.speed) * 0.5;
-            const streamCenter = MAP_SIZE[0] / 2;
-            const dx = streamCenter - this.x;
-            this.x += dx * 0.005;
-            this.y += 3;
-        } else {
-            this.speed = this.defaultSpeed + this.attributeBuffs.speed;
+    addScore(points) {
+        this.score = Math.min(1000000000, this.score + points);
+    }
+
+    resolveCollisions() {
+        if (!this.isAlive) return;
+
+        // Player vs Player
+        for (const id in ENTITIES.PLAYERS) {
+            const p = ENTITIES.PLAYERS[id];
+            if (p.id !== this.id && p.isAlive && colliding(this, p, 15)) {
+                const ang = Math.atan2(p.y - this.y, p.x - this.x);
+                const dx = Math.cos(ang) * 3, dy = Math.sin(ang) * 3;
+                this.x -= dx; this.y -= dy;
+                p.x += dx; p.y += dy;
+            }
         }
 
-        // update weapon availability BEFORE attack
-        if (performance.now() - this.lastThrowSwordTime < this.throwSwordCoolDownTime || this.inWater || this.touchingSafeZone) {
-            this.hasWeapon = false;
-        } else {
-            this.hasWeapon = true;
-        }
+        // Safe Zones
+        this.touchingSafeZone = Object.values(ENTITIES.STRUCTURES).some(s =>
+            dataMap.STRUCTURES[s.type].isSafeZone && colliding(s, this, 15)
+        );
 
-        // update shield availability
-        if (this.touchingSafeZone) {
-            this.hasShield = true;
-        } else {
-            this.hasShield = false;
-        }
+        // Player vs Mobs
+        for (const id in ENTITIES.MOBS) {
+            const m = ENTITIES.MOBS[id];
+            if (colliding(m, this, 15)) {
+                const ang = Math.atan2(m.y - this.y, m.x - this.x);
+                const dx = Math.cos(ang) * 10, dy = Math.sin(ang) * 10;
+                this.x -= dx; this.y -= dy;
+                m.x += dx; m.y += dy;
 
-        this.heal();
-        this.attack();
-
-        if (this.chatMessage && performance.now() - this.lastChatTime > 10000) {
-            this.chatMessage = '';
+                if (m.isAlarmed && dataMap.MOBS[m.type].isNeutral && m.target?.id === this.id && !this.hasShield) {
+                    this.damage(dataMap.MOBS[m.type].damage, m);
+                }
+            }
         }
+    }
 
-        if (this.swingState > 0) {
-            this.swingState += 1;
-            this.speed = 0;
-            this.swingState = Math.floor(this.swingState);
+    // --- Networking ---
+
+    sendStatsUpdate() {
+        const ws = Array.from(wss.clients).find(c => c.id === this.id);
+        if (!ws) return;
+
+        const weaponRank = this.weapon.rank || 1;
+        const projDmg = dataMap.PROJECTILES[weaponRank]?.damage || 0;
+        const dmgHit = Math.round((this.strength + projDmg) * 1.15);
+
+        ws.packetWriter.reset();
+        ws.packetWriter.writeU8(18);
+        ws.packetWriter.writeU16(dmgHit);
+        ws.packetWriter.writeU16(dmgHit * 2); // dmgThrow
+        ws.packetWriter.writeU16(Math.round(this.speed));
+        ws.packetWriter.writeU16(Math.floor(this.hp));
+        ws.packetWriter.writeU16(Math.floor(this.maxHp));
+        ws.send(ws.packetWriter.getBuffer());
+    }
+
+    sendInventoryUpdate() {
+        const ws = Array.from(wss.clients).find(c => c.id === this.id);
+        if (!ws) return;
+
+        ws.packetWriter.reset();
+        ws.packetWriter.writeU8(15);
+        ws.packetWriter.writeU8(this.selectedSlot);
+        this.inventory.forEach(rank => ws.packetWriter.writeU8(rank));
+        ws.send(ws.packetWriter.getBuffer());
+    }
+
+    selectSlot(index) {
+        if (index >= 0 && index < 3) {
+            this.selectedSlot = index;
+            this.sendInventoryUpdate();
+            this.sendStatsUpdate();
         }
-        if (this.swingState === 7) {
-            this.swingState = 0;
-            this.speed = this.defaultSpeed + this.attributeBuffs.speed;
+    }
+
+    swapSlots(idx1, idx2) {
+        if (idx1 >= 0 && idx1 < 3 && idx2 >= 0 && idx2 < 3 && idx1 !== idx2) {
+            [this.inventory[idx1], this.inventory[idx2]] = [this.inventory[idx2], this.inventory[idx1]];
+            this.sendInventoryUpdate();
+            this.sendStatsUpdate();
         }
     }
 }

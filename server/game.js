@@ -38,7 +38,8 @@ import {
     wss
 } from '../server.js';
 import {
-    PacketWriter
+    PacketWriter,
+    getId
 } from './helpers.js';
 const initWriter = new PacketWriter(1024 * 512);
 import {
@@ -134,6 +135,10 @@ export const ENTITIES = {
             ENTITIES.playerIds["delete"](id)
         }
         if (type === 'projectile') {
+            const proj = ENTITIES.PROJECTILES[id];
+            if (proj && proj.type === -1 && proj.shooter) {
+                proj.shooter.returnWeapon(proj.weaponRank);
+            }
             type = 2;
             delete ENTITIES.PROJECTILES[id]
         }
@@ -176,7 +181,7 @@ for (let i = 0; i < 100; i++) {
             validPosition = true
         }
     }
-    new Rock(i + 2, x, y)
+    new Rock(getId('STRUCTURES'), x, y)
 }
 // bush structures (make sure to not spawn within spawnzoneradius + 100 distance from a spawn zone AND rock)
 for (let i = 101; i < 201; i++) {
@@ -198,7 +203,7 @@ for (let i = 101; i < 201; i++) {
             validPosition = true
         }
     }
-    new Bush(i + 3, x, y)
+    new Bush(getId('STRUCTURES'), x, y)
 }
 export function buildInitPacket(wsId) {
     // console.log("Building init packet for", wsId);
@@ -208,7 +213,7 @@ export function buildInitPacket(wsId) {
     const players = Object.values(ENTITIES.PLAYERS);
     initWriter.writeU8(players.length);
     for (const player of players) {
-        initWriter.writeU32(player.id);
+        initWriter.writeU8(player.id);
         initWriter.writeU16(player.x);
         initWriter.writeU16(player.y);
         initWriter.writeF32(player.angle);
@@ -217,7 +222,7 @@ export function buildInitPacket(wsId) {
     const mobs = Object.values(ENTITIES.MOBS);
     initWriter.writeU16(mobs.length);
     for (const mob of mobs) {
-        initWriter.writeU32(mob.id);
+        initWriter.writeU16(mob.id);
         initWriter.writeU16(mob.x);
         initWriter.writeU16(mob.y);
         initWriter.writeF32(mob.angle);
@@ -226,7 +231,7 @@ export function buildInitPacket(wsId) {
     const structures = Object.values(ENTITIES.STRUCTURES);
     initWriter.writeU16(structures.length);
     for (const structure of structures) {
-        initWriter.writeU32(structure.id);
+        initWriter.writeU16(structure.id);
         initWriter.writeU16(structure.x);
         initWriter.writeU16(structure.y);
         initWriter.writeU8(structure.type);
@@ -237,20 +242,20 @@ export const deadMobs = {};
 
 // spawn some mobs in random positions!
 setTimeout(() => {
-    const spawn = (start, end, Class, xMax, yMax) => {
-        for (let i = start; i <= end; i++) {
+    const spawn = (count, Class, xMax, yMax) => {
+        for (let i = 0; i < count; i++) {
             new Class(
-                i,
+                getId('MOBS'),
                 Math.floor(Math.random() * xMax),
                 Math.floor(Math.random() * yMax)
             );
         }
     };
 
-    spawn(1, 50, Chick, 4700, 1e4);
-    spawn(51, 101, Cow, 4700, 1e4);
-    spawn(102, 152, Pig, 4700, 1e4);
-    spawn(153, 176, Hearty, 1e4, 1e4);
+    spawn(50, Chick, 4700, 1e4);
+    spawn(50, Cow, 4700, 1e4);
+    spawn(50, Pig, 4700, 1e4);
+    spawn(25, Hearty, 1e4, 1e4);
 }, 100);
 
 
@@ -297,11 +302,8 @@ export function spawnObject(type, x, y) {
         }
     }
 
-    // Generate a unique ID (within 32-bit range)
-    let id = Math.floor(Math.random() * 4_000_000_000)
-    while (ENTITIES.OBJECTS[id]) {
-        id = Math.floor(Math.random() * 4_000_000_000);
-    }
+    // Generate a unique ID (within 16-bit range)
+    let id = getId('OBJECTS');
 
     ENTITIES.newEntity({
         entityType: 'object',
