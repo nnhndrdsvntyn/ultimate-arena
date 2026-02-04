@@ -170,7 +170,7 @@ function drawLoadingScreen() {
 }
 
 // --- WebSocket Setup ---
-export const ws = new WebSocket(`ws://${location.host}`);
+export const ws = new WebSocket(`wss://${location.host}`);
 ws.binaryType = 'arraybuffer';
 window.ws = ws;
 
