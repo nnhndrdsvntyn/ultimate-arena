@@ -173,7 +173,8 @@ export class LibCanvas {
         font = '16px Arial',
         color = 'black',
         textAlign = 'left',
-        textBaseline = 'alphabetic'
+        textBaseline = 'alphabetic',
+        transparency = 1
     } = {}) {
         if (typeof text !== 'string') {
             throw new Error('text must be a string for drawText');
@@ -187,6 +188,9 @@ export class LibCanvas {
         if (typeof color !== 'string') {
             throw new Error('color must be a string for drawText');
         }
+        if (typeof transparency !== 'number' || transparency < 0 || transparency > 1) {
+            throw new Error('transparency must be a number between 0 and 1 for drawText');
+        }
 
         const [x, y] = pos;
         this.ctx.save();
@@ -194,6 +198,7 @@ export class LibCanvas {
         this.ctx.font = font;
         this.ctx.textAlign = textAlign;
         this.ctx.textBaseline = textBaseline;
+        this.ctx.globalAlpha = transparency;
         this.ctx.fillText(text, x, y);
         this.ctx.restore();
     }

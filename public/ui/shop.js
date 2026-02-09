@@ -1,6 +1,6 @@
 import { Vars } from '../client.js';
 import { sendBuyPacket, sendSellAllPacket } from '../helpers.js';
-import { dataMap, isSellableItem } from '../shared/datamap.js';
+import { dataMap, isSellableItem, ACCESSORY_KEYS, ACCESSORY_DESCRIPTIONS, accessoryItemTypeFromId } from '../shared/datamap.js';
 import { createEl, makeDraggable } from './dom.js';
 import { uiRefs, uiState } from './context.js';
 import { resetInputs } from './input.js';
@@ -248,6 +248,9 @@ function renderSellTab() {
 }
 
 function renderShopTab() {
+    const weaponTitle = createEl('div', {}, uiRefs.shopBody, { className: 'shop-section-title', textContent: 'Weapons' });
+    weaponTitle.classList.add('no-select');
+
     const grid = createEl('div', {}, uiRefs.shopBody, { className: 'shop-grid' });
 
     dataMap.SHOP_ITEMS.forEach(itemConfig => {
@@ -279,4 +282,53 @@ function renderShopTab() {
             if (canAfford) sendBuyPacket(itemConfig.id);
         };
     });
+
+    const accessoryTitle = createEl('div', {}, uiRefs.shopBody, { className: 'shop-section-title', textContent: 'Accessories' });
+    accessoryTitle.classList.add('no-select');
+
+    const accessoryGrid = createEl('div', {}, uiRefs.shopBody, { className: 'shop-grid' });
+    const accessoryPrice = dataMap.ACCESSORY_PRICE || 30;
+
+    ACCESSORY_KEYS.filter(key => key !== 'none').forEach((key) => {
+        const accessory = dataMap.ACCESSORIES[key];
+        if (!accessory) return;
+
+        const item = createEl('div', {}, accessoryGrid, { className: 'shop-item' });
+
+        createEl('img', {}, item, {
+            className: 'shop-item-icon',
+            src: accessory.src
+        });
+
+        createEl('div', {}, item, { className: 'shop-item-name', textContent: formatAccessoryName(key) });
+
+        const info = createEl('div', {}, item, { className: 'shop-item-info' });
+        createEl('span', {}, info, { className: 'shop-item-info-icon', textContent: 'i' });
+        createEl('div', {}, info, {
+            className: 'shop-item-info-tip',
+            textContent: ACCESSORY_DESCRIPTIONS[key] || 'Coming Soon'
+        });
+
+        const priceContainer = createEl('div', {}, item, { className: 'shop-item-price' });
+        createEl('img', {}, priceContainer, {
+            className: 'shop-price-icon',
+            src: './images/objects/gold-coin.png'
+        });
+        createEl('span', {}, priceContainer, { textContent: accessoryPrice.toLocaleString() });
+
+        const canAfford = (Vars.myStats.goldCoins || 0) >= accessoryPrice;
+        const buyBtn = createEl('button', {}, item, {
+            className: `buy-button ${!canAfford ? 'disabled' : ''}`,
+            textContent: canAfford ? 'Buy' : 'Too Poor',
+            disabled: !canAfford
+        });
+
+        buyBtn.onclick = () => {
+            if (canAfford) sendBuyPacket(accessoryItemTypeFromId(ACCESSORY_KEYS.indexOf(key)));
+        };
+    });
+}
+
+function formatAccessoryName(key) {
+    return key.split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
 }

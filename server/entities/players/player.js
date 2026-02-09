@@ -3,7 +3,13 @@ import {
 } from '../../game.js';
 import {
     dataMap,
-    isSwordRank
+    isSwordRank,
+    isAccessoryItemType,
+    accessoryIdFromItemType,
+    accessoryItemTypeFromId,
+    isAccessoryId,
+    ACCESSORY_KEYS,
+    DEFAULT_VIEW_RANGE_MULT
 } from '../../../public/shared/datamap.js';
 import {
     wss
@@ -11,7 +17,8 @@ import {
 import {
     playSfx,
     colliding,
-    getId
+    getId,
+    poison
 } from '../../helpers.js';
 import {
     Entity
@@ -33,9 +40,14 @@ export class Player extends Entity {
         this.hasShield = false;
         this.inWater = false;
         this.isHidden = false;
+        this.isInvisible = false;
         this.touchingSafeZone = false;
         this.updateCount = -2;
-        this.viewRangeMult = 1;
+        this.accessoryId = 0;
+        this.equippedAccessoryItemType = 0;
+        this.baseViewRangeMult = DEFAULT_VIEW_RANGE_MULT;
+        this.viewRangeMult = DEFAULT_VIEW_RANGE_MULT;
+        this.viewRangeOverride = null;
 
         // --- Inventory & Combat ---
         this.inventory = new Array(35).fill(0);
@@ -61,9 +73,12 @@ export class Player extends Entity {
         this.score = 0;
         this.goldCoins = 0;
         this.attributeBuffs = { speed: 0, maxHp: 0, damage: 0 };
+        this.lastStatsSpeed = Math.round(this.speed);
+        this.vikingHitCount = 0;
 
         // --- Timers & Cooldowns ---
         this.lastDamagedTime = 0;
+        this.lastDamager = null;
         this.lastHealedTime = 0;
         this.lastDiedTime = 0;
         this.lastChatTime = 0;
@@ -96,7 +111,9 @@ export class Player extends Entity {
         this.clamp();
         this.updateEnvironment();
         this.updateEquippedState();
+        this.applyAccessoryEffects();
         this.updateAnimations();
+        this.syncSpeedStat();
         this.heal();
         this.attack();
         this.updateChat();
@@ -120,10 +137,21 @@ export class Player extends Entity {
 
         this.lastX = this.x;
         this.lastY = this.y;
-        if (this.keys.w) this.y -= this.speed;
-        if (this.keys.a) this.x -= this.speed;
-        if (this.keys.s) this.y += this.speed;
-        if (this.keys.d) this.x += this.speed;
+        let dx = 0;
+        let dy = 0;
+        if (this.keys.w) dy -= 1;
+        if (this.keys.s) dy += 1;
+        if (this.keys.a) dx -= 1;
+        if (this.keys.d) dx += 1;
+
+        if (dx !== 0 || dy !== 0) {
+            const invLen = 1 / Math.sqrt((dx * dx) + (dy * dy));
+            const diagonalBoost = (dx !== 0 && dy !== 0) ? 1.1 : 1;
+            dx *= invLen * this.speed * diagonalBoost;
+            dy *= invLen * this.speed * diagonalBoost;
+            this.x += dx;
+            this.y += dy;
+        }
     }
 
     spectate() {
@@ -175,6 +203,21 @@ export class Player extends Entity {
         this.hasShield = this.touchingSafeZone;
     }
 
+    applyAccessoryEffects() {
+        const accessoryKey = ACCESSORY_KEYS[this.accessoryId];
+        const accessoryMult = dataMap.ACCESSORIES[accessoryKey]?.viewRangeMult || 1;
+        const base = (typeof this.viewRangeOverride === 'number')
+            ? this.viewRangeOverride
+            : this.baseViewRangeMult;
+        this.viewRangeMult = Math.max(0.1, base * accessoryMult);
+        const swingMult = accessoryKey === 'pirate-hat' ? 0.7 : 1;
+        this.attackCooldownTime = Math.max(100, dataMap.PLAYERS.baseAttackCooldown * swingMult);
+        if (accessoryKey !== 'viking-hat' && this.vikingHitCount !== 0) {
+            this.vikingHitCount = 0;
+            this.sendStatsUpdate();
+        }
+    }
+
     updateAnimations() {
         if (this.swingState > 0) {
             this.swingState = Math.floor(this.swingState + 1);
@@ -189,6 +232,14 @@ export class Player extends Entity {
     updateChat() {
         if (this.chatMessage && performance.now() - this.lastChatTime > 10000) {
             this.chatMessage = '';
+        }
+    }
+
+    syncSpeedStat() {
+        const currentSpeed = Math.round(this.speed);
+        if (currentSpeed !== this.lastStatsSpeed) {
+            this.lastStatsSpeed = currentSpeed;
+            this.sendStatsUpdate();
         }
     }
 
@@ -262,7 +313,11 @@ export class Player extends Entity {
             if (obj && obj.type === 9 && colliding(this, obj)) {
                 // Ensure 1s delay since spawn (prevents instant re-pickup on drop)
                 if (now - (obj.spawnTime || 0) > 1000) {
-                    this.addGoldCoins(obj.amount || 1);
+                    const amount = obj.amount || 1;
+                    this.addGoldCoins(amount);
+                    if (obj.source === 'chest') {
+                        this.addScore(amount * 10);
+                    }
                     ENTITIES.deleteEntity('object', obj.id);
                 }
             }
@@ -270,22 +325,32 @@ export class Player extends Entity {
     }
 
     dropItem() {
-        const rank = this.inventory[this.selectedSlot];
-        const count = this.inventoryCounts[this.selectedSlot];
-        const baseRank = rank & 0x7F;
-        if (rank < 128 && isSwordRank(baseRank)) {
-            const dropObj = spawnObject(rank, this.x, this.y, count);
-            if (dropObj) {
-                dropObj.targetX = this.x + Math.cos(this.angle) * 100;
-                dropObj.targetY = this.y + Math.sin(this.angle) * 100;
-                dropObj.teleportTicks = 2;
-            }
-            this.inventory[this.selectedSlot] = 0;
-            this.inventoryCounts[this.selectedSlot] = 0;
-            this.manuallyUnequippedWeapon = false;
-            this.sendInventoryUpdate();
-            this.sendStatsUpdate();
+        this.dropItemFromSlot(this.selectedSlot);
+    }
+
+    dropItemFromSlot(slot) {
+        if (slot < 0 || slot >= this.inventory.length) return;
+        const rank = this.inventory[slot];
+        const count = this.inventoryCounts[slot];
+        if (rank <= 0 || count <= 0) return;
+
+        const baseType = rank & 0x7F;
+        if (isAccessoryItemType(baseType)) return;
+
+        const dropObj = spawnObject(baseType, this.x, this.y, count, baseType === 9 ? 'player' : null);
+        if (dropObj) {
+            dropObj.targetX = this.x + Math.cos(this.angle) * 100;
+            dropObj.targetY = this.y + Math.sin(this.angle) * 100;
+            dropObj.teleportTicks = 2;
         }
+
+        this.inventory[slot] = 0;
+        this.inventoryCounts[slot] = 0;
+        if (slot === this.selectedSlot) {
+            this.manuallyUnequippedWeapon = false;
+        }
+        this.sendInventoryUpdate();
+        this.sendStatsUpdate();
     }
 
     tryPickup() {
@@ -306,7 +371,7 @@ export class Player extends Entity {
                 const stackable = dataMap.OBJECTS[obj.type]?.stackable;
 
                 if (stackable) {
-                    // For coins, we use the addGoldCoins logic which handles the 64 limit and multiple slots
+                    // For coins, we use the addGoldCoins logic which handles the 256 limit and multiple slots
                     if (obj.type === 9) {
                         const amount = obj.amount || 1;
                         this.addGoldCoins(amount);
@@ -382,6 +447,23 @@ export class Player extends Entity {
         }
     }
 
+    buyAccessory(accessoryId) {
+        if (!this.isAlive || !isAccessoryId(accessoryId) || accessoryId === 0) return;
+
+        const cost = dataMap.ACCESSORY_PRICE || 30;
+        if (this.getTotalCoins() < cost) return;
+
+        const emptySlot = this.inventory.indexOf(0);
+        if (emptySlot === -1) return;
+
+        this.deductCoins(cost);
+        this.inventory[emptySlot] = accessoryItemTypeFromId(accessoryId);
+        this.inventoryCounts[emptySlot] = 1;
+        playSfx(this.x, this.y, dataMap.sfxMap.indexOf('coin-collect'), 1000);
+        this.sendInventoryUpdate();
+        this.sendStatsUpdate();
+    }
+
     sellItems(slotIndices) {
         if (!this.isAlive || !Array.isArray(slotIndices) || slotIndices.length === 0) return;
 
@@ -443,7 +525,7 @@ export class Player extends Entity {
         // If still remaining (inventory full), drop on floor in clusters of 256
         while (remaining > 0) {
             const toDrop = Math.min(256, remaining);
-            const dropObj = spawnObject(9, this.x, this.y, toDrop);
+            const dropObj = spawnObject(9, this.x, this.y, toDrop, 'player');
             if (dropObj) {
                 dropObj.targetX = this.x + (Math.random() - 0.5) * 100;
                 dropObj.targetY = this.y + (Math.random() - 0.5) * 100;
@@ -491,9 +573,13 @@ export class Player extends Entity {
 
         this.lastDamagedTime = performance.now();
         this.hp -= health;
+        if (attacker && attacker instanceof Player && !attacker?.noKillCredit) {
+            this.lastDamager = attacker;
+        }
 
         if (this.hp <= 0) {
-            this.die(attacker);
+            const killer = attacker?.noKillCredit ? this.lastDamager : attacker;
+            this.die(killer || null);
             playSfx(this.x, this.y, dataMap.sfxMap.indexOf('bubble-pop'), 1000);
         } else {
             playSfx(this.x, this.y, dataMap.sfxMap.indexOf('hurt'), 1000);
@@ -541,8 +627,8 @@ export class Player extends Entity {
         for (let i = 0; i < 35; i++) {
             const type = this.inventory[i] & 0x7F; // Handle thrown rank bit
             const count = this.inventoryCounts[i];
-            if (type > 1) { // Drop everything except default blade (rank 1)
-                spawnObject(type, this.x, this.y, count);
+            if (type > 1 && !isAccessoryItemType(type)) { // Drop everything except default blade (rank 1) and accessories
+                spawnObject(type, this.x, this.y, count, type === 9 ? 'player' : null);
             }
         }
 
@@ -557,6 +643,7 @@ export class Player extends Entity {
         this.attributeBuffs = { speed: 0, maxHp: 0, damage: 0 };
         this.attacking = false;
         this.keys = { w: 0, a: 0, s: 0, d: 0 };
+        this.lastDamager = null;
 
         this.sendInventoryUpdate();
     }
@@ -595,11 +682,13 @@ export class Player extends Entity {
         for (const id in ENTITIES.MOBS) {
             const m = ENTITIES.MOBS[id];
 
-            if (m.type === 5 && !m.isAlarmed && !this.hasShield && !this.invincible && !this.isHidden) {
+            if (m.type === 5 && !m.isAlarmed && !this.hasShield && !this.invincible && !this.isHidden && !this.isInvisible) {
                 const dx = m.x - this.x;
                 const dy = m.y - this.y;
-                if (dx * dx + dy * dy < 300 * 300 && m.x > MAP_SIZE[0] * 0.47 && this.x > MAP_SIZE[0] * 0.47) {
-                    m.alarm(this);
+                const cloakMult = ACCESSORY_KEYS[this.accessoryId] === 'dark-cloak' ? 0.5 : 1;
+                const detectRange = 400 * cloakMult;
+                if (dx * dx + dy * dy < detectRange * detectRange && m.x > MAP_SIZE[0] * 0.47 && this.x > MAP_SIZE[0] * 0.47) {
+                    m.alarm(this, 'proximity');
                 }
             }
 
@@ -611,8 +700,13 @@ export class Player extends Entity {
                 this.x -= dx; this.y -= dy;
                 m.x += dx; m.y += dy;
 
-                if (m.isAlarmed && dataMap.MOBS[m.type].isNeutral && m.target?.id === this.id && !this.hasShield) {
-                    this.damage(dataMap.MOBS[m.type].damage, m);
+                const mHealthRatio = m.maxHp ? (m.hp / m.maxHp) : 1;
+
+                if (m.isAlarmed && dataMap.MOBS[m.type].isNeutral && m.target?.id === this.id && !this.hasShield && !this.isHidden && !this.isInvisible && mHealthRatio >= 0.6) {
+                    const tookDamage = this.damage(dataMap.MOBS[m.type].damage, m);
+                    if (tookDamage && ACCESSORY_KEYS[this.accessoryId] === 'bush-cloak') {
+                        poison(m, 5, 750, 2000);
+                    }
                 }
             }
         }
@@ -632,12 +726,13 @@ export class Player extends Entity {
         ws.packetWriter.reset();
         ws.packetWriter.writeU8(18);
         ws.packetWriter.writeU16(dmgHit);
-        ws.packetWriter.writeU16(dmgHit * 2); // dmgThrow
+        ws.packetWriter.writeU16(Math.round(dmgHit / 1.5)); // dmgThrow (1.5x weaker than hit)
         ws.packetWriter.writeU16(Math.round(this.speed));
         ws.packetWriter.writeU16(Math.floor(this.hp));
         ws.packetWriter.writeU16(Math.floor(this.maxHp));
         ws.packetWriter.writeU32(this.getTotalCoins());
         ws.packetWriter.writeU8(inCombat ? 1 : 0);
+        ws.packetWriter.writeU8(this.vikingHitCount || 0);
         ws.send(ws.packetWriter.getBuffer());
     }
 
@@ -670,5 +765,45 @@ export class Player extends Entity {
             this.sendInventoryUpdate();
             this.sendStatsUpdate();
         }
+    }
+
+    equipAccessoryFromItemType(itemType, fromSlot = -1) {
+        if (!isAccessoryItemType(itemType)) return;
+        const accessoryId = accessoryIdFromItemType(itemType);
+        if (!isAccessoryId(accessoryId)) return;
+
+        if (fromSlot < 0 || fromSlot >= this.inventory.length) return;
+        if (this.inventory[fromSlot] !== itemType || this.inventoryCounts[fromSlot] <= 0) return;
+
+        if (this.equippedAccessoryItemType) {
+            const emptySlot = this.inventory.indexOf(0);
+            if (emptySlot === -1) return;
+            this.inventory[emptySlot] = this.equippedAccessoryItemType;
+            this.inventoryCounts[emptySlot] = 1;
+        }
+
+        this.inventory[fromSlot] = 0;
+        this.inventoryCounts[fromSlot] = 0;
+        this.accessoryId = accessoryId;
+        this.equippedAccessoryItemType = itemType;
+        this.sendInventoryUpdate();
+        this.sendStatsUpdate();
+    }
+
+    unequipAccessory() {
+        if (!this.equippedAccessoryItemType) {
+            this.accessoryId = 0;
+            return;
+        }
+
+        const emptySlot = this.inventory.indexOf(0);
+        if (emptySlot === -1) return;
+
+        this.inventory[emptySlot] = this.equippedAccessoryItemType;
+        this.inventoryCounts[emptySlot] = 1;
+        this.equippedAccessoryItemType = 0;
+        this.accessoryId = 0;
+        this.sendInventoryUpdate();
+        this.sendStatsUpdate();
     }
 }

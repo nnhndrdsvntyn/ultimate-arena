@@ -16,9 +16,10 @@ import {
 } from '../../../public/shared/datamap.js';
 
 export class GoldCoin extends GameObject {
-    constructor(id, x, y, type, amount = 1) {
+    constructor(id, x, y, type, amount = 1, source = null) {
         super(id, x, y, type);
         this.amount = amount;
+        this.source = source;
         this.spawnTime = performance.now();
     }
 
@@ -28,10 +29,12 @@ export class GoldCoin extends GameObject {
     }
 
     die(killer) {
-        super.die(killer);
-
         if (killer && typeof killer.addGoldCoins === 'function') {
-            killer.addGoldCoins(this.amount || 1);
+            const amount = this.amount || 1;
+            killer.addGoldCoins(amount);
+            if (this.source === 'chest' && typeof killer.addScore === 'function') {
+                killer.addScore(amount * 10);
+            }
             killer.sendStatsUpdate();
         }
 
@@ -40,5 +43,7 @@ export class GoldCoin extends GameObject {
             const sfx = dataMap.sfxMap.indexOf('coin-collect');
             playSfx(this.x, this.y, sfx, this.radius + killer.radius);
         }
+
+        ENTITIES.deleteEntity('object', this.id);
     }
 }

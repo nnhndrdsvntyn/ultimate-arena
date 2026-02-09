@@ -7,6 +7,8 @@ export const uiState = {
     activeShopTab: 'Buy',
     itemsInSellQueue: [],
     tempAdminKey: '',
+    resetConfirmUntil: 0,
+    forceHomeScreen: false,
     lastInvToggleTime: 0,
     lastChatCloseTime: 0
 };
@@ -26,7 +28,8 @@ export const uiRefs = {
     shopOverlay: null,
     inventoryModal: null,
     inventoryOverlay: null,
-    combatText: null
+    combatText: null,
+    comboText: null
 };
 
 export const uiInput = {

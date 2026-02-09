@@ -4,8 +4,9 @@ import { WebSocketServer } from 'ws';
 import { parsePacket } from './server/parser.js';
 import { getId, PacketWriter } from './server/helpers.js';
 import { ENTITIES, MAP_SIZE } from './server/game.js';
+import { dataMap } from './public/shared/datamap.js';
 import { TPS } from './public/shared/datamap.js';
-import { sendUpdates, saveHistory } from './server/network.js';
+import { sendUpdates, saveHistory, sendPlayerCount } from './server/network.js';
 import { updateGame } from './server/loop.js';
 
 const app = express();
@@ -91,14 +92,29 @@ wss.on('connection', (ws, req) => {
         if (count <= 1) ipTracker.delete(ws.ip);
         else ipTracker.set(ws.ip, count - 1);
         ENTITIES.deleteEntity('player', ws.id);
+        for (const id in ENTITIES.MOBS) {
+            const mob = ENTITIES.MOBS[id];
+            if (mob?.target?.id === ws.id) {
+                mob.isAlarmed = false;
+                mob.target = null;
+                mob.alarmReason = null;
+                mob.lastHitById = null;
+                mob.speed = dataMap.MOBS[mob.type].speed;
+            }
+        }
     });
 });
 
 // --- Master Loop ---
 const lbWriter = new PacketWriter();
+const countWriter = new PacketWriter(16);
 
 setInterval(() => {
     updateGame();
     sendUpdates(wss, lbWriter);
     saveHistory();
 }, 1000 / TPS.server);
+
+setInterval(() => {
+    sendPlayerCount(wss, countWriter);
+}, 1000);

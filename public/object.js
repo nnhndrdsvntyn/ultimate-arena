@@ -75,7 +75,7 @@ export class GameObject {
         if (this.health !== undefined && this.maxHealth !== undefined) {
             const barWidth = this.radius * 2;
             const barHeight = 5;
-            const healthPercentage = this.health / this.maxHealth;
+            const healthPercentage = Math.min(1, this.health / this.maxHealth);
 
             // Background of the health bar
             LC.drawRect({

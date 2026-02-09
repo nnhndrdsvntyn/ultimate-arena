@@ -1,8 +1,8 @@
 import { ENTITIES } from '../game.js';
 import { ws, Vars, LC } from '../client.js';
-import { writer, sendPickupCommand } from '../helpers.js';
-import { isMobile, HOTBAR_CONFIG, INVENTORY_CONFIG, THROW_BTN_CONFIG, PICKUP_BTN_CONFIG, DROP_BTN_CONFIG, ATTACK_BTN_CONFIG } from './config.js';
-import { isSwordRank, isSellableItem } from '../shared/datamap.js';
+import { writer, sendPickupCommand, sendEquipAccessoryPacket } from '../helpers.js';
+import { isMobile, HOTBAR_CONFIG, INVENTORY_CONFIG, ACCESSORY_SLOT_CONFIG, THROW_BTN_CONFIG, PICKUP_BTN_CONFIG, DROP_BTN_CONFIG, ATTACK_BTN_CONFIG } from './config.js';
+import { isSwordRank, isSellableItem, isAccessoryItemType, accessoryIdFromItemType } from '../shared/datamap.js';
 import { uiInput, uiRefs, uiRotation, uiState } from './context.js';
 import { createEl } from './dom.js';
 import { updateShopBody, toggleShopModal } from './shop.js';
@@ -183,6 +183,12 @@ function sendDropPacket() {
     ws.send(writer.getBuffer());
 }
 
+function sendDropSlotPacket(slot) {
+    writer.reset();
+    writer.writeU8(22); // Drop specific slot
+    writer.writeU8(slot);
+    ws.send(writer.getBuffer());
+}
 function sendSelectSlotPacket(slot) {
     writer.reset();
     writer.writeU8(16);
@@ -247,6 +253,16 @@ export function handleHotbarSelection(slot, allowDrag = true) {
 }
 
 function handleHotbarSwap(clientX, clientY) {
+    if (Vars.dragAccessory) {
+        const overAccessorySlot = isClickingAccessorySlot(clientX, clientY);
+        if (!overAccessorySlot) {
+            sendEquipAccessoryPacket(0);
+        }
+        Vars.dragAccessory = false;
+        Vars.dragAccessoryId = 0;
+        return;
+    }
+
     if (uiState.isShopOpen && uiState.activeShopTab === 'Sell') {
         const sellSlot = document.getElementById('shop-sell-slot');
         if (sellSlot) {
@@ -263,6 +279,20 @@ function handleHotbarSwap(clientX, clientY) {
                 return;
             }
         }
+    }
+
+    if (isClickingAccessorySlot(clientX, clientY)) {
+        const type = Vars.myInventory[Vars.dragSlot] & 0x7F;
+        if (isAccessoryItemType(type)) {
+            const accessoryId = accessoryIdFromItemType(type);
+            if (accessoryId > 0) {
+                sendEquipAccessoryPacket(type, Vars.dragSlot);
+                Vars.myInventory[Vars.dragSlot] = 0;
+                Vars.myInventoryCounts[Vars.dragSlot] = 0;
+            }
+        }
+        Vars.dragSlot = -1;
+        return;
     }
 
     const slotUnderMouse = isClickingHotbar(clientX, clientY);
@@ -305,6 +335,11 @@ function handleHotbarSwap(clientX, clientY) {
     if (finalSlot === -1 && Vars.dragSlot !== -1) {
         // Remove from sell queue if dropped
         uiState.itemsInSellQueue = uiState.itemsInSellQueue.filter(i => i !== Vars.dragSlot);
+        const type = Vars.myInventory[Vars.dragSlot] & 0x7F;
+        if (isAccessoryItemType(type)) {
+            Vars.dragSlot = -1;
+            return;
+        }
         dropSlot(Vars.dragSlot);
         Vars.dragSlot = -1;
         return;
@@ -358,6 +393,29 @@ export function isClickingHotbar(clientX, clientY) {
     return -1;
 }
 
+export function isClickingAccessorySlot(clientX, clientY) {
+    const x = clientX * (LC.width / window.innerWidth);
+    const y = clientY * (LC.height / window.innerHeight);
+
+    const hb = HOTBAR_CONFIG;
+    const as = ACCESSORY_SLOT_CONFIG;
+    const totalWidth = (hb.slotSize * 6) + (hb.gap * 5) + (hb.padding * 2);
+    const startX = (LC.width / 2) - (totalWidth / 2);
+    const startY = LC.height - hb.marginBottom - (hb.slotSize + hb.padding * 2);
+
+    const slotX = startX - as.gap - as.size;
+    const slotY = startY + hb.padding + (hb.slotSize - as.size) / 2;
+
+    const xPadding = as.touchPadding || 0;
+    const yPadding = as.touchPadding || 0;
+
+    if (x >= slotX - xPadding && x <= slotX + as.size + xPadding &&
+        y >= slotY - yPadding && y <= slotY + as.size + yPadding) {
+        return true;
+    }
+    return false;
+}
+
 export function isClickingInventory(clientX, clientY) {
     if (!uiState.isInventoryOpen) return -1;
     const x = clientX * (LC.width / window.innerWidth);
@@ -395,13 +453,7 @@ function getSlotUnderMouse(x, y) {
 }
 
 function dropSlot(slot) {
-    if (slot === Vars.selectedSlot) {
-        sendDropPacket();
-    } else {
-        sendSelectSlotPacket(slot);
-        sendDropPacket();
-        sendSelectSlotPacket(Vars.selectedSlot);
-    }
+    sendDropSlotPacket(slot);
 }
 
 export function toggleInventoryModal(show) {
@@ -581,6 +633,15 @@ function setupMobileTouchActions(joyContainer, chatBtn) {
                     return;
                 }
 
+                if (isClickingAccessorySlot(t.clientX, t.clientY)) {
+                    const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+                    if (myPlayer?.accessoryId > 0) {
+                        Vars.dragAccessory = true;
+                        Vars.dragAccessoryId = myPlayer.accessoryId;
+                    }
+                    return;
+                }
+
                 // Check action buttons
                 if (isButtonTouched(t.clientX, t.clientY, THROW_BTN_CONFIG)) {
                     const myPlayer = ENTITIES.PLAYERS[Vars.myId];
@@ -618,7 +679,7 @@ function setupMobileTouchActions(joyContainer, chatBtn) {
             uiTouchIds.delete(t.identifier);
 
             // Handle hotbar swap on touch end
-            if (Vars.dragSlot !== -1) {
+            if (Vars.dragSlot !== -1 || Vars.dragAccessory) {
                 handleHotbarSwap(t.clientX, t.clientY);
             }
 
@@ -703,6 +764,10 @@ function isTouchOnUI(clientX, clientY) {
         return true;
     }
 
+    if (isClickingAccessorySlot(clientX, clientY)) {
+        return true;
+    }
+
     if (isClickingInventory(clientX, clientY) !== -1) {
         return true;
     }
@@ -726,7 +791,7 @@ export function setupDesktopControls() {
         Vars.mouseY = e.clientY;
 
         const myPlayer = ENTITIES.PLAYERS[Vars.myId];
-        if (!myPlayer?.isAlive || ws?.readyState !== ws.OPEN || uiState.isSettingsOpen || Vars.dragSlot !== -1) return;
+        if (!myPlayer?.isAlive || ws?.readyState !== ws.OPEN || uiState.isSettingsOpen || Vars.dragSlot !== -1 || Vars.dragAccessory) return;
 
         const angle = Math.atan2(e.clientY - innerHeight / 2, e.clientX - innerWidth / 2);
         sendRotation(angle);
@@ -734,6 +799,15 @@ export function setupDesktopControls() {
 
     window.addEventListener("mousedown", (e) => {
         if (isUIElement(e.target)) return;
+
+        const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+        if (isClickingAccessorySlot(e.clientX, e.clientY)) {
+            if (myPlayer?.accessoryId > 0) {
+                Vars.dragAccessory = true;
+                Vars.dragAccessoryId = myPlayer.accessoryId;
+            }
+            return;
+        }
 
         const slotClicked = isClickingHotbar(e.clientX, e.clientY);
         const invSlot = isClickingInventory(e.clientX, e.clientY);
@@ -800,7 +874,7 @@ export function setupDesktopControls() {
     });
 
     window.addEventListener("mouseup", (e) => {
-        if (Vars.dragSlot !== -1) {
+        if (Vars.dragSlot !== -1 || Vars.dragAccessory) {
             handleHotbarSwap(e.clientX, e.clientY);
         }
         if (e.button === 0) sendAttackPacket(0);

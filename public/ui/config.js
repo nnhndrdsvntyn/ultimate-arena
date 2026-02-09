@@ -13,6 +13,12 @@ export const HOTBAR_CONFIG = {
     touchPadding: isMobile ? 30 : 20
 };
 
+export const ACCESSORY_SLOT_CONFIG = {
+    size: Math.round(HOTBAR_CONFIG.slotSize * (isMobile ? 1.15 : 1.05)),
+    gap: isMobile ? 14 : 12,
+    touchPadding: isMobile ? 20 : 10
+};
+
 export const INVENTORY_CONFIG = {
     cols: 6,
     rows: 5,
@@ -54,13 +60,16 @@ export const UPDATES_LOG = [
         date: '2026-01-31'
     },
     {
-        version: '1.2.2 (ONGOING)',
+        version: '1.2.2',
         changes: [
-            'New mob sprites',
-            'Some bug fixed',
+            'Added accessories (Some give certain buffs)',
+            'Fixed slash attack sprites',
+            'New mob & chest sprites',
+            'Some bugs fixed',
             'New admin commands: /rov (change range of view) and /agro (agro a mob towards a player)',
             'Revamped UI'
-        ]
+        ],
+        date: '2026-02-08'
     }
 ];
 

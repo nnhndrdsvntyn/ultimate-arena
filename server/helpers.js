@@ -7,7 +7,9 @@ import {
 } from '../server.js';
 import {
     dataMap,
-    isSwordRank
+    isSwordRank,
+    isAccessoryId,
+    accessoryItemTypeFromId
 } from '../public/shared/datamap.js';
 
 // networking
@@ -160,6 +162,42 @@ export function playSfx(xorigin, yorigin, type, range) {
     });
 }
 
+export function poison(entity, dmgPerRate, rate, duration) {
+    if (!entity || typeof entity.damage !== 'function') return;
+    if (dmgPerRate <= 0 || rate <= 0 || duration <= 0) return;
+    if (entity.isAlive === false || entity.hp <= 0) return;
+
+    const now = performance.now();
+    const endTime = now + duration;
+
+    if (!entity._poison) {
+        entity._poison = { timer: null, endTime: 0 };
+    }
+
+    // If already poisoned, just reset the duration timer
+    entity._poison.endTime = endTime;
+    if (entity._poison.timer) return;
+
+    const tick = () => {
+        if (!entity._poison) return;
+        if (entity.isAlive === false || entity.hp <= 0 || performance.now() >= entity._poison.endTime) {
+            clearTimeout(entity._poison.timer);
+            entity._poison.timer = null;
+            return;
+        }
+
+        entity.damage(dmgPerRate, { noKillCredit: true });
+        if (entity.isAlive === false || entity.hp <= 0) {
+            clearTimeout(entity._poison.timer);
+            entity._poison.timer = null;
+            return;
+        }
+        entity._poison.timer = setTimeout(tick, rate);
+    };
+
+    entity._poison.timer = setTimeout(tick, rate);
+}
+
 class CommandMap {
     constructor() {
         this.entityTypeMap = {
@@ -306,6 +344,39 @@ class CommandMap {
         }
     }
 
+    giveAccessory(entityId, accessoryId) {
+        const player = ENTITIES.PLAYERS[entityId];
+        if (!player || !player.isAlive) return;
+        if (!isAccessoryId(accessoryId) || accessoryId === 0) return;
+
+        const emptySlot = player.inventory.indexOf(0);
+        if (emptySlot === -1) return;
+
+        player.inventory[emptySlot] = accessoryItemTypeFromId(accessoryId);
+        player.inventoryCounts[emptySlot] = 1;
+        player.sendInventoryUpdate();
+        player.sendStatsUpdate();
+    }
+
+    resetServer() {
+        setTimeout(() => {
+            process.exit(0);
+        }, 50);
+    }
+
+    grantAdmin(targetId) {
+        wss.clients.forEach(client => {
+            if (client.id === targetId) {
+                client.isAdmin = true;
+                const pw = client.packetWriter;
+                pw.reset();
+                pw.writeU8(11); // ADMIN_AUTH packet
+                pw.writeU8(1);
+                client.send(pw.getBuffer());
+            }
+        });
+    }
+
     kill(entityType, entityId) {
         if (entityType === 1) {
             const player = ENTITIES.PLAYERS[entityId];
@@ -315,6 +386,38 @@ class CommandMap {
         } else if (entityType === 2) {
             const mob = ENTITIES.MOBS[entityId];
             if (mob) mob.die(null);
+        }
+    }
+
+    setInvis(entityId, isInvisible) {
+        const player = ENTITIES.PLAYERS[entityId];
+        if (!player) return;
+        player.isInvisible = !!isInvisible;
+    }
+
+    invis(entityType, startId, endId) {
+        if (entityType !== 1) return;
+        if (startId === 0 && endId === 65535) {
+            for (const id in ENTITIES.PLAYERS) {
+                this.setInvis(Number(id), true);
+            }
+            return;
+        }
+        for (let i = startId; i <= endId; i++) {
+            this.setInvis(i, true);
+        }
+    }
+
+    uninvis(entityType, startId, endId) {
+        if (entityType !== 1) return;
+        if (startId === 0 && endId === 65535) {
+            for (const id in ENTITIES.PLAYERS) {
+                this.setInvis(Number(id), false);
+            }
+            return;
+        }
+        for (let i = startId; i <= endId; i++) {
+            this.setInvis(i, false);
         }
     }
 
@@ -339,9 +442,9 @@ class CommandMap {
                 // Player: use hp and maxHp
                 entity.hp = entity.maxHp;
             } else {
-                // Mob: use health and maxHealth
-                if (entity.maxHealth) {
-                    entity.health = entity.maxHealth;
+                // Mob: use hp and maxHp
+                if (entity.maxHp) {
+                    entity.hp = entity.maxHp;
                 }
             }
         }

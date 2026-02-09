@@ -4,6 +4,8 @@ export const TPS = {
     server: 20
 };
 
+export const DEFAULT_VIEW_RANGE_MULT = 2 / 3;
+
 const createAsset = (name, src, type) => ({ name, src, type });
 
 export const dataMap = {
@@ -27,6 +29,7 @@ export const dataMap = {
         { id: 7, name: "Boulder Blade", price: 340, img: "sword7" },
         { id: 8, name: "Icicle Blade", price: 400, img: "sword8" }
     ],
+    ACCESSORY_PRICE: 30,
     AUDIO: {
         'throw': { name: 'throw', src: './audios/throw.mp3', defaultTimestamp: 0.3, defaultVolume: 0.3 },
         'sword-slash': { name: 'sword-slash', src: './audios/sword-slash.mp3', defaultTimestamp: 0.6, defaultVolume: 0.2 },
@@ -48,11 +51,11 @@ export const dataMap = {
         'crossed-eye': { name: 'crossed-eye', src: './images/ui/crossed-eye.png' }
     },
     ACCESSORIES: {
-        'bush-cloak': { name: 'bush-cloak', src: './images/accessories/bush-cloak.png', hatOffset: { x: -15, y: 0 }, size: [65, 70], rotation: 0 },
-        'sunglasses': { name: 'sunglasses', src: './images/accessories/sunglasses.png', hatOffset: { x: 12, y: 0 }, size: [22, 60], rotation: 0 },
-        'pirate-hat': { name: 'pirate-hat', src: './images/accessories/pirate-hat.png', hatOffset: { x: -15, y: -2 }, size: [45, 75], rotation: 0 },
-        'viking-hat': { name: 'viking-hat', src: './images/accessories/viking-hat.png', hatOffset: { x: -18, y: -0.5 }, size: [70, 65], rotation: 0 },
-        'alien-antennas': { name: 'alien-antennas', src: './images/accessories/alien-antennas.png', hatOffset: { x: -33, y: 0 }, size: [25, 96], rotation: 0 },
+        'bush-cloak': { name: 'bush-cloak', src: './images/accessories/bush-cloak.png', hatOffset: { x: -10, y: -1 }, size: [75, 80], rotation: 0 },
+        'sunglasses': { name: 'sunglasses', src: './images/accessories/sunglasses.png', hatOffset: { x: 16, y: -2 }, size: [26, 60], rotation: 0 },
+        'pirate-hat': { name: 'pirate-hat', src: './images/accessories/pirate-hat.png', hatOffset: { x: -18, y: -2 }, size: [40, 75], rotation: 0 },
+        'viking-hat': { name: 'viking-hat', src: './images/accessories/viking-hat.png', hatOffset: { x: -18, y: -0.5 }, size: [90, 70], rotation: 0 },
+        'alien-antennas': { name: 'alien-antennas', src: './images/accessories/alien-antennas.png', hatOffset: { x: -33, y: 0 }, size: [45, 96], rotation: 0, viewRangeMult: 1.5 },
         'dark-cloak': { name: 'dark-cloak', src: './images/accessories/dark-cloak.png', hatOffset: { x: -11, y: 0 }, size: [85, 82], rotation: 0 }
     },
     PLAYERS: {
@@ -79,20 +82,20 @@ export const dataMap = {
     },
     MOBS: {
         '1': { radius: 25, speed: 7, baseHealth: 15, score: 10, alarmDuration: 5000, imgProportions: [2, 2], imgSrc: './images/mobs/chick.png', imgName: 'mobs-chick', deathAction: (killer) => { const maxScore = 10; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
-        '2': { radius: 40, speed: 7, baseHealth: 50, score: 25, alarmDuration: 5000, imgProportions: [3, 2], imgSrc: './images/mobs/pig.png', imgName: 'mobs-pig', deathAction: (killer) => { const maxScore = 25; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
-        '3': { radius: 50, speed: 7, baseHealth: 150, score: 75, isNeutral: true, alarmDuration: Infinity, damage: 15, imgProportions: [3.25, 2.75], imgSrc: './images/mobs/cow.png', imgName: 'mobs-cow', deathAction: (killer) => { const maxScore = 75; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
-        '4': { radius: 50, speed: 9, baseHealth: 50, score: 10, alarmDuration: 10000, imgProportions: [2, 2], imgSrc: './images/mobs/hearty.png', imgName: 'mobs-hearty', deathAction: (killer) => { const maxScore = 10; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1); killer.health = Math.min(killer.health + 50, killer.maxHealth) } },
-        '5': { radius: 65, speed: 9, baseHealth: 250, score: 150, isNeutral: true, alarmDuration: Infinity, damage: 15, imgProportions: [3, 2], imgSrc: './images/mobs/polar-bear.png', imgName: 'mobs-polar-bear', deathAction: (killer) => { const maxScore = 75; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } }
+        '2': { radius: 40, speed: 7, baseHealth: 50, score: 25, alarmDuration: 5000, imgProportions: [4, 3], imgSrc: './images/mobs/pig.png', imgName: 'mobs-pig', deathAction: (killer) => { const maxScore = 25; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
+        '3': { radius: 50, speed: 7, baseHealth: 150, score: 75, isNeutral: true, alarmDuration: Infinity, damage: 15, imgProportions: [3.5, 2.5], imgSrc: './images/mobs/cow.png', imgName: 'mobs-cow', deathAction: (killer) => { const maxScore = 75; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
+        '4': { radius: 30, speed: 9, baseHealth: 50, score: 10, alarmDuration: 10000, imgProportions: [2, 2], imgSrc: './images/mobs/hearty.png', imgName: 'mobs-hearty', deathAction: (killer) => { const maxScore = 10; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1); killer.health = Math.min(killer.health + 50, killer.maxHealth) } },
+        '5': { radius: 65, speed: 9, baseHealth: 250, score: 150, isNeutral: true, alarmDuration: Infinity, damage: 15, imgProportions: [3, 2.5], imgSrc: './images/mobs/polar-bear.png', imgName: 'mobs-polar-bear', deathAction: (killer) => { const maxScore = 75; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } }
     },
     PROJECTILES: {
-        '1': { radius: 10, speed: 30, damage: 3, maxDistance: 100, knockbackStrength: 50, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash1.png', imgName: 'projectiles-airslash1' },
-        '2': { radius: 10, speed: 35, damage: 5, maxDistance: 110, knockbackStrength: 50, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash2.png', imgName: 'projectiles-airslash2' },
-        '3': { radius: 10, speed: 40, damage: 8, maxDistance: 120, knockbackStrength: 50, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash3.png', imgName: 'projectiles-airslash3' },
-        '4': { radius: 10, speed: 45, damage: 12, maxDistance: 130, knockbackStrength: 50, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash1.png', imgName: 'projectiles-airslash1' },
-        '5': { radius: 10, speed: 50, damage: 15, maxDistance: 140, knockbackStrength: 50, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash1.png', imgName: 'projectiles-airslash1' },
-        '6': { radius: 10, speed: 55, damage: 18, maxDistance: 150, knockbackStrength: 50, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash1.png', imgName: 'projectiles-airslash1' },
-        '7': { radius: 10, speed: 60, damage: 23, maxDistance: 170, knockbackStrength: 50, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash1.png', imgName: 'projectiles-airslash1' },
-        '8': { radius: 10, speed: 65, damage: 27, maxDistance: 180, knockbackStrength: 50, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash1.png', imgName: 'projectiles-airslash1' }
+        '1': { radius: 10, speed: 30, damage: 3, maxDistance: 100, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash1.png', imgName: 'projectiles-airslash1' },
+        '2': { radius: 10, speed: 35, damage: 5, maxDistance: 110, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash2.png', imgName: 'projectiles-airslash2' },
+        '3': { radius: 10, speed: 40, damage: 8, maxDistance: 120, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash3.png', imgName: 'projectiles-airslash3' },
+        '4': { radius: 10, speed: 45, damage: 12, maxDistance: 130, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash4.png', imgName: 'projectiles-airslash4' },
+        '5': { radius: 10, speed: 50, damage: 15, maxDistance: 140, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash5.png', imgName: 'projectiles-airslash5' },
+        '6': { radius: 10, speed: 55, damage: 18, maxDistance: 150, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash6.png', imgName: 'projectiles-airslash6' },
+        '7': { radius: 10, speed: 60, damage: 23, maxDistance: 170, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash7.png', imgName: 'projectiles-airslash7' },
+        '8': { radius: 10, speed: 65, damage: 27, maxDistance: 180, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash8.png', imgName: 'projectiles-airslash8' }
     },
     STRUCTURES: {
         '1': { radius: 500, isSafeZone: true, imgSrc: './images/spawn-zone.png', imgName: 'structures-spawn-zone' },
@@ -100,10 +103,10 @@ export const dataMap = {
         '3': { radius: 120, noCollisions: true, imgSrc: './images/bush1.png', imgName: 'structures-bush1' }
     },
     OBJECTS: {
-        '10': { isChest: true, radius: 50, maxHealth: 100, score: 10, coinDropRange: [10, 15], swordRankDrops: { 1: 0.5, 2: 0.25, 3: 0.1, 4: 0.05, 5: 0.04, 6: 0.03, 7: 0.03 }, imgSrc: './images/objects/chest1.png', imgName: 'chest1', imgProportions: [3, 2] },
-        '11': { isChest: true, radius: 60, maxHealth: 250, score: 25, coinDropRange: [25, 75], swordRankDrops: { 1: 0.2, 2: 0.3, 3: 0.25, 4: 0.1, 5: 0.05, 6: 0.05, 7: 0.05 }, imgSrc: './images/objects/chest2.png', imgName: 'chest2', imgProportions: [3, 2] },
-        '12': { isChest: true, radius: 75, maxHealth: 500, score: 75, coinDropRange: [50, 150], swordRankDrops: { 8: 0.1 }, imgSrc: './images/objects/chest3.png', imgName: 'chest3', imgProportions: [3, 2] },
-        '13': { isChest: true, radius: 100, maxHealth: 1000, score: 100, coinDropRange: [100, 300], swordRankDrops: { 1: 0.02, 2: 0.03, 3: 0.05, 4: 0.1, 5: 0.2, 6: 0.35, 7: 0.25 }, imgSrc: './images/objects/chest4.png', imgName: 'chest4', imgProportions: [3, 2] },
+        '10': { isChest: true, radius: 50, maxHealth: 50, score: 10, coinDropRange: [10, 15], swordRankDrops: { 1: 0.5, 2: 0.25, 3: 0.1, 4: 0.05, 5: 0.04, 6: 0.03, 7: 0.03 }, imgSrc: './images/objects/chest1.png', imgName: 'chest1', imgProportions: [3, 2] },
+        '11': { isChest: true, radius: 60, maxHealth: 125, score: 25, coinDropRange: [25, 75], swordRankDrops: { 1: 0.2, 2: 0.3, 3: 0.25, 4: 0.1, 5: 0.05, 6: 0.05, 7: 0.05 }, imgSrc: './images/objects/chest2.png', imgName: 'chest2', imgProportions: [3, 2] },
+        '12': { isChest: true, radius: 75, maxHealth: 250, score: 75, coinDropRange: [50, 150], swordRankDrops: { 8: 0.1 }, imgSrc: './images/objects/chest3.png', imgName: 'chest3', imgProportions: [3, 2] },
+        '13': { isChest: true, radius: 100, maxHealth: 500, score: 100, coinDropRange: [100, 300], swordRankDrops: { 1: 0.02, 2: 0.03, 3: 0.05, 4: 0.1, 5: 0.2, 6: 0.35, 7: 0.25 }, imgSrc: './images/objects/chest4.png', imgName: 'chest4', imgProportions: [3, 2] },
         '9': { isEphemeral: true, stackable: true, radius: 15, maxHealth: 1, score: 5, imgSrc: './images/objects/gold-coin.png', imgName: 'gold-coin', imgProportions: [2, 2] },
         '1': { isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword1.png', imgName: 'swords-sword1', imgProportions: [2, 1] },
         '2': { isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword2.png', imgName: 'swords-sword2', imgProportions: [2, 1] },
@@ -115,6 +118,40 @@ export const dataMap = {
         '8': { isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword8.png', imgName: 'swords-sword8', imgProportions: [2, 1] }
     }
 };
+
+export const ACCESSORY_KEYS = ['none', ...Object.keys(dataMap.ACCESSORIES)];
+export const ACCESSORY_NAME_TO_ID = ACCESSORY_KEYS.reduce((acc, name, idx) => {
+    acc[name] = idx;
+    return acc;
+}, {});
+export const ACCESSORY_DESCRIPTIONS = {
+    'bush-cloak': 'Poisons melee attackers',
+    'sunglasses': 'Coming Soon',
+    'pirate-hat': 'Swing cooldown is reduced by 30%',
+    'viking-hat': 'Every 3 hits, you do 30% more damage.',
+    'alien-antennas': 'Allows you to view more of the map',
+    'dark-cloak': 'Mobs have slightly more difficulty spotting you'
+};
+export const ACCESSORY_ITEM_OFFSET = 100;
+
+export function isAccessoryId(id) {
+    return Number.isInteger(id) && id >= 0 && id < ACCESSORY_KEYS.length;
+}
+
+export function accessoryItemTypeFromId(id) {
+    if (!isAccessoryId(id) || id === 0) return 0;
+    return ACCESSORY_ITEM_OFFSET + id;
+}
+
+export function accessoryIdFromItemType(type) {
+    return type - ACCESSORY_ITEM_OFFSET;
+}
+
+export function isAccessoryItemType(type) {
+    return Number.isInteger(type) &&
+        type >= ACCESSORY_ITEM_OFFSET + 1 &&
+        type < ACCESSORY_ITEM_OFFSET + ACCESSORY_KEYS.length;
+}
 
 export const SWORD_IDS = Object.keys(dataMap.SWORDS.imgs)
     .map(k => parseInt(k))

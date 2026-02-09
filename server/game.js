@@ -66,7 +66,8 @@ export const ENTITIES = {
         shooter,
         username,
         groupId,
-        amount = 1
+        amount = 1,
+        source = null
     }) => {
         if (entityType === 'player') {
             entityType = 1;
@@ -113,7 +114,7 @@ export const ENTITIES = {
             if (dataMap.CHEST_IDS.includes(type)) {
                 new Chest(id, x, y, type);
             } else if (type === 9) {
-                new GoldCoin(id, x, y, type, amount);
+                new GoldCoin(id, x, y, type, amount, source);
             } else {
                 new GameObject(id, x, y, type);
             }
@@ -279,7 +280,7 @@ setTimeout(() => {
         mob2: 50, // Pig
         mob3: 50, // Cow
         mob4: 25, // Hearty
-        mob5: 50  // Polar Bear
+        mob5: 20  // Polar Bear (changed from 50 => 20)
     };
 
     for (let type = 1; type <= 5; type++) {
@@ -298,7 +299,7 @@ setTimeout(() => {
 }, 100);
 
 
-export function spawnObject(type, x, y, amount = 1) {
+export function spawnObject(type, x, y, amount = 1, source = null) {
     const radius = dataMap.OBJECTS[type]?.radius || 50;
 
     // If x or y is missing, find a valid random position
@@ -357,7 +358,8 @@ export function spawnObject(type, x, y, amount = 1) {
         x,
         y,
         type,
-        amount
+        amount,
+        source
     });
     return ENTITIES.OBJECTS[id];
 }

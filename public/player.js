@@ -10,7 +10,8 @@ import {
 import {
     TPS,
     dataMap,
-    isSwordRank
+    isSwordRank,
+    ACCESSORY_KEYS
 } from './shared/datamap.js';
 
 export class Player {
@@ -37,12 +38,14 @@ export class Player {
         };
 
         this.weaponRank = 1;
+        this.accessoryId = 0;
 
         this.health = undefined;
         this.maxHealth = undefined;
 
         this.hasShield = false;
         this.isAlive = false;
+        this.isInvisible = false;
 
         this.username = "";
         this.chatMessage = "";
@@ -103,12 +106,15 @@ export class Player {
 
         if (!this.isAlive) return;
 
+        const isSelfInvisible = this.id === Vars.myId && this.isInvisible;
+        const alpha = isSelfInvisible ? 0.5 : 1;
+
         if (this.hasShield) {
             LC.drawImage({
                 name: 'spawn-zone-shield',
                 pos: [screenPosX - this.radius * 1.5, screenPosY - this.radius * 1.5],
                 size: [this.radius * 3, this.radius * 3],
-                transparency: 0.5
+                transparency: 0.5 * alpha
             });
         }
 
@@ -142,7 +148,8 @@ export class Player {
                         screenPosY + offsetY - swordHeight / 2
                     ],
                     size: [swordWidth, swordHeight],
-                    rotation: angleRad
+                    rotation: angleRad,
+                    transparency: alpha
                 });
             }
         }
@@ -153,20 +160,50 @@ export class Player {
             pos: [screenPosX - this.radius, screenPosY - this.radius],
             size: [this.radius * 2, this.radius * 2],
             rotation: this.angle,
+            transparency: alpha
         });
+
+        // draw accessory
+        const accessoryKey = ACCESSORY_KEYS[this.accessoryId];
+        if (accessoryKey && accessoryKey !== 'none') {
+            const accessory = dataMap.ACCESSORIES[accessoryKey];
+            let playerScale = this.radius / dataMap.PLAYERS.baseRadius;
+            if (accessory) {
+                const cos = Math.cos(this.angle);
+                const sin = Math.sin(this.angle);
+
+                // Standard rotation matrix:
+                // x' = x*cos - y*sin
+                // y' = x*sin + y*cos
+                const rotatedX = accessory.hatOffset.x * cos - accessory.hatOffset.y * playerScale * sin;
+                const rotatedY = accessory.hatOffset.x * sin + accessory.hatOffset.y * playerScale * cos;
+
+                LC.drawImage({
+                    name: accessory.name,
+                    pos: [
+                        screenPosX + rotatedX - accessory.size[0] * (playerScale / 2) + playerScale,
+                        screenPosY + rotatedY - accessory.size[1] * (playerScale / 2) + playerScale
+                    ],
+                    size: [accessory.size[0] * playerScale, accessory.size[1] * playerScale],
+                    rotation: this.angle,
+                    transparency: alpha
+                });
+            }
+        }
 
         // draw health as bar
         if (this.health !== undefined && this.maxHealth !== undefined) {
             const barWidth = this.radius * 2;
             const barHeight = 5;
-            const healthPercentage = this.health / this.maxHealth;
+            const healthPercentage = Math.min(1, this.health / this.maxHealth);
 
             // Background of the health bar
             LC.drawRect({
                 pos: [screenPosX - barWidth / 2, screenPosY + this.radius + 5],
                 size: [barWidth, barHeight],
                 color: 'red',
-                cornerRadius: 2
+                cornerRadius: 2,
+                transparency: alpha
             });
 
             // Foreground of the health bar
@@ -174,7 +211,8 @@ export class Player {
                 pos: [screenPosX - barWidth / 2, screenPosY + this.radius + 5],
                 size: [barWidth * healthPercentage, barHeight],
                 color: 'lime',
-                cornerRadius: 2
+                cornerRadius: 2,
+                transparency: alpha
             });
         }
 
@@ -190,7 +228,8 @@ export class Player {
                 pos: [screenPosX - chatMetrics.width / 2 - padding, screenPosY - this.radius - 30 - 20 - padding],
                 size: [chatMetrics.width + padding * 2, 20 + padding * 1.5],
                 color: 'rgba(64, 64, 64, 0.7)',
-                cornerRadius: 5
+                cornerRadius: 5,
+                transparency: alpha
             });
 
 
@@ -198,7 +237,8 @@ export class Player {
                 text: chatText,
                 pos: [screenPosX - chatMetrics.width / 2, screenPosY - this.radius - 35],
                 color: 'white',
-                font: '17px Arial'
+                font: '17px Arial',
+                transparency: alpha
             });
         }
 
@@ -227,7 +267,8 @@ export class Player {
             text: usernameText,
             pos: [screenPosX - totalWidth / 2, screenPosY - this.radius - 5],
             color: 'white',
-            font: 'bold 16px Arial'
+            font: 'bold 16px Arial',
+            transparency: alpha
         });
 
         if (Settings.showPlayerIds) {
@@ -235,7 +276,8 @@ export class Player {
                 text: idText,
                 pos: [screenPosX - totalWidth / 2 + usernameMetrics.width, screenPosY - this.radius - 5],
                 color: 'lightgray',
-                font: 'bold 16px Arial'
+                font: 'bold 16px Arial',
+                transparency: alpha
             });
         };
 
@@ -244,7 +286,7 @@ export class Player {
                 pos: [screenPosX, screenPosY],
                 radius: this.radius,
                 color: 'red',
-                transparency: 0.5
+                transparency: 0.5 * alpha
             });
         }
     }

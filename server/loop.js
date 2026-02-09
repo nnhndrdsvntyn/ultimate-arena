@@ -33,7 +33,7 @@ export function updateGame() {
     processProximityProcessables(ENTITIES.OBJECTS, 1000);
 
     // 2. Resolve structure collisions
-    processProximityProcessables(ENTITIES.STRUCTURES, 700, (s) => s.resolveCollisions());
+    processProximityProcessables(ENTITIES.STRUCTURES, 1000, (s) => s.resolveCollisions());
 
     // 3. Handle Respawns
     handleRespawns(deadMobs, (ent) => {

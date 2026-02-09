@@ -11,10 +11,15 @@ import {
     sendRovCommand,
     sendAgroCommand,
     sendMobTypeCommand,
+    sendResetCommand,
+    sendGiveAccessoryCommand,
+    sendGrantAdminCommand,
+    sendInvisCommand,
+    sendUninvisCommand,
     encodeUsername
 } from '../helpers.js';
 import { ws, Vars } from '../client.js';
-import { dataMap, isSwordRank, SWORD_IDS } from '../shared/datamap.js';
+import { dataMap, isSwordRank, SWORD_IDS, ACCESSORY_KEYS, ACCESSORY_NAME_TO_ID } from '../shared/datamap.js';
 import { ENTITIES } from '../game.js';
 import { isMobile } from './config.js';
 import { uiRefs, uiState } from './context.js';
@@ -44,12 +49,16 @@ const COMMANDS = [
     { name: '/give', params: '<@p[id|range|all]|@s> <itemname> [amount]' },
     { name: '/kill', params: '<@p[id|range|all]|@m[id|range|all]|@s>' },
     { name: '/break', params: '<@o[chest]> <[id|range|all]> [dropLoot]' },
-    { name: '/setattribute', params: '<@p[id|range|all]|@m[id|range|all]|@s>.attribute = value' },
+    { name: '/setattribute', params: '<@p[id|range|all]|@m[id|range|all]|@s> <attribute> <value>' },
     { name: '/heal', params: '<@p[id|range|all]|@m[id|range|all]|@s>' },
     { name: '/damage', params: '<@p[id|range|all]|@m[id|range|all]|@s> <amount[%]>' },
     { name: '/cleardrops', params: '' },
     { name: '/rov', params: '<number>' },
-    { name: '/agro', params: '<id|range|all> <@p[id]|@s>' }
+    { name: '/agro', params: '<id|range|all> <@p[id]|@s>' },
+    { name: '/reset', params: '' },
+    { name: '/admin', params: '<playerId>' },
+    { name: '/invis', params: '<@s|@p[id|range|all]>' },
+    { name: '/uninvis', params: '<@s|@p[id|range|all]>' }
 ];
 
 const ENTITY_SUGGESTIONS_ALL = ['@s', '@p', '@m', '@o'];
@@ -63,9 +72,13 @@ const MOB_TYPE_SUGGESTIONS = [
     '@m[type=hearty]',
     '@m[type=polar-bear]'
 ];
+const ACCESSORY_SUGGESTIONS = ACCESSORY_KEYS.filter(k => k !== 'none');
+const SETATTR_SUGGESTIONS = ['invincible', 'speed', 'damage', 'strength', 'maxhealth'];
+const INVINCIBLE_VALUE_SUGGESTIONS = ['true', 'false'];
 const ITEM_SUGGESTIONS = [
     ...SWORD_IDS.map(id => `sword${id}`),
-    'gold-coin'
+    'gold-coin',
+    ...ACCESSORY_SUGGESTIONS
 ];
 const CHAT_AUTOCOMPLETE_DEBUG = false;
 
@@ -74,18 +87,6 @@ function updateCommandUI() {
 
     const raw = uiRefs.chatInput.value;
     const value = raw.trim().toLowerCase();
-
-    if (!Vars.isAdmin) {
-        uiRefs.chatCommandHint.textContent = '';
-        uiRefs.chatCommandHint.style.display = 'none';
-        uiRefs.chatCommandList.innerHTML = '';
-        uiRefs.chatCommandList.style.display = 'none';
-        if (uiRefs.chatSuggestList) {
-            uiRefs.chatSuggestList.innerHTML = '';
-            uiRefs.chatSuggestList.style.display = 'none';
-        }
-        return;
-    }
 
     if (!value.startsWith('/')) {
         uiRefs.chatCommandHint.textContent = '';
@@ -99,7 +100,8 @@ function updateCommandUI() {
         return;
     }
 
-    const matches = COMMANDS.filter(cmd => cmd.name.startsWith(value));
+    const allowedCommands = Vars.isAdmin ? COMMANDS : COMMANDS.filter(cmd => cmd.name === '/kill');
+    const matches = allowedCommands.filter(cmd => cmd.name.startsWith(value));
     uiRefs.chatCommandList.innerHTML = '';
 
     if (matches.length > 0) {
@@ -119,13 +121,15 @@ function updateCommandUI() {
         uiRefs.chatCommandList.style.display = 'none';
     }
 
-    const exact = COMMANDS.find(cmd => value.startsWith(cmd.name));
+    const exact = allowedCommands.find(cmd => value.startsWith(cmd.name));
     if (exact) {
-        const hintText = exact.params ? `${exact.name} ${exact.params}` : exact.name;
+        const hintParams = (!Vars.isAdmin && exact.name === '/kill') ? '<@s>' : exact.params;
+        const hintText = hintParams ? `${exact.name} ${hintParams}` : exact.name;
         uiRefs.chatCommandHint.textContent = hintText;
         uiRefs.chatCommandHint.style.display = 'block';
     } else if (matches.length === 1) {
-        const hintText = matches[0].params ? `${matches[0].name} ${matches[0].params}` : matches[0].name;
+        const hintParams = (!Vars.isAdmin && matches[0].name === '/kill') ? '<@s>' : matches[0].params;
+        const hintText = hintParams ? `${matches[0].name} ${hintParams}` : matches[0].name;
         uiRefs.chatCommandHint.textContent = hintText;
         uiRefs.chatCommandHint.style.display = 'block';
     } else {
@@ -146,6 +150,16 @@ function updateSuggestions(raw, activeCommand) {
     const currentLower = current.toLowerCase();
 
     let suggestions = [];
+    if (CHAT_AUTOCOMPLETE_DEBUG) {
+        console.log('[ChatSuggest] start', {
+            raw,
+            activeCommand: activeCommand?.name || null,
+            current,
+            currentLower,
+            tokenIndex: getTokenIndex(raw),
+            tokens: getTokens(raw)
+        });
+    }
 
     // Entity suggestions when typing @...
     if (currentLower.startsWith('@')) {
@@ -181,12 +195,15 @@ function updateSuggestions(raw, activeCommand) {
                 suggestions = ENTITY_SUGGESTIONS_PM_S.filter(s => s.startsWith(currentLower));
             }
         }
-    } else if (['/tppos', '/kill', '/heal', '/damage', '/setattribute'].includes(activeCommand?.name)) {
+    } else if (['/tppos', '/kill', '/heal', '/damage', '/invis', '/uninvis'].includes(activeCommand?.name)) {
         if (tokenIndex === 1) {
-            if (currentLower.startsWith('@m[')) {
+            if (activeCommand?.name === '/kill' && !Vars.isAdmin) {
+                suggestions = ['@s'].filter(s => s.startsWith(currentLower));
+            } else if (currentLower.startsWith('@m[')) {
                 suggestions = MOB_TYPE_SUGGESTIONS.filter(s => s.startsWith(currentLower));
             } else {
-                suggestions = ENTITY_SUGGESTIONS_PM_S.filter(s => s.startsWith(currentLower));
+                const allowed = (activeCommand?.name === '/invis' || activeCommand?.name === '/uninvis') ? ENTITY_SUGGESTIONS_P_S : ENTITY_SUGGESTIONS_PM_S;
+                suggestions = allowed.filter(s => s.startsWith(currentLower));
             }
         }
     } else if (activeCommand?.name === '/break') {
@@ -197,6 +214,42 @@ function updateSuggestions(raw, activeCommand) {
         if (tokenIndex === 2) {
             suggestions = AGRO_TARGET_SUGGESTIONS.filter(s => s.startsWith(currentLower));
         }
+    } else if (activeCommand?.name === '/setattribute') {
+        if (CHAT_AUTOCOMPLETE_DEBUG) {
+            console.log('[ChatSuggest] /setattribute', {
+                raw,
+                tokenIndex,
+                tokens,
+                current,
+                currentLower
+            });
+        }
+        const entityToken = (tokens[1] || '').toLowerCase();
+        const entityComplete = isEntityTokenComplete(entityToken, ENTITY_SUGGESTIONS_PM_S);
+        if (tokenIndex === 1) {
+            if (currentLower.startsWith('@m[')) {
+                suggestions = MOB_TYPE_SUGGESTIONS.filter(s => s.startsWith(currentLower));
+            } else {
+                suggestions = ENTITY_SUGGESTIONS_PM_S.filter(s => s.startsWith(currentLower));
+            }
+        } else if (tokenIndex === 2) {
+            suggestions = currentLower ? SETATTR_SUGGESTIONS.filter(s => s.startsWith(currentLower)) : SETATTR_SUGGESTIONS;
+        } else if (tokenIndex >= 3) {
+            const attrToken = (tokens[2] || '').toLowerCase();
+            if (attrToken === 'invincible') {
+                suggestions = INVINCIBLE_VALUE_SUGGESTIONS.filter(s => s.startsWith(currentLower));
+            }
+        }
+        if (tokenIndex === 2 && suggestions.length === 0) {
+            suggestions = SETATTR_SUGGESTIONS;
+        }
+        if (CHAT_AUTOCOMPLETE_DEBUG) {
+            console.log('[ChatSuggest] /setattribute suggestions', suggestions);
+        }
+    }
+
+    if (CHAT_AUTOCOMPLETE_DEBUG) {
+        console.log('[ChatSuggest] final', { active: activeCommand?.name || null, suggestions });
     }
 
     suggestEl.innerHTML = '';
@@ -304,9 +357,12 @@ export function handleChatToggle(myPlayer, homeUsrnInput) {
         // Intercept admin-style give commands: /give {target} {item}
         const raw = uiRefs.chatInput.value.trim();
         const rawLower = raw.toLowerCase();
-        const isCommand = COMMANDS.some(cmd => rawLower.startsWith(cmd.name));
-        if (isCommand && !Vars.isAdmin) {
-            showNotification("You don't have permission to run that command.", 'red');
+        const matchedCmd = COMMANDS.find(cmd => rawLower.startsWith(cmd.name));
+        const isCommand = !!matchedCmd;
+        const isSelfKill = /^\/kill\s+@s$/i.test(raw);
+        const isKillCommand = rawLower.startsWith('/kill');
+        if (raw.startsWith('/') && !Vars.isAdmin && !isSelfKill && !isKillCommand) {
+            showNotification("Invalid command.", 'red');
             uiRefs.chatInput.value = '';
             uiRefs.chatInputWrapper.style.display = 'none';
             uiRefs.chatInput.blur();
@@ -319,14 +375,16 @@ export function handleChatToggle(myPlayer, homeUsrnInput) {
             return;
         }
         const ENTITY_TOKEN_RE = '@s|@p\\[(?:[\\d\\-]+|all)\\]|@m\\[(?:[\\d\\-]+|all|type=[a-z\\-]+)\\]';
+        const PLAYER_ENTITY_TOKEN_RE = '@s|@p\\[(?:[\\d\\-]+|all)\\]';
 
         // /give command: /give {target} {item} [amount]
-        const giveMatch = raw.match(/^\/give\s+(@s|@p\[(?:\d+(?:-\d+)?|all)\])\s+(sword(\d+)|gold-coin)(?:\s+(\d+))?$/i);
-        if (giveMatch) {
-            const parsed = parseEntityRange(giveMatch[1]);
-            const itemName = giveMatch[2].toLowerCase();
-            const swordRank = parseInt(giveMatch[3]);
-            const amount = parseInt(giveMatch[4]) || 1;
+        const giveTokens = raw.split(/\s+/);
+        if (giveTokens[0]?.toLowerCase() === '/give' && giveTokens.length >= 3) {
+            const parsed = parseEntityRange(giveTokens[1]);
+            const itemName = (giveTokens[2] || '').toLowerCase();
+            const amount = Math.max(1, parseInt(giveTokens[3]) || 1);
+            const swordMatch = itemName.match(/^sword(\d+)$/i);
+            const swordRank = swordMatch ? parseInt(swordMatch[1]) : NaN;
 
             if (parsed) {
                 const startId = Math.min(...parsed.ids);
@@ -338,11 +396,15 @@ export function handleChatToggle(myPlayer, homeUsrnInput) {
                     }
                 } else if (itemName === 'gold-coin') {
                     sendSetAttrCommand(parsed.type, startId, endId, 8, amount);
+                } else if (itemName in ACCESSORY_NAME_TO_ID) {
+                    for (let i = 0; i < amount; i++) {
+                        sendGiveAccessoryCommand(parsed.type, startId, endId, ACCESSORY_NAME_TO_ID[itemName]);
+                    }
                 } else {
-                    sendChat(raw);
+                    showNotification("Make sure to write the parameters properly.", 'red');
                 }
             } else {
-                sendChat(raw);
+                showNotification("Make sure to write the parameters properly.", 'red');
             }
         } else {
             // /kill command: /kill @s|@p[...]|@m[...]
@@ -351,7 +413,13 @@ export function handleChatToggle(myPlayer, homeUsrnInput) {
                 const parsed = parseEntityRange(killMatch[1]);
 
                 if (parsed) {
-                    if (parsed.isFiltered && parsed.type === 2 && parsed.mobType) {
+                    if (!Vars.isAdmin) {
+                        if (!(parsed.type === 1 && parsed.ids.length === 1 && parsed.ids[0] === Vars.myId)) {
+                            showNotification("Make sure to write the parameters properly.", 'red');
+                        } else {
+                            sendKillCommand(1, Vars.myId, Vars.myId);
+                        }
+                    } else if (parsed.isFiltered && parsed.type === 2 && parsed.mobType) {
                         sendMobTypeCommand(8, parsed.mobType);
                     } else if (parsed.isFiltered) {
                         parsed.ids.forEach(id => sendKillCommand(parsed.type, id, id));
@@ -455,8 +523,8 @@ export function handleChatToggle(myPlayer, homeUsrnInput) {
                                 sendChat(raw);
                             }
                         } else {
-                            // /setattribute command: /setattribute @s|@p[...]|@m[...].attribute = value or true/false
-                            const setAttrMatch = raw.match(new RegExp(`^\\/setattribute\\s+(${ENTITY_TOKEN_RE})\\.(\\w+)\\s*=\\s*(.+)$`, 'i'));
+                            // /setattribute command: /setattribute <selector> <attribute> <value>
+                            const setAttrMatch = raw.match(new RegExp(`^\\/setattribute\\s+(${ENTITY_TOKEN_RE})\\s+(\\w+)\\s+(.+)$`, 'i'));
                             if (setAttrMatch) {
                                 const parsed = parseEntityRange(setAttrMatch[1]);
                                 const attributeName = setAttrMatch[2].toLowerCase();
@@ -466,8 +534,8 @@ export function handleChatToggle(myPlayer, homeUsrnInput) {
                                 let attrIdx;
 
                                 // Map attribute names to indices (different for players vs mobs)
-                                const playerAttrMap = { 'speed': 1, 'maxhealth': 6, 'strength': 5, 'invincible': 3 };
-                                const mobAttrMap = { 'speed': 1, 'strength': 5, 'invincible': 7 };
+                                const playerAttrMap = { 'speed': 1, 'maxhealth': 6, 'strength': 5, 'damage': 5, 'invincible': 3 };
+                                const mobAttrMap = { 'speed': 1, 'strength': 5, 'damage': 5, 'invincible': 7 };
 
                                 // Choose map based on entity type
                                 const attrMap = parsed.type === 1 ? playerAttrMap : mobAttrMap;
@@ -540,66 +608,117 @@ export function handleChatToggle(myPlayer, homeUsrnInput) {
                                             sendChat(raw);
                                         }
                                     } else {
-                                    const rovMatch = raw.match(/^\/rov\s+(\d+(?:\.\d+)?)$/i);
-                                    if (rovMatch) {
-                                        if (!Vars.isAdmin) {
-                                            sendChat(raw);
+                                        const rovMatch = raw.match(/^\/rov\s+(\d+(?:\.\d+)?)$/i);
+                                        if (rovMatch) {
+                                            if (Vars.isAdmin) {
+                                                const rangeMult = Math.max(0.1, parseFloat(rovMatch[1]));
+                                                Vars.viewRangeMult = rangeMult;
+                                                sendRovCommand(rangeMult);
+                                            }
                                         } else {
-                                            const rangeMult = Math.max(0.1, parseFloat(rovMatch[1]));
-                                            Vars.viewRangeMult = rangeMult;
-                                            sendRovCommand(rangeMult);
-                                        }
-                                    } else {
-                                        const agroMatch = raw.match(/^\/agro\s+(\d+(?:-\d+)?|all)\s+(@s|@p\[(?:\d+)\])$/i);
-                                        if (agroMatch) {
-                                            if (!Vars.isAdmin) {
-                                                sendChat(raw);
-                                            } else {
-                                                const targetToken = agroMatch[2];
-                                                let targetId = Vars.myId;
-                                                if (!/^@s$/i.test(targetToken)) {
-                                                    const parsedTarget = parseEntityRange(targetToken);
-                                                    if (!parsedTarget || parsedTarget.type !== 1 || parsedTarget.ids.length === 0) {
-                                                        sendChat(raw);
-                                                        return;
+                                            const adminMatch = raw.match(/^\/admin\s+(\d+)$/i);
+                                            if (adminMatch) {
+                                                if (Vars.isAdmin) {
+                                                    const targetId = parseInt(adminMatch[1]);
+                                                    if (!isNaN(targetId)) {
+                                                        sendGrantAdminCommand(targetId);
+                                                    } else {
+                                                        showNotification("Make sure to write the parameters properly.", 'red');
                                                     }
-                                                    targetId = parsedTarget.ids[0];
                                                 }
-
-                                                const rangeToken = agroMatch[1].toLowerCase();
-                                                let mobIds = [];
-                                                if (rangeToken === 'all') {
-                                                    mobIds = Object.keys(ENTITIES.MOBS).map(id => parseInt(id));
+                                            } else {
+                                                const invisMatch = raw.match(new RegExp(`^\\/invis\\s+(${PLAYER_ENTITY_TOKEN_RE})$`, 'i'));
+                                                if (invisMatch) {
+                                                    if (Vars.isAdmin) {
+                                                        const parsed = parseEntityRange(invisMatch[1]);
+                                                        if (parsed && parsed.type === 1) {
+                                                            const startId = Math.min(...parsed.ids);
+                                                            const endId = Math.max(...parsed.ids);
+                                                            sendInvisCommand(parsed.type, startId, endId);
+                                                        } else {
+                                                            showNotification("Make sure to write the parameters properly.", 'red');
+                                                        }
+                                                    }
                                                 } else {
-                                                    const parts = rangeToken.split('-').map(n => parseInt(n));
-                                                    const startId = parts[0];
-                                                    const endId = parts[1] ?? startId;
-                                                    if (!isNaN(startId) && !isNaN(endId)) {
-                                                        for (let i = Math.min(startId, endId); i <= Math.max(startId, endId); i++) {
-                                                            mobIds.push(i);
+                                                    const uninvisMatch = raw.match(new RegExp(`^\\/uninvis\\s+(${PLAYER_ENTITY_TOKEN_RE})$`, 'i'));
+                                                    if (uninvisMatch) {
+                                                        if (Vars.isAdmin) {
+                                                            const parsed = parseEntityRange(uninvisMatch[1]);
+                                                            if (parsed && parsed.type === 1) {
+                                                                const startId = Math.min(...parsed.ids);
+                                                                const endId = Math.max(...parsed.ids);
+                                                                sendUninvisCommand(parsed.type, startId, endId);
+                                                            } else {
+                                                                showNotification("Make sure to write the parameters properly.", 'red');
+                                                            }
+                                                        }
+                                                    } else {
+                                                        const agroMatch = raw.match(/^\/agro\s+(\d+(?:-\d+)?|all)\s+(@s|@p\[(?:\d+)\])$/i);
+                                                        if (agroMatch) {
+                                                            if (Vars.isAdmin) {
+                                                                const targetToken = agroMatch[2];
+                                                                let targetId = Vars.myId;
+                                                                if (!/^@s$/i.test(targetToken)) {
+                                                                    const parsedTarget = parseEntityRange(targetToken);
+                                                                    if (!parsedTarget || parsedTarget.type !== 1 || parsedTarget.ids.length === 0) {
+                                                                        sendChat(raw);
+                                                                        return;
+                                                                    }
+                                                                    targetId = parsedTarget.ids[0];
+                                                                }
+
+                                                                const rangeToken = agroMatch[1].toLowerCase();
+                                                                let mobIds = [];
+                                                                if (rangeToken === 'all') {
+                                                                    mobIds = Object.keys(ENTITIES.MOBS).map(id => parseInt(id));
+                                                                } else {
+                                                                    const parts = rangeToken.split('-').map(n => parseInt(n));
+                                                                    const startId = parts[0];
+                                                                    const endId = parts[1] ?? startId;
+                                                                    if (!isNaN(startId) && !isNaN(endId)) {
+                                                                        for (let i = Math.min(startId, endId); i <= Math.max(startId, endId); i++) {
+                                                                            mobIds.push(i);
+                                                                        }
+                                                                    }
+                                                                }
+
+                                                                mobIds.forEach(id => {
+                                                                    const mob = ENTITIES.MOBS[id];
+                                                                    if (!mob) return;
+                                                                    if (mob.type !== 3 && mob.type !== 5) return;
+                                                                    sendAgroCommand(id, targetId, 0, 0);
+                                                                });
+                                                            }
+                                                        } else if (raw.toLowerCase() === '/cleardrops') {
+                                                            sendClearDropsCommand();
+                                                        } else if (raw.toLowerCase() === '/reset') {
+                                                            if (Vars.isAdmin) {
+                                                                const now = performance.now();
+                                                                if (now < (uiState.resetConfirmUntil || 0)) {
+                                                                    uiState.resetConfirmUntil = 0;
+                                                                    sendResetCommand();
+                                                                } else {
+                                                                    uiState.resetConfirmUntil = now + 5000;
+                                                                    showNotification("Type /reset again within 5s to confirm server restart.", 'red');
+                                                                }
+                                                            }
+                                                        } else {
+                                                            if (raw.startsWith('/')) {
+                                                                showNotification(isCommand ? "Make sure to write the parameters properly." : "Invalid command.", 'red');
+                                                            } else {
+                                                                // Normal chat
+                                                                sendChat(raw);
+                                                            }
                                                         }
                                                     }
                                                 }
-
-                                                mobIds.forEach(id => {
-                                                    const mob = ENTITIES.MOBS[id];
-                                                    if (!mob) return;
-                                                    if (mob.type !== 3 && mob.type !== 5) return;
-                                                    sendAgroCommand(id, targetId, 0, 0);
-                                                });
                                             }
-                                        } else if (raw.toLowerCase() === '/cleardrops') {
-                                            sendClearDropsCommand();
-                                        } else {
-                                            // Normal chat
-                                            sendChat(raw);
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                }
                 }
             }
         }

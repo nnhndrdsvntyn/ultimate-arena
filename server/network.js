@@ -57,6 +57,17 @@ export function sendUpdates(wss, lbWriter) {
     });
 }
 
+export function sendPlayerCount(wss, writer) {
+    const count = [...wss.clients].filter(ws => ws.readyState === 1).length;
+    writer.reset();
+    writer.writeU8(20); // Packet Type: Player Count
+    writer.writeU8(count);
+    const buf = writer.getBuffer();
+    wss.clients.forEach(ws => {
+        if (ws.readyState === 1) ws.send(buf);
+    });
+}
+
 function getLeaderboard() {
     const lb = Object.values(ENTITIES.PLAYERS)
         .filter(p => p.isAlive)
@@ -95,6 +106,7 @@ function writePlayers(pw, ws, lpX, lpY, rangeSq, isFullFn, entities) {
 
     for (const id in ENTITIES.PLAYERS) {
         const p = ENTITIES.PLAYERS[id];
+        if (p.isInvisible && p.id !== ws.id) continue;
         const dx = p.x - lpX;
         const dy = p.y - lpY;
         if (p.id !== ws.id && dx * dx + dy * dy > rangeSq) continue;
@@ -122,6 +134,8 @@ function writePlayers(pw, ws, lpX, lpY, rangeSq, isFullFn, entities) {
             if (p.isAlive !== prev.isAlive) mask |= 0x400;
             if (p.chatMessage !== prev.chatMessage) mask |= 0x800;
             if (p.username !== prev.username) mask |= 0x1000;
+            if (p.accessoryId !== prev.accessoryId) mask |= 0x2000;
+            if (p.isInvisible !== prev.isInvisible) mask |= 0x4000;
         }
 
         pw.writeU16(mask);
@@ -130,7 +144,9 @@ function writePlayers(pw, ws, lpX, lpY, rangeSq, isFullFn, entities) {
             pw.writeU16(p.hp); pw.writeU16(p.maxHp); pw.writeU32(p.score);
             pw.writeU8(p.weapon?.rank || 1); pw.writeU8(p.swingState);
             pw.writeU8(p.hasShield ? 1 : 0); pw.writeU8(p.isAlive ? 1 : 0);
-            pw.writeU8(p.hasWeapon ? 1 : 0); pw.writeStr(p.username); pw.writeStr(p.chatMessage);
+            pw.writeU8(p.hasWeapon ? 1 : 0); pw.writeU8(p.accessoryId || 0);
+            pw.writeU8(p.isInvisible ? 1 : 0);
+            pw.writeStr(p.username); pw.writeStr(p.chatMessage);
         } else {
             if (mask & 0x01) pw.writeU16(p.x);
             if (mask & 0x02) pw.writeU16(p.y);
@@ -145,6 +161,8 @@ function writePlayers(pw, ws, lpX, lpY, rangeSq, isFullFn, entities) {
             if (mask & 0x400) pw.writeU8(p.isAlive ? 1 : 0);
             if (mask & 0x800) pw.writeStr(p.chatMessage);
             if (mask & 0x1000) pw.writeStr(p.username);
+            if (mask & 0x2000) pw.writeU8(p.accessoryId || 0);
+            if (mask & 0x4000) pw.writeU8(p.isInvisible ? 1 : 0);
         }
         count++;
     }
@@ -267,7 +285,9 @@ export function saveHistory() {
             x: p.x, y: p.y, angle: p.angle, hp: p.hp, maxHp: p.maxHp,
             isAlive: p.isAlive, score: p.score, weaponRank: p.weapon?.rank,
             swingState: p.swingState, hasWeapon: p.hasWeapon,
-            hasShield: p.hasShield, chatMessage: p.chatMessage, username: p.username
+            hasShield: p.hasShield, chatMessage: p.chatMessage, username: p.username,
+            accessoryId: p.accessoryId || 0,
+            isInvisible: p.isInvisible
         };
     }
     for (const m of Object.values(ENTITIES.MOBS)) {

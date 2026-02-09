@@ -287,6 +287,52 @@ export function sendRovCommand(rangeMult) {
     ws.send(writer.getBuffer());
 }
 
+export function sendGiveAccessoryCommand(entityType, startId, endId, accessoryId) {
+    writer.reset();
+    writer.writeU8(8); // Command packet
+    writer.writeU8(16); // give accessory command type
+    writer.writeU8(entityType);
+    writer.writeU16(startId);
+    writer.writeU16(endId);
+    writer.writeU8(accessoryId);
+    ws.send(writer.getBuffer());
+}
+
+export function sendGrantAdminCommand(targetId) {
+    writer.reset();
+    writer.writeU8(8); // Command packet
+    writer.writeU8(17); // grant admin command type
+    writer.writeU8(targetId);
+    ws.send(writer.getBuffer());
+}
+
+export function sendInvisCommand(entityType, startId, endId) {
+    writer.reset();
+    writer.writeU8(8); // Command packet
+    writer.writeU8(18); // invis command type
+    writer.writeU8(entityType);
+    writer.writeU16(startId);
+    writer.writeU16(endId);
+    ws.send(writer.getBuffer());
+}
+
+export function sendUninvisCommand(entityType, startId, endId) {
+    writer.reset();
+    writer.writeU8(8); // Command packet
+    writer.writeU8(19); // uninvis command type
+    writer.writeU8(entityType);
+    writer.writeU16(startId);
+    writer.writeU16(endId);
+    ws.send(writer.getBuffer());
+}
+
+export function sendResetCommand() {
+    writer.reset();
+    writer.writeU8(8); // Command packet
+    writer.writeU8(15); // reset command type
+    ws.send(writer.getBuffer());
+}
+
 export function sendBuyPacket(rank) {
     writer.reset();
     writer.writeU8(20); // Type 20: Buy
@@ -299,5 +345,13 @@ export function sendSellAllPacket(slotIndices) {
     writer.writeU8(21); // Type 21: Sell
     writer.writeU8(slotIndices.length);
     slotIndices.forEach(idx => writer.writeU8(idx));
+    ws.send(writer.getBuffer());
+}
+
+export function sendEquipAccessoryPacket(itemType, fromSlot = 255) {
+    writer.reset();
+    writer.writeU8(23); // Type 23: Equip accessory
+    writer.writeU8(itemType);
+    writer.writeU8(fromSlot);
     ws.send(writer.getBuffer());
 }

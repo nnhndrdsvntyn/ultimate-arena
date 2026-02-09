@@ -24,6 +24,25 @@ export function createCombatText(parent) {
     }, parent, { textContent: 'In Combat' });
 }
 
+export function createComboText(parent) {
+    const hb = HOTBAR_CONFIG;
+    const bottom = hb.marginBottom + hb.slotSize + (hb.padding * 2) + 45;
+
+    uiRefs.comboText = createEl('div', {
+        position: 'fixed',
+        bottom: bottom + 'px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        color: '#fbbf24',
+        fontSize: '1.2rem',
+        fontWeight: 'bold',
+        textShadow: '0 2px 4px rgba(0,0,0,0.5)',
+        display: 'none',
+        pointerEvents: 'none',
+        zIndex: '90'
+    }, parent, { textContent: 'Combo: 0/3' });
+}
+
 export function createShieldIcon(parent) {
     const shieldIcon = createEl('div', {
         backgroundImage: 'url("./images/ui/pause-button.png")',
@@ -76,12 +95,13 @@ export function updateHUDVisibility(isAlive) {
     const shieldIconEl = document.getElementById('pauseBtn');
 
     const isHome = document.getElementById('home-screen').style.display !== 'none';
+    const isRespawn = document.getElementById('respawn-screen')?.style.display !== 'none';
 
-    if (settingsBtn) settingsBtn.style.display = (!isHome && isAlive) ? 'flex' : 'none';
-    if (fullscreenBtn) fullscreenBtn.style.display = (!isHome && isAlive) ? 'flex' : 'none';
-    if (shopBtn) shopBtn.style.display = (!isHome && isAlive) ? 'flex' : 'none';
+    if (settingsBtn) settingsBtn.style.display = (!isHome && !isRespawn && isAlive) ? 'flex' : 'none';
+    if (fullscreenBtn) fullscreenBtn.style.display = (!isHome && !isRespawn && isAlive) ? 'flex' : 'none';
+    if (shopBtn) shopBtn.style.display = (!isHome && !isRespawn && isAlive) ? 'flex' : 'none';
     if (homeBlurBtn) homeBlurBtn.style.display = isAlive ? 'none' : 'flex';
-    if (shieldIconEl) shieldIconEl.style.display = (isAlive && !isHome) ? 'block' : 'none';
+    if (shieldIconEl) shieldIconEl.style.display = (isAlive && !isHome && !isRespawn) ? 'block' : 'none';
 
     updateMobileUIState();
 }
@@ -98,7 +118,8 @@ export function updateMobileUIState() {
     const joy = document.getElementById('joystick-container');
     const chatBtn = document.getElementById('mobile-chat-btn');
     const isHome = document.getElementById('home-screen').style.display !== 'none';
-    const show = isMobile && !isHome;
+    const isRespawn = document.getElementById('respawn-screen')?.style.display !== 'none';
+    const show = isMobile && !isHome && !isRespawn;
 
     if (joy) joy.style.display = show ? 'block' : 'none';
     if (chatBtn) chatBtn.style.display = (show && !uiState.isChatOpen) ? 'flex' : 'none';

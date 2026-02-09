@@ -27,7 +27,7 @@ export class Chest extends GameObject {
     }
 
     damage(health, attacker) {
-        if (performance.now() - this.lastDamagedTime < 200) return; // invincible for 10 ticks (200 / 20)
+        if (performance.now() - this.lastDamagedTime < 200) return false; // invincible for 10 ticks (200 / 20)
 
         this.lastDamagedTime = performance.now();
         this.health = Math.max(0, this.health - health);
@@ -40,6 +40,7 @@ export class Chest extends GameObject {
             const sfx = dataMap.sfxMap.indexOf('wood-hit');
             playSfx(this.x, this.y, sfx, 1000);
         }
+        return true;
     }
 
     die(killer) {
@@ -56,7 +57,7 @@ export class Chest extends GameObject {
             const toDrop = Math.min(256, remainingGold);
             const dropX = this.x + (Math.random() - 0.5) * this.radius;
             const dropY = this.y + (Math.random() - 0.5) * this.radius;
-            const dropObj = spawnObject(dataMap.COIN_ID, dropX, dropY, toDrop);
+            const dropObj = spawnObject(dataMap.COIN_ID, dropX, dropY, toDrop, 'chest');
             if (dropObj) {
                 dropObj.targetX = dropX + (Math.random() - 0.5) * 60;
                 dropObj.targetY = dropY + (Math.random() - 0.5) * 60;

@@ -37,6 +37,8 @@ export class Mob extends Entity {
         this.nextTurnDelay = Math.floor(Math.random() * 3001) + 3000;
         this.target = null;
         this.alarmDuration = mobData.alarmDuration;
+        this.alarmReason = null;
+        this.lastHitById = null;
 
         this.inWater = false;
         this.invincible = false;
@@ -63,10 +65,16 @@ export class Mob extends Entity {
         if (performance.now() - this.lastDamagedTime < 200) return false; // invincible for 10 ticks (200 / 20)
 
         this.lastDamagedTime = performance.now();
-        this.lastEntToDmg = attacker;
+        if (!attacker?.noKillCredit) {
+            this.lastEntToDmg = attacker;
+        }
+        if (attacker && attacker instanceof Player) {
+            this.lastHitById = attacker.id;
+        }
         this.hp = Math.max(0, this.hp - health);
         if (this.hp <= 0) {
-            this.die(this.lastEntToDmg);
+            const killer = this.lastEntToDmg || null;
+            this.die(killer);
             const sfx = dataMap.sfxMap.indexOf('bubble-pop');
             playSfx(this.x, this.y, sfx, 1000);
         } else {
@@ -74,14 +82,16 @@ export class Mob extends Entity {
             playSfx(this.x, this.y, sfx, 1000);
         }
 
-        if (attacker && attacker instanceof Player) {
+        if (attacker && attacker instanceof Player && ![1, 2, 4].includes(this.type)) {
             attacker.lastCombatTime = performance.now();
             attacker.sendStatsUpdate();
         }
         return true;
     }
-    alarm(shooter) {
+    alarm(shooter, reason = 'proximity') {
+        if (shooter?.isInvisible) return;
         this.target = shooter;
+        this.alarmReason = reason;
 
         if (this.isAlarmed) return; // already alarmed
 

@@ -2,15 +2,36 @@ import {
     ENTITIES
 } from '../game.js';
 import {
-    dataMap
+    dataMap,
+    ACCESSORY_KEYS
 } from '../../public/shared/datamap.js';
 import {
     colliding,
-    playSfx
+    playSfx,
+    poison
 } from '../helpers.js';
 import {
     Entity
 } from './entity.js';
+
+const VIKING_HIT_TARGET = 3;
+const VIKING_BONUS_MULT = 1.3;
+
+function getVikingHitInfo(shooter, baseDamage) {
+    if (!shooter || !shooter.isAlive) return { damage: baseDamage, nextCount: 0, apply: false };
+    const accessoryKey = ACCESSORY_KEYS[shooter.accessoryId];
+    if (accessoryKey !== 'viking-hat') return { damage: baseDamage, nextCount: 0, apply: false };
+    const next = (shooter.vikingHitCount || 0) + 1;
+    const isBonus = next === VIKING_HIT_TARGET;
+    const damage = isBonus ? baseDamage * VIKING_BONUS_MULT : baseDamage;
+    return { damage, nextCount: isBonus ? 0 : next, apply: true };
+}
+
+function commitVikingHit(shooter, nextCount) {
+    if (!shooter) return;
+    shooter.vikingHitCount = nextCount;
+    shooter.sendStatsUpdate();
+}
 
 export class Projectile extends Entity {
     constructor(id, x, y, angle, type, shooter, groupId) {
@@ -26,7 +47,7 @@ export class Projectile extends Entity {
         this.maxDistance = dataMap.PROJECTILES[statsType]?.maxDistance;
 
         if (type === -1) {
-            this.damage *= 2;
+            this.damage /= 1.5;
             this.radius = dataMap.SWORDS.imgs[shooter.weapon.rank].swordWidth;
             this.speed /= 1.25;
             this.maxDistance *= 4;
@@ -67,7 +88,11 @@ export class Projectile extends Entity {
                 if (structure.type === 3) {
                     // bushes slow it down, and make its damage half
                     this.speed = dataMap.PROJECTILES[this.weaponRank].speed / 2;
-                    this.damage = (this.shooter.strength + dataMap.PROJECTILES[this.weaponRank]?.damage) * 1.15 / 2;
+                    const baseDamage = (this.shooter.strength + dataMap.PROJECTILES[this.weaponRank]?.damage) * 1.15;
+                    this.damage = baseDamage / 2;
+                    if (this.type === -1) {
+                        this.damage /= 1.5;
+                    }
                     if (this.type == -1) {
                         this.maxDistance = dataMap.PROJECTILES[this.weaponRank].maxDistance / 1.25;
                     } else {
@@ -163,10 +188,17 @@ export class Projectile extends Entity {
                 // damage player
                 let tookDamage = false;
                 if (!player.hasShield) {
-                    tookDamage = player.damage(this.damage, this.shooter);
+                    const viking = getVikingHitInfo(this.shooter, this.damage);
+                    tookDamage = player.damage(viking.damage, this.shooter);
+                    if (tookDamage && viking.apply) {
+                        commitVikingHit(this.shooter, viking.nextCount);
+                    }
                 }
 
                 if (tookDamage) {
+                    if (this.type !== -1 && ACCESSORY_KEYS[player.accessoryId] === 'bush-cloak' && this.shooter) {
+                        poison(this.shooter, 5, 750, 2000);
+                    }
                     // knock player back
                     const knockbackAngle = Math.atan2(player.y - this.shooter.y, player.x - this.shooter.x);
                     player.x += Math.cos(knockbackAngle) * dataMap.PROJECTILES[this.weaponRank].knockbackStrength;
@@ -188,7 +220,8 @@ export class Projectile extends Entity {
 
             if (colliding(this, mob, buffer)) {
                 // damage mob
-                const tookDamage = mob.damage(this.damage, this.shooter);
+                const viking = getVikingHitInfo(this.shooter, this.damage);
+                const tookDamage = mob.damage(viking.damage, this.shooter);
 
                 if (tookDamage) {
                     // knock mob back
@@ -196,9 +229,12 @@ export class Projectile extends Entity {
                     mob.x += Math.cos(knockbackAngle) * dataMap.PROJECTILES[this.weaponRank].knockbackStrength;
                     mob.y += Math.sin(knockbackAngle) * dataMap.PROJECTILES[this.weaponRank].knockbackStrength;
                     mob.clamp();
+                    if (viking.apply) {
+                        commitVikingHit(this.shooter, viking.nextCount);
+                    }
                 }
 
-                mob.alarm(this.shooter);
+                mob.alarm(this.shooter, 'hit');
                 ENTITIES.deleteEntity('projectile', this.id);
                 return;
             }
@@ -214,7 +250,11 @@ export class Projectile extends Entity {
 
             if (colliding(this, object, buffer)) {
                 // damage object
-                object.damage(this.damage, this.shooter);
+                const viking = getVikingHitInfo(this.shooter, this.damage);
+                const didDamage = object.damage(viking.damage, this.shooter);
+                if (didDamage && viking.apply) {
+                    commitVikingHit(this.shooter, viking.nextCount);
+                }
                 ENTITIES.deleteEntity('projectile', this.id);
                 return;
             }

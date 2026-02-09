@@ -19,23 +19,32 @@ export class Chick extends Mob {
     turn() {
         if (this.isAlarmed) {
             let targetInBush = false;
-            Object.values(ENTITIES.STRUCTURES).forEach(structure => {
-                if (structure.type === 3 && colliding(structure, this.target, -100)) {
-                    targetInBush = true;
-                }
-            });
+            if (this.target) {
+                Object.values(ENTITIES.STRUCTURES).forEach(structure => {
+                    if (structure.type === 3 && colliding(structure, this.target, -100)) {
+                        targetInBush = true;
+                    }
+                });
+            }
 
             // Turn AWAY from target if alarmed
-            if (this.target && ENTITIES.PLAYERS[this.target.id] && this.target.isAlive && !targetInBush) {
+            if (this.target && ENTITIES.PLAYERS[this.target.id] && this.target.isAlive) {
+                const targetHidden = targetInBush || this.target.isHidden || this.target.isInvisible;
+                if (targetHidden) {
+                    if (performance.now() - this.lastTurnTime > this.nextTurnDelay) {
+                        super.turn();
+                    }
+                    return;
+                }
                 this.angle = Math.atan2(this.y - this.target.y, this.x - this.target.x);
                 return;
-            } else {
-                // If lost target/target dead/in bush, stop being alarmed
-                this.isAlarmed = false;
-                this.target = null;
-                this.speed = dataMap.MOBS[this.type].speed;
-                return;
             }
+
+            // If lost target/target dead, stop being alarmed
+            this.isAlarmed = false;
+            this.target = null;
+            this.speed = dataMap.MOBS[this.type].speed;
+            return;
         }
 
         super.turn();

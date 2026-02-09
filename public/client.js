@@ -1,11 +1,11 @@
 import { parsePacket } from './parser.js';
 import { LibCanvas } from './libcanvas.js';
 import { ENTITIES, MAP_SIZE } from './game.js';
-import { dataMap, TPS } from './shared/datamap.js';
+import { dataMap, TPS, ACCESSORY_KEYS, isAccessoryItemType, accessoryIdFromItemType, DEFAULT_VIEW_RANGE_MULT } from './shared/datamap.js';
 import {
     initializeUI, updateShieldUI, updateHUDVisibility,
     THROW_BTN_CONFIG, PICKUP_BTN_CONFIG, DROP_BTN_CONFIG, ATTACK_BTN_CONFIG,
-    isMobile, HOTBAR_CONFIG, INVENTORY_CONFIG, uiState
+    isMobile, HOTBAR_CONFIG, INVENTORY_CONFIG, ACCESSORY_SLOT_CONFIG, uiState
 } from './ui.js';
 import { encodeUsername } from './helpers.js';
 
@@ -28,16 +28,20 @@ export const Vars = {
     ping: 0,
     lastSentPing: 0,
     isAdmin: false,
-    viewRangeMult: 1,
+    viewRangeMult: DEFAULT_VIEW_RANGE_MULT,
     myInventory: new Array(35).fill(0),
     myInventoryCounts: new Array(35).fill(0),
     selectedSlot: 0,
     dragSlot: -1,
+    dragAccessory: false,
+    dragAccessoryId: 0,
     lastSelectionTime: 0,
     mouseX: 0,
     mouseY: 0,
     myStats: { dmgHit: 0, dmgThrow: 0, speed: 0, hp: 100, maxHp: 100, goldCoins: 0 },
     inCombat: false,
+    onlineCount: 0,
+    vikingComboCount: 0,
 };
 
 export const camera = {
@@ -170,7 +174,7 @@ function drawLoadingScreen() {
 }
 
 // --- WebSocket Setup ---
-export const ws = new WebSocket(`ws://${location.host}`);
+export const ws = new WebSocket(`wss://${location.host}`);
 ws.binaryType = 'arraybuffer';
 window.ws = ws;
 
@@ -212,24 +216,17 @@ function updateZoom(localPlayer) {
         if (inWater || localPlayer.hasShield) targetZoom = 1.3;
     }
 
-    const viewRangeMult = Math.max(0.1, Vars.viewRangeMult || 1);
+    const accessoryKey = ACCESSORY_KEYS[localPlayer?.accessoryId || 0];
+    const accessoryMult = dataMap.ACCESSORIES[accessoryKey]?.viewRangeMult || 1;
+    const baseViewRange = Vars.viewRangeMult || DEFAULT_VIEW_RANGE_MULT;
+    const viewRangeMult = Math.max(0.1, baseViewRange * accessoryMult);
     targetZoom /= viewRangeMult;
 
-    if (viewRangeMult !== 1) {
-        const delta = targetZoom - LC.zoom;
-        if (Math.abs(delta) < 0.001) {
-            LC.zoom = targetZoom;
-        } else {
-            LC.zoom += delta * 0.18;
-        }
-        return;
-    }
-
-    if (Math.abs(LC.zoom - targetZoom) > 0.001) {
-        if (LC.zoom < targetZoom) LC.zoomIn();
-        else LC.zoomOut();
-    } else {
+    const delta = targetZoom - LC.zoom;
+    if (Math.abs(delta) < 0.001) {
         LC.zoom = targetZoom;
+    } else {
+        LC.zoom += delta * 0.18;
     }
 }
 
@@ -373,10 +370,27 @@ function updateHUD(lp) {
     updateShieldUI(lp?.hasShield);
 
     if (!isAlive) {
-        document.getElementById('home-screen').style.display = 'flex';
-        updateJoinButton();
+        const homeScreen = document.getElementById('home-screen');
+        const respawnScreen = document.getElementById('respawn-screen');
+        const shouldShowRespawn = !uiState.forceHomeScreen && (Vars.lastDiedTime > 0);
+        if (shouldShowRespawn) {
+            if (homeScreen) homeScreen.style.display = 'none';
+            if (respawnScreen) respawnScreen.style.display = 'flex';
+            updateHomeOnlineCount(false);
+            updateRespawnButton();
+        } else {
+            if (homeScreen) homeScreen.style.display = 'flex';
+            if (respawnScreen) respawnScreen.style.display = 'none';
+            updateHomeOnlineCount(true);
+            updateJoinButton();
+        }
     } else {
-        document.getElementById('home-screen').style.display = 'none';
+        const homeScreen = document.getElementById('home-screen');
+        const respawnScreen = document.getElementById('respawn-screen');
+        if (homeScreen) homeScreen.style.display = 'none';
+        if (respawnScreen) respawnScreen.style.display = 'none';
+        uiState.forceHomeScreen = false;
+        updateHomeOnlineCount(false);
         drawInfoBox(lp);
         drawLeaderboard();
         if (Settings.showMinimap) drawMinimap();
@@ -391,6 +405,18 @@ function drawInfoBox(lp) {
     const text = [`x: ${lp.x.toFixed(0)}`, `y: ${lp.y.toFixed(0)}`, `score: ${Math.floor(lp.score || 0)}`, `ping: ${Vars.ping}`];
     LC.drawRect({ pos: [LC.width - 420, 5], size: [155, 110], color: 'rgba(0, 0, 0, 0.4)', cornerRadius: 5 });
     text.forEach((t, i) => LC.drawText({ text: t, pos: [LC.width - 410, 25 + i * 25], font: '16px Inter', color: 'white' }));
+}
+
+function updateHomeOnlineCount(shouldShow) {
+    const countEl = document.getElementById('home-online-count');
+    if (!countEl) return;
+    if (!shouldShow) {
+        countEl.style.display = 'none';
+        return;
+    }
+    const count = Math.max(0, Vars.onlineCount || 0);
+    countEl.textContent = `${count} player${count === 1 ? '' : 's'} online`;
+    countEl.style.display = 'block';
 }
 
 function drawLeaderboard() {
@@ -436,6 +462,29 @@ function drawMinimap() {
 }
 
 function drawDraggedItem() {
+    if (Vars.dragAccessory) {
+        const accessoryKey = ACCESSORY_KEYS[Vars.dragAccessoryId];
+        const accessory = accessoryKey ? dataMap.ACCESSORIES[accessoryKey] : null;
+        if (!accessory) return;
+
+        const hb = HOTBAR_CONFIG;
+        const maxIconSize = hb.slotSize * 0.9;
+        const aspect = (accessory.size?.[0] || 1) / (accessory.size?.[1] || 1);
+        const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
+
+        const x = Vars.mouseX * (LC.width / window.innerWidth);
+        const y = Vars.mouseY * (LC.height / window.innerHeight);
+
+        LC.drawImage({
+            name: accessory.name,
+            pos: [x - iconW / 2, y - iconH / 2],
+            size: [iconW, iconH],
+            rotation: 0,
+            transparency: 0.75
+        });
+        return;
+    }
+
     if (Vars.dragSlot === -1 || uiState.itemsInSellQueue.includes(Vars.dragSlot)) return;
 
     let rank = Vars.myInventory[Vars.dragSlot];
@@ -444,23 +493,11 @@ function drawDraggedItem() {
         const lookupType = isThrown ? rank & 0x7F : rank;
         const count = Vars.myInventoryCounts[Vars.dragSlot];
 
-        // Handle Coin vs Sword icons
-        let imgName, rotation = -Math.PI / 4;
-        let aspect = 1;
-
-        if (lookupType === 9) {
-            imgName = 'gold-coin';
-            rotation = 0;
-        } else {
-            const sword = dataMap.SWORDS.imgs[lookupType] || dataMap.SWORDS.imgs[1];
-            imgName = sword.name;
-            aspect = (sword.swordWidth || 100) / (sword.swordHeight || 50);
-        }
+        const { imgName, rotation, aspect } = getItemIconInfo(lookupType);
 
         const hb = HOTBAR_CONFIG;
         const maxIconSize = hb.slotSize * 1.1;
-        const iconW = maxIconSize;
-        const iconH = maxIconSize / aspect;
+        const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
 
         const x = Vars.mouseX * (LC.width / window.innerWidth);
         const y = Vars.mouseY * (LC.height / window.innerHeight);
@@ -504,21 +541,10 @@ function drawHotbar() {
             const lookupType = isThrown ? rank & 0x7F : rank;
             const count = Vars.myInventoryCounts[i];
 
-            let imgName, rotation = -Math.PI / 4;
-            let aspect = 1;
-
-            if (lookupType === 9) {
-                imgName = 'gold-coin';
-                rotation = 0;
-            } else {
-                const sword = dataMap.SWORDS.imgs[lookupType] || dataMap.SWORDS.imgs[1];
-                imgName = sword.name;
-                aspect = (sword.swordWidth || 100) / (sword.swordHeight || 50);
-            }
+            const { imgName, rotation, aspect } = getItemIconInfo(lookupType);
 
             const maxIconSize = hb.slotSize - 20;
-            const iconW = maxIconSize;
-            const iconH = maxIconSize / aspect;
+            const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
 
             LC.drawImage({
                 name: imgName,
@@ -546,6 +572,8 @@ function drawHotbar() {
     const sx_more = x + hb.padding + (5 * (hb.slotSize + hb.gap)), sy_more = y + hb.padding;
     LC.drawRect({ pos: [sx_more, sy_more], size: [hb.slotSize, hb.slotSize], color: 'rgba(0,0,0,0.2)', cornerRadius: 8, stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 });
     LC.drawText({ text: '...', pos: [sx_more + hb.slotSize / 2, sy_more + hb.slotSize / 2 + 5], font: 'bold 24px Inter', color: 'white', textAlign: 'center' });
+
+    drawAccessorySlot(x, y, totalW);
 }
 
 function drawInventory() {
@@ -576,21 +604,10 @@ function drawInventory() {
             const lookupType = isThrown ? rank & 0x7F : rank;
             const count = Vars.myInventoryCounts[slotIndex];
 
-            let imgName, rotation = -Math.PI / 4;
-            let aspect = 1;
-
-            if (lookupType === 9) {
-                imgName = 'gold-coin';
-                rotation = 0;
-            } else {
-                const sword = dataMap.SWORDS.imgs[lookupType] || dataMap.SWORDS.imgs[1];
-                imgName = sword.name;
-                aspect = (sword.swordWidth || 100) / (sword.swordHeight || 50);
-            }
+            const { imgName, rotation, aspect } = getItemIconInfo(lookupType);
 
             const maxIconSize = inv.slotSize - 20;
-            const iconW = maxIconSize;
-            const iconH = maxIconSize / aspect;
+            const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
 
             LC.drawImage({
                 name: imgName,
@@ -613,6 +630,73 @@ function drawInventory() {
             }
         }
     }
+}
+
+function fitIconSize(maxSize, aspect) {
+    if (!aspect || aspect <= 0) return [maxSize, maxSize];
+    if (aspect >= 1) {
+        return [maxSize, maxSize / aspect];
+    }
+    return [maxSize * aspect, maxSize];
+}
+
+function getItemIconInfo(lookupType) {
+    if (lookupType === 9) {
+        return { imgName: 'gold-coin', rotation: 0, aspect: 1 };
+    }
+    if (isAccessoryItemType(lookupType)) {
+        const accessoryId = accessoryIdFromItemType(lookupType);
+        const accessoryKey = ACCESSORY_KEYS[accessoryId];
+        const accessory = accessoryKey ? dataMap.ACCESSORIES[accessoryKey] : null;
+        if (accessory) {
+            const aspect = (accessory.size?.[0] || 1) / (accessory.size?.[1] || 1);
+            return { imgName: accessory.name, rotation: 0, aspect };
+        }
+    }
+    const sword = dataMap.SWORDS.imgs[lookupType] || dataMap.SWORDS.imgs[1];
+    const aspect = (sword.swordWidth || 100) / (sword.swordHeight || 50);
+    return { imgName: sword.name, rotation: -Math.PI / 4, aspect };
+}
+
+function drawAccessorySlot(hotbarX, hotbarY, hotbarWidth) {
+    const hb = HOTBAR_CONFIG;
+    const as = ACCESSORY_SLOT_CONFIG;
+    const slotX = hotbarX - as.gap - as.size;
+    const slotY = hotbarY + hb.padding + (hb.slotSize - as.size) / 2;
+
+    LC.drawRect({
+        pos: [slotX - hb.padding, hotbarY],
+        size: [as.size + hb.padding * 2, hb.slotSize + hb.padding * 2],
+        color: 'rgba(0,0,0,0.5)',
+        cornerRadius: 12
+    });
+
+    LC.drawRect({
+        pos: [slotX, slotY],
+        size: [as.size, as.size],
+        color: 'rgba(0,0,0,0.2)',
+        cornerRadius: 7,
+        stroke: 'rgba(255,255,255,0.2)',
+        strokeWidth: 1
+    });
+
+    const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+    const accessoryId = myPlayer?.accessoryId || 0;
+    const accessoryKey = ACCESSORY_KEYS[accessoryId];
+    const accessory = accessoryKey ? dataMap.ACCESSORIES[accessoryKey] : null;
+    if (!accessory) return;
+    if (Vars.dragAccessory && Vars.dragAccessoryId === accessoryId) return;
+
+    const maxIconSize = as.size - 10;
+    const aspect = (accessory.size?.[0] || 1) / (accessory.size?.[1] || 1);
+    const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
+
+    LC.drawImage({
+        name: accessory.name,
+        pos: [slotX + as.size / 2 - iconW / 2, slotY + as.size / 2 - iconH / 2],
+        size: [iconW, iconH],
+        rotation: 0
+    });
 }
 
 function drawMobileButtons(lp) {
@@ -650,21 +734,57 @@ function updateJoinButton() {
     btn.style.pointerEvents = cooldown ? 'none' : 'auto';
 }
 
+function updateRespawnButton() {
+    const btn = document.getElementById('respawnBtn');
+    if (!btn) return;
+    const cooldown = performance.now() - Vars.lastDiedTime < 1700;
+    btn.style.opacity = cooldown ? '0.5' : '1';
+    btn.style.pointerEvents = cooldown ? 'none' : 'auto';
+}
+
 // --- Initialization ---
 const joinBtn = document.getElementById('joinBtn');
 const usernameInput = document.getElementById('homeUsrnInput');
 if (usernameInput) usernameInput.value = localStorage.username || '';
 
+const respawnBtn = document.getElementById('respawnBtn');
+const respawnHomeBtn = document.getElementById('respawnHomeBtn');
+
+const tryJoin = () => {
+    if (performance.now() - Vars.lastDiedTime > 1700) {
+        const username = usernameInput?.value || localStorage.username || '';
+        ws.send(encodeUsername(username));
+        LC.zoomIn();
+    }
+};
+
 if (joinBtn) {
     joinBtn.onclick = () => {
         localStorage.username = usernameInput.value;
-        if (performance.now() - Vars.lastDiedTime > 1700) {
-            ws.send(encodeUsername(usernameInput.value));
-            LC.zoomIn();
-        }
+        uiState.forceHomeScreen = false;
+        tryJoin();
     };
 }
 
+if (respawnBtn) {
+    respawnBtn.onclick = () => {
+        if (usernameInput) {
+            localStorage.username = usernameInput.value || localStorage.username || '';
+        }
+        uiState.forceHomeScreen = false;
+        tryJoin();
+    };
+}
+
+if (respawnHomeBtn) {
+    respawnHomeBtn.onclick = () => {
+        const homeScreen = document.getElementById('home-screen');
+        const respawnScreen = document.getElementById('respawn-screen');
+        if (homeScreen) homeScreen.style.display = 'flex';
+        if (respawnScreen) respawnScreen.style.display = 'none';
+        uiState.forceHomeScreen = true;
+    };
+}
 (async () => {
     initializeUI();
     requestAnimationFrame(render);

@@ -15,6 +15,11 @@ import {
 import {
     MAP_SIZE
 } from './game.js';
+import {
+    isSwordRank,
+    isAccessoryItemType,
+    accessoryIdFromItemType
+} from '../public/shared/datamap.js';
 
 // --- Packet Type Map ---
 const PACKET_TYPES = {
@@ -32,10 +37,12 @@ const PACKET_TYPES = {
     PICKUP: 12,
     EQUIP: 13,
     DROP: 14,
+    DROP_SLOT: 22,
     SELECT_SLOT: 16,
     SWAP_SLOTS: 17,
     BUY: 20,
-    SELL: 21
+    SELL: 21,
+    EQUIP_ACCESSORY: 23
 };
 
 export function parsePacket(buffer, ws) {
@@ -96,6 +103,9 @@ export function parsePacket(buffer, ws) {
         case PACKET_TYPES.DROP:
             player.dropItem();
             break;
+        case PACKET_TYPES.DROP_SLOT:
+            player.dropItemFromSlot(reader.readU8());
+            break;
         case PACKET_TYPES.SELECT_SLOT:
             player.selectSlot(reader.readU8());
             break;
@@ -107,6 +117,9 @@ export function parsePacket(buffer, ws) {
             break;
         case PACKET_TYPES.SELL:
             handleSellPacket(reader, player);
+            break;
+        case PACKET_TYPES.EQUIP_ACCESSORY:
+            handleEquipAccessoryPacket(reader, player);
             break;
         default:
             // console.warn(`Unknown packet from client ${ws.id}: ${packetType}`);
@@ -191,9 +204,29 @@ function handlePausePacket(player) {
 }
 
 function handleCommandPacket(reader, ws, buffer) {
-    if (!ws.isAdmin) return;
-
     const cmdType = reader.readU8();
+
+    if (!ws.isAdmin) {
+        // Allow non-admin self-kill only: /kill @s
+        if (cmdType === 8) {
+            const entType = reader.readU8();
+            const startId = buffer.readUint16BE(reader.offset);
+            reader.offset += 2;
+            const endId = buffer.readUint16BE(reader.offset);
+            reader.offset += 2;
+            if (entType === 1 && startId === ws.id && endId === ws.id) {
+                const player = ENTITIES.PLAYERS[ws.id];
+                if (player && player.isAlive) {
+                    const inCombat = performance.now() - player.lastCombatTime < 10000;
+                    const killer = inCombat && player.lastDamager && ENTITIES.PLAYERS[player.lastDamager.id]
+                        ? player.lastDamager
+                        : null;
+                    player.die(killer);
+                }
+            }
+        }
+        return;
+    }
 
     switch (cmdType) {
         case 1: { // TP Pos
@@ -359,9 +392,50 @@ function handleCommandPacket(reader, ws, buffer) {
             const p = ENTITIES.PLAYERS[ws.id];
             if (p && rangeMult > 0) {
                 const clamped = Math.max(0.1, Math.min(rangeMult, 10));
+                p.viewRangeOverride = clamped;
                 p.viewRangeMult = clamped;
                 ws.viewRangeMult = clamped;
             }
+            break;
+        }
+        case 15: { // Reset server
+            cmdRun.resetServer();
+            break;
+        }
+        case 16: { // Give accessory
+            const entType = reader.readU8();
+            const startId = buffer.readUint16BE(reader.offset);
+            reader.offset += 2;
+            const endId = buffer.readUint16BE(reader.offset);
+            reader.offset += 2;
+            const accessoryId = reader.readU8();
+            if (entType !== 1) break;
+            for (let i = startId; i <= endId; i++) {
+                cmdRun.giveAccessory(i, accessoryId);
+            }
+            break;
+        }
+        case 17: { // Grant admin
+            const targetId = reader.readU8();
+            cmdRun.grantAdmin(targetId);
+            break;
+        }
+        case 18: { // Invis
+            const entType = reader.readU8();
+            const startId = buffer.readUint16BE(reader.offset);
+            reader.offset += 2;
+            const endId = buffer.readUint16BE(reader.offset);
+            reader.offset += 2;
+            cmdRun.invis(entType, startId, endId);
+            break;
+        }
+        case 19: { // Uninvis
+            const entType = reader.readU8();
+            const startId = buffer.readUint16BE(reader.offset);
+            reader.offset += 2;
+            const endId = buffer.readUint16BE(reader.offset);
+            reader.offset += 2;
+            cmdRun.uninvis(entType, startId, endId);
             break;
         }
     }
@@ -403,8 +477,15 @@ function handleEquipPacket(player) {
 }
 
 function handleBuyPacket(reader, player) {
-    const rank = reader.readU8();
-    player.buyItem(rank);
+    const itemType = reader.readU8();
+    if (player) {
+        if (isSwordRank(itemType)) {
+            player.buyItem(itemType);
+        } else if (isAccessoryItemType(itemType)) {
+            const accessoryId = accessoryIdFromItemType(itemType);
+            player.buyAccessory(accessoryId);
+        }
+    }
 }
 
 function handleSellPacket(reader, player) {
@@ -414,6 +495,17 @@ function handleSellPacket(reader, player) {
         indices.push(reader.readU8());
     }
     player.sellItems(indices);
+}
+
+function handleEquipAccessoryPacket(reader, player) {
+    const itemType = reader.readU8();
+    const fromSlot = reader.offset < reader.buffer.length ? reader.readU8() : 255;
+    if (!player) return;
+    if (itemType === 0) {
+        player.unequipAccessory();
+        return;
+    }
+    player.equipAccessoryFromItemType(itemType, fromSlot);
 }
 
 // --- Helper Classes ---

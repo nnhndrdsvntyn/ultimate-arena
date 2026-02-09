@@ -43,7 +43,8 @@ const PACKET_TYPES = {
     UPGRADE: 10,
     ADMIN_AUTH: 11,
     INVENTORY: 15,
-    STATS: 18
+    STATS: 18,
+    PLAYER_COUNT: 20
 };
 
 export function parsePacket(buffer) {
@@ -83,6 +84,9 @@ export function parsePacket(buffer) {
             break;
         case PACKET_TYPES.STATS:
             handleStatsPacket(reader);
+            break;
+        case PACKET_TYPES.PLAYER_COUNT:
+            handlePlayerCountPacket(reader);
             break;
         default:
             // console.warn(`Unknown packet type: ${packetType}`);
@@ -165,6 +169,8 @@ function handleUpdatePacket(reader) {
             const hasShield = reader.readU8();
             const isAlive = reader.readU8();
             const hasWeapon = reader.readU8();
+            const accessoryId = reader.readU8();
+            const isInvisible = reader.readU8();
             const username = reader.readString();
             const chatMessage = reader.readString();
 
@@ -180,6 +186,8 @@ function handleUpdatePacket(reader) {
             p.hasShield = hasShield;
             p.isAlive = isAlive;
             p.hasWeapon = hasWeapon;
+            p.accessoryId = accessoryId;
+            p.isInvisible = isInvisible;
             p.username = username;
             p.chatMessage = chatMessage;
         } else { // Delta Update
@@ -197,6 +205,8 @@ function handleUpdatePacket(reader) {
             if (mask & 0x400) p.isAlive = reader.readU8();
             if (mask & 0x800) p.chatMessage = reader.readString();
             if (mask & 0x1000) p.username = reader.readString();
+            if (mask & 0x2000) p.accessoryId = reader.readU8();
+            if (mask & 0x4000) p.isInvisible = reader.readU8();
         }
     }
 
@@ -408,9 +418,6 @@ function handleInventoryPacket(reader) {
     const myPlayer = ENTITIES.PLAYERS[Vars.myId];
     if (myPlayer) {
         myPlayer.weaponRank = Vars.myInventory[Vars.selectedSlot];
-        // Optimistically update hasWeapon locally to prevent lag
-        const rank = myPlayer.weaponRank & 0x7F;
-        myPlayer.hasWeapon = isSwordRank(rank);
     }
 
     if (uiState.isShopOpen) updateShopBody();
@@ -424,6 +431,7 @@ function handleStatsPacket(reader) {
     Vars.myStats.maxHp = reader.readU16();
     Vars.myStats.goldCoins = reader.readU32();
     Vars.inCombat = reader.readU8();
+    Vars.vikingComboCount = reader.readU8();
 
     // Re-render stats if they are visible
     if (uiState.isSettingsOpen && uiState.activeTab === 'Stats') {
@@ -432,6 +440,16 @@ function handleStatsPacket(reader) {
     if (uiState.isShopOpen) {
         updateShopBody();
     }
+}
+
+function handlePlayerCountPacket(reader) {
+    Vars.onlineCount = reader.readU8();
+    const countEl = document.getElementById('home-online-count');
+    if (!countEl) return;
+    const homeScreen = document.getElementById('home-screen');
+    if (!homeScreen || homeScreen.style.display === 'none') return;
+    const count = Math.max(0, Vars.onlineCount || 0);
+    countEl.textContent = `${count} player${count === 1 ? '' : 's'} online`;
 }
 
 // --- Helper Classes ---
