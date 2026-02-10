@@ -9,11 +9,13 @@ export class LibCanvas {
         this._mouseX = window.innerWidth / 2;
         this._mouseY = window.innerHeight / 2;
         this.canvas.addEventListener('mousemove', (e) => {
-            let centerX = window.innerWidth / 2;
-            let centerY = window.innerHeight / 2;
+            const rect = this.canvas.getBoundingClientRect();
 
-            this._mouseX = e.clientX;
-            this._mouseY = e.clientY;
+            const scaleX = this.canvas.width / rect.width;
+            const scaleY = this.canvas.height / rect.height;
+
+            this._mouseX = (e.clientX - rect.left) * scaleX;
+            this._mouseY = (e.clientY - rect.top) * scaleY;
         });
     }
 

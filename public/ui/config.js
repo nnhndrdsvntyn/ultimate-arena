@@ -70,6 +70,14 @@ export const UPDATES_LOG = [
             'Revamped UI'
         ],
         date: '2026-02-08'
+    },
+    {
+        version: '1.2.3',
+        changes: [
+            'Fixed some UI bugs',
+            'More natrual mob sizes',
+        ],
+        date: '2026-02-09'
     }
 ];
 

@@ -623,6 +623,16 @@ body,
     overflow-y: auto;
 }
 
+.settings-body.visual-tab {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.settings-body.visual-tab::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+}
+
 .setting-item {
     display: flex;
     justify-content: space-between;
@@ -712,6 +722,81 @@ body,
 
 .setting-input:focus {
     border-color: #b79a6b;
+}
+
+.range-setting-item {
+    margin-bottom: 10px;
+    user-select: none;
+}
+
+.range-input-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 0;
+    user-select: none;
+}
+
+.range-input {
+    -webkit-appearance: none;
+    appearance: none;
+    flex: 1;
+    height: 24px;
+    border-radius: 999px;
+    background: transparent;
+    margin: 0;
+    outline: none;
+    cursor: pointer;
+}
+
+.range-input::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #b79a6b;
+    border: none;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.4);
+    margin-top: -5px;
+}
+
+.range-input::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #b79a6b;
+    border: none;
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.4);
+    margin-top: -5px;
+}
+
+.range-input::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.2);
+    margin-top: 9px;
+}
+
+.range-input::-moz-range-track {
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.range-value {
+    min-width: 50px;
+    text-align: right;
+    font-weight: 700;
+    color: #b79a6b;
+    user-select: none;
+}
+
+.range-default-note {
+    font-size: 0.75rem;
+    color: rgba(255, 255, 255, 0.6);
+    margin-bottom: 20px;
+    user-select: none;
 }
 
 /* Shop Specifics */
@@ -858,6 +943,29 @@ body,
     transform: none !important;
     filter: grayscale(1);
     opacity: 0.6;
+}
+
+.shop-modal .settings-body {
+    overflow-x: hidden;
+}
+
+.shop-modal .shop-grid,
+.shop-modal .shop-grid *,
+.shop-modal .shop-item,
+.shop-modal .shop-item *,
+.shop-modal img {
+    user-select: none;
+}
+
+.shop-modal .settings-body {
+    overflow-x: hidden;
+}
+
+.shop-modal .shop-grid,
+.shop-modal .shop-grid *,
+.shop-modal .shop-item,
+.shop-modal .shop-item * {
+    user-select: none;
 }
 
 /* Scrollbars */

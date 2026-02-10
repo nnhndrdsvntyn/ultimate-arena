@@ -22,13 +22,39 @@ export const Settings = {
 };
 window.Settings = Settings;
 
+export const VIEW_RANGE_MIN = 0.5;
+export const VIEW_RANGE_MAX = 1.0;
+export const VIEW_RANGE_STEP = 0.01;
+export const VIEW_RANGE_MOBILE_DEFAULT = 0.7;
+export const VIEW_RANGE_PC_DEFAULT = 1.0;
+export const VIEW_RANGE_RECOMMENDED_MOBILE = 0.7;
+export const VIEW_RANGE_RECOMMENDED_DESKTOP = 1.0;
+
+const VIEW_RANGE_STORAGE_KEY = 'ua_view_range_multiplier';
+
+const clampViewRange = (value) => Math.min(VIEW_RANGE_MAX, Math.max(VIEW_RANGE_MIN, value));
+
+const getStoredViewRange = () => {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return null;
+    try {
+        const raw = window.localStorage.getItem(VIEW_RANGE_STORAGE_KEY);
+        const parsed = parseFloat(raw);
+        return Number.isFinite(parsed) ? clampViewRange(parsed) : null;
+    } catch (e) {
+        return null;
+    }
+};
+
+const defaultDeviceViewRange = isMobile ? VIEW_RANGE_MOBILE_DEFAULT : VIEW_RANGE_PC_DEFAULT;
+const initialViewRange = getStoredViewRange() ?? defaultDeviceViewRange;
+
 export const Vars = {
     lastDiedTime: 0,
     myId: 0,
     ping: 0,
     lastSentPing: 0,
     isAdmin: false,
-    viewRangeMult: DEFAULT_VIEW_RANGE_MULT,
+    viewRangeMult: initialViewRange,
     myInventory: new Array(35).fill(0),
     myInventoryCounts: new Array(35).fill(0),
     selectedSlot: 0,
@@ -43,6 +69,19 @@ export const Vars = {
     onlineCount: 0,
     vikingComboCount: 0,
 };
+
+export function setViewRangeMult(value, { persist = true } = {}) {
+    const clamped = clampViewRange(value);
+    Vars.viewRangeMult = clamped;
+    if (persist && typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+        try {
+            window.localStorage.setItem(VIEW_RANGE_STORAGE_KEY, clamped.toString());
+        } catch (error) {
+            // Ignore storage failures
+        }
+    }
+    return clamped;
+}
 
 export const camera = {
     x: 0, y: 0,
@@ -174,7 +213,11 @@ function drawLoadingScreen() {
 }
 
 // --- WebSocket Setup ---
-export const ws = new WebSocket(`wss://${location.host}`);
+let prefix = "wss://";
+if (location.hostname == "localhost") {
+    prefix = "ws://";
+}
+export const ws = new WebSocket(`${prefix}${location.host}`);
 ws.binaryType = 'arraybuffer';
 window.ws = ws;
 

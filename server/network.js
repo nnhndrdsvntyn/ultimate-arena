@@ -2,6 +2,7 @@ import {
     ENTITIES
 } from './game.js';
 import {
+    ACCESSORY_KEYS,
     TPS
 } from '../public/shared/datamap.js';
 
@@ -23,8 +24,13 @@ export function sendUpdates(wss, lbWriter) {
 
         const localPlayer = ENTITIES.PLAYERS[ws.id] || { x: 0, y: 0 };
         const baseRange = localPlayer.isAlive ? 1000 : (1000 / 0.7);
+        const alienHatKey = ACCESSORY_KEYS[localPlayer.accessoryId || 0];
+        const wearingAlienHat = alienHatKey === 'alien-antennas';
+        const hatRange = 1500;
         const viewRangeMult = localPlayer.viewRangeMult || ws.viewRangeMult || 1;
-        const renderDistanceSq = (baseRange * viewRangeMult) ** 2;
+        const requestedRange = baseRange * viewRangeMult;
+        const renderDistance = wearingAlienHat ? Math.min(hatRange, requestedRange) : baseRange;
+        const renderDistanceSq = renderDistance ** 2;
         const lpX = localPlayer.x;
         const lpY = localPlayer.y;
 

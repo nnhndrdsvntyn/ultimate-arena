@@ -1,4 +1,15 @@
-import { Settings, Vars } from '../client.js';
+import {
+    Settings,
+    Vars,
+    setViewRangeMult,
+    VIEW_RANGE_MIN,
+    VIEW_RANGE_MAX,
+    VIEW_RANGE_STEP,
+    VIEW_RANGE_MOBILE_DEFAULT,
+    VIEW_RANGE_PC_DEFAULT,
+    VIEW_RANGE_RECOMMENDED_MOBILE,
+    VIEW_RANGE_RECOMMENDED_DESKTOP
+} from '../client.js';
 import { sendAdminKey } from '../helpers.js';
 import { createEl, makeDraggable } from './dom.js';
 import { uiRefs, uiState } from './context.js';
@@ -56,6 +67,13 @@ export function updateSettingsBody() {
     if (!uiRefs.settingsBody) return;
     uiRefs.settingsBody.innerHTML = '';
 
+    const visualClass = uiRefs.settingsBody.classList.contains('visual-tab');
+    if (uiState.activeTab === 'Visuals') {
+        uiRefs.settingsBody.classList.add('visual-tab');
+    } else if (visualClass) {
+        uiRefs.settingsBody.classList.remove('visual-tab');
+    }
+
     switch (uiState.activeTab) {
         case 'Visuals': renderVisualsTab(); break;
         case 'Stats': renderStatsTab(); break;
@@ -83,6 +101,19 @@ function renderVisualsTab() {
     addToggleSetting(uiRefs.settingsBody, 'Show Nearby Mobs On Minimap (orange)', 'showMobsOnMinimap', (val) => Settings.showMobsOnMinimap = val);
     addToggleSetting(uiRefs.settingsBody, 'Show Nearby Players On Minimap (red)', 'showPlayersOnMinimap', (val) => Settings.showPlayersOnMinimap = val);
     addToggleSetting(uiRefs.settingsBody, 'Show Nearby Chests On Minimap (brown)', 'showChestsOnMinimap', (val) => Settings.showChestsOnMinimap = val);
+
+    createEl('div', { userSelect: 'none' }, uiRefs.settingsBody, { className: 'settings-section-header', textContent: 'View Distance' });
+    addRangeSetting(uiRefs.settingsBody, 'View Range Multiplier', {
+        value: Vars.viewRangeMult,
+        min: VIEW_RANGE_MIN,
+        max: VIEW_RANGE_MAX,
+        step: VIEW_RANGE_STEP,
+        onChange: (value) => setViewRangeMult(value)
+    });
+    createEl('div', { fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)', userSelect: 'none' }, uiRefs.settingsBody, {
+        className: 'range-default-note',
+        textContent: `RECOMMENDED: MOBILE: ${VIEW_RANGE_RECOMMENDED_MOBILE.toFixed(1)} · DESKTOP: ${VIEW_RANGE_RECOMMENDED_DESKTOP.toFixed(1)}`
+    });
 }
 
 function renderStatsTab() {
@@ -110,6 +141,7 @@ function renderAdminAuth() {
         border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '10px', color: 'white', fontWeight: 'bold',
         cursor: 'pointer', transition: 'all 0.2s', fontSize: '1rem'
     }, uiRefs.settingsBody, { textContent: 'Apply Key' });
+    btn.classList.add('no-select');
 
     btn.onmouseover = () => btn.style.filter = 'brightness(1.1)';
     btn.onmouseout = () => btn.style.filter = 'none';
@@ -152,6 +184,36 @@ function addInputSetting(parent, label, initialValue, onChange, type = 'text') {
         onChange(input.value);
     };
     return input;
+}
+
+function addRangeSetting(parent, label, options) {
+    const { value, min, max, step, onChange } = options;
+    const container = createEl('div', {}, parent, { className: 'range-setting-item' });
+    createEl('div', {}, container, { className: 'setting-label', textContent: label });
+
+    const row = createEl('div', { display: 'flex', alignItems: 'center', gap: '10px' }, container, { className: 'range-input-row' });
+    const slider = createEl('input', { flex: 1 }, row, {
+        className: 'range-input',
+        type: 'range',
+        min,
+        max,
+        step,
+        value
+    });
+    const valueEl = createEl('div', {}, row, { className: 'range-value no-select', textContent: '' });
+    const updateValueText = (num) => {
+        const safe = typeof num === 'number' && Number.isFinite(num) ? num : 0;
+        valueEl.textContent = `${safe.toFixed(2)}`;
+    };
+    updateValueText(Number.parseFloat(value));
+
+    slider.oninput = () => {
+        const next = parseFloat(slider.value);
+        if (!Number.isFinite(next)) return;
+        updateValueText(next);
+        onChange(next);
+    };
+    return slider;
 }
 
 export function addSelectSetting(parent, label, options, onChange) {
