@@ -122,6 +122,13 @@ export function sendAdminKey(key) {
     ws.send(writer.getBuffer());
 }
 
+export function sendPausePacket() {
+    if (!ws || ws.readyState !== ws.OPEN) return;
+    writer.reset();
+    writer.writeU8(6); // Pause packet (re-use death type)
+    ws.send(writer.getBuffer());
+}
+
 export function sendTpPosCommand(entityType, startId, endId, x, y) {
     writer.reset();
     writer.writeU8(8); // Command packet
@@ -323,6 +330,14 @@ export function sendUninvisCommand(entityType, startId, endId) {
     writer.writeU8(entityType);
     writer.writeU16(startId);
     writer.writeU16(endId);
+    ws.send(writer.getBuffer());
+}
+
+export function sendActivateAbilityCommand(abilityName) {
+    writer.reset();
+    writer.writeU8(8); // Command packet
+    writer.writeU8(20); // activate ability command type
+    writer.writeStr(abilityName);
     ws.send(writer.getBuffer());
 }
 

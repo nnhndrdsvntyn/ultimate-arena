@@ -23,13 +23,16 @@ export function sendUpdates(wss, lbWriter) {
         }
 
         const localPlayer = ENTITIES.PLAYERS[ws.id] || { x: 0, y: 0 };
-        const baseRange = localPlayer.isAlive ? 1000 : (1000 / 0.7);
+        const baseRange = localPlayer.isAlive ? 1200 : (1200 / 0.7);
         const alienHatKey = ACCESSORY_KEYS[localPlayer.accessoryId || 0];
         const wearingAlienHat = alienHatKey === 'alien-antennas';
-        const hatRange = 1500;
-        const viewRangeMult = localPlayer.viewRangeMult || ws.viewRangeMult || 1;
+        const alienHatRange = 1500;
+        const viewRangeMult = (localPlayer.viewRangeMult ?? ws.viewRangeMult ?? 1);
         const requestedRange = baseRange * viewRangeMult;
-        const renderDistance = wearingAlienHat ? Math.min(hatRange, requestedRange) : baseRange;
+        let renderDistance = requestedRange;
+        if (wearingAlienHat) {
+            renderDistance = Math.max(renderDistance, Math.min(alienHatRange, requestedRange * 1.2));
+        }
         const renderDistanceSq = renderDistance ** 2;
         const lpX = localPlayer.x;
         const lpY = localPlayer.y;
@@ -195,11 +198,12 @@ function writeMobs(pw, lpX, lpY, rangeSq, isFullFn, entities) {
             if (m.hp !== prev.hp) mask |= 0x08;
             if (m.maxHp !== prev.maxHp) mask |= 0x10;
             if (m.type !== prev.type) mask |= 0x20;
+            if ((m.swingState || 0) !== (prev.swingState || 0)) mask |= 0x40;
         }
         pw.writeU8(mask);
         if (mask & 0x80) {
             pw.writeU16(m.x); pw.writeU16(m.y); pw.writeF32(m.angle);
-            pw.writeU16(m.hp); pw.writeU16(m.maxHp); pw.writeU8(m.type);
+            pw.writeU16(m.hp); pw.writeU16(m.maxHp); pw.writeU8(m.type); pw.writeU8(m.swingState || 0);
         } else {
             if (mask & 0x01) pw.writeU16(m.x);
             if (mask & 0x02) pw.writeU16(m.y);
@@ -207,6 +211,7 @@ function writeMobs(pw, lpX, lpY, rangeSq, isFullFn, entities) {
             if (mask & 0x08) pw.writeU16(m.hp);
             if (mask & 0x10) pw.writeU16(m.maxHp);
             if (mask & 0x20) pw.writeU8(m.type);
+            if (mask & 0x40) pw.writeU8(m.swingState || 0);
         }
         count++;
     }
@@ -297,7 +302,7 @@ export function saveHistory() {
         };
     }
     for (const m of Object.values(ENTITIES.MOBS)) {
-        m.prev = { x: m.x, y: m.y, angle: m.angle, hp: m.hp, maxHp: m.maxHp, type: m.type };
+        m.prev = { x: m.x, y: m.y, angle: m.angle, hp: m.hp, maxHp: m.maxHp, type: m.type, swingState: m.swingState || 0 };
     }
     for (const p of Object.values(ENTITIES.PROJECTILES)) {
         p.prev = { x: p.x, y: p.y, angle: p.angle, type: p.type, weaponRank: p.weaponRank };

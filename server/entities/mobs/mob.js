@@ -104,7 +104,7 @@ export class Mob extends Entity {
     }
     die(killer) {
         // activate the mobs death action
-        if (killer) {
+        if (killer && typeof killer.addScore === 'function' && typeof dataMap.MOBS[this.type].deathAction === 'function') {
             dataMap.MOBS[this.type].deathAction(killer);
         }
         this.lastDiedTime = performance.now();
@@ -147,8 +147,8 @@ export class Mob extends Entity {
             this.y += 3;
         }
 
-        // for chick, pig and cow when in water.
-        if ([1, 2, 3].includes(this.type)) {
+        // Keep left-side mobs on left biome edge.
+        if ([1, 2, 3, 6].includes(this.type)) {
             if (this.x > MAP_SIZE[0] * 0.47 - this.radius) {
                 this.angle = Math.PI - 0.5 + Math.random(); // simulate jittering
                 this.target = null;

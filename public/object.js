@@ -95,10 +95,18 @@ export class GameObject {
         }
 
         // draw image
-        const imgWidth = this.radius * proportions[0];
-        const imgHeight = this.radius * proportions[1];
+        let imgWidth = this.radius * proportions[0];
+        let imgHeight = this.radius * proportions[1];
 
-        if (this.type === 9) {
+        // Ground swords should keep each sword's actual aspect ratio.
+        if (isSwordRank(this.type)) {
+            const sword = dataMap.SWORDS.imgs[this.type] || dataMap.SWORDS.imgs[1];
+            const swordAspect = (sword?.swordWidth || 100) / Math.max(1, (sword?.swordHeight || 50));
+            imgHeight = this.radius;
+            imgWidth = imgHeight * swordAspect;
+        }
+
+        if (this.type === dataMap.COIN_ID) {
             let tempAmount = this.amount;
             let bunchIndex = 0;
             while (tempAmount > 0) {

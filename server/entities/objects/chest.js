@@ -51,19 +51,15 @@ export class Chest extends GameObject {
         const coinDropRange = dataMap.OBJECTS[this.type].coinDropRange;
         const [min, max] = coinDropRange;
         const totalGold = Math.floor(Math.random() * (max - min + 1)) + min;
-        // Spawn coins in stacks of 256, spread them out
-        let remainingGold = totalGold;
-        while (remainingGold > 0) {
-            const toDrop = Math.min(256, remainingGold);
-            const dropX = this.x + (Math.random() - 0.5) * this.radius;
-            const dropY = this.y + (Math.random() - 0.5) * this.radius;
-            const dropObj = spawnObject(dataMap.COIN_ID, dropX, dropY, toDrop, 'chest');
+        const dropSpread = 30;
+        for (let i = 0; i < totalGold; i++) {
+            const dropAngle = Math.random() * Math.PI * 2;
+            const dropDistance = this.radius + Math.random() * dropSpread;
+            const dropX = this.x + Math.cos(dropAngle) * dropDistance;
+            const dropY = this.y + Math.sin(dropAngle) * dropDistance;
+            const dropObj = spawnObject(dataMap.COIN_ID, dropX, dropY, 1, 'chest');
             if (dropObj) {
-                dropObj.targetX = dropX + (Math.random() - 0.5) * 60;
-                dropObj.targetY = dropY + (Math.random() - 0.5) * 60;
-                dropObj.teleportTicks = 2;
             }
-            remainingGold -= toDrop;
         }
 
         const dropWeights = dataMap.OBJECTS[this.type].swordRankDrops;

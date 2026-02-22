@@ -2,20 +2,23 @@ export class LibCanvas {
     constructor() {
         this.images = {};
         this.audios = {};
-        [this.width, this.height] = [1440, 760];
+        this.logicalWidth = 1440;
+        this.logicalHeight = 760;
+        this.targetPixelWidth = 1920;
+        this.targetPixelHeight = 1080;
+        this.width = this.logicalWidth;
+        this.height = this.logicalHeight;
         this.createDOM();
+        this.resizeCanvas();
+        window.addEventListener('resize', () => this.resizeCanvas());
 
         this.zoom = 0.7;
         this._mouseX = window.innerWidth / 2;
         this._mouseY = window.innerHeight / 2;
         this.canvas.addEventListener('mousemove', (e) => {
             const rect = this.canvas.getBoundingClientRect();
-
-            const scaleX = this.canvas.width / rect.width;
-            const scaleY = this.canvas.height / rect.height;
-
-            this._mouseX = (e.clientX - rect.left) * scaleX;
-            this._mouseY = (e.clientY - rect.top) * scaleY;
+            this._mouseX = e.clientX - rect.left;
+            this._mouseY = e.clientY - rect.top;
         });
     }
 
@@ -32,8 +35,6 @@ export class LibCanvas {
         this.container.style.margin = '0';
         this.container.style.padding = '0';
 
-        this.canvas.width = this.width;
-        this.canvas.height = this.height;
         this.canvas.style.width = '100%';
         this.canvas.style.height = '100%';
         this.canvas.style.backgroundColor = 'white';
@@ -45,7 +46,24 @@ export class LibCanvas {
         document.body.style.padding = '0';
     }
 
+    resizeCanvas() {
+        if (!this.canvas || !this.ctx) return;
+        this.canvas.width = this.targetPixelWidth;
+        this.canvas.height = this.targetPixelHeight;
+        this.scaleX = this.canvas.width / this.logicalWidth;
+        this.scaleY = this.canvas.height / this.logicalHeight;
+        this.ctx.setTransform(this.scaleX, 0, 0, this.scaleY, 0, 0);
+    }
+
+    setBackBufferResolution(width, height) {
+        this.targetPixelWidth = Math.max(1, Math.round(width));
+        this.targetPixelHeight = Math.max(1, Math.round(height));
+        this.resizeCanvas();
+    }
+
     clearCanvas() {
+        if (!this.ctx) return;
+        this.ctx.setTransform(this.scaleX, 0, 0, this.scaleY, 0, 0);
         this.ctx.clearRect(0, 0, this.width, this.height);
     }
 
@@ -312,7 +330,8 @@ export class LibCanvas {
         name,
         volume = 1,
         timestamp = 0,
-        speed = 1
+        speed = 1,
+        endTime = null
     } = {}) {
         if (name === undefined) {
             throw new Error('name must be defined for playAudio');
@@ -329,6 +348,19 @@ export class LibCanvas {
         audio.currentTime = timestamp;
         audio.playbackRate = speed;
         audio.play().catch(e => console.error(e));
+
+        if (Number.isFinite(endTime)) {
+            const cutoff = Math.max(0, endTime - timestamp);
+            if (cutoff === 0) {
+                audio.pause();
+                return;
+            }
+            const stopDelayMs = (cutoff / Math.max(0.01, speed)) * 1000;
+            setTimeout(() => {
+                audio.pause();
+                audio.currentTime = 0;
+            }, stopDelayMs);
+        }
     }
 
     get center() {

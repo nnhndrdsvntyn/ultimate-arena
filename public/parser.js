@@ -24,7 +24,9 @@ import {
 } from './ui.js';
 import {
     Vars,
-    LC
+    LC,
+    addDamageIndicator,
+    spawnCoinPickupVfx
 } from './client.js';
 import {
     dataMap,
@@ -46,6 +48,26 @@ const PACKET_TYPES = {
     STATS: 18,
     PLAYER_COUNT: 20
 };
+
+function triggerDamageIndicator(prevHp, newHp, x, y, radius = 0) {
+    if (!Number.isFinite(prevHp) || !Number.isFinite(newHp)) return;
+    const delta = prevHp - newHp;
+    if (delta <= 0) return;
+    const { px, py } = jitterOnEntity(x, y, radius);
+    addDamageIndicator(px, py, delta);
+}
+
+function jitterOnEntity(x, y, radius) {
+    if (!radius || radius <= 0) {
+        return { px: x, py: y };
+    }
+    const angle = Math.random() * Math.PI * 2;
+    const dist = Math.sqrt(Math.random()) * radius * 0.75;
+    return {
+        px: x + Math.cos(angle) * dist,
+        py: y + Math.sin(angle) * dist
+    };
+}
 
 export function parsePacket(buffer) {
     const reader = new PacketReader(buffer);
@@ -156,6 +178,7 @@ function handleUpdatePacket(reader) {
         playerIdsThisUpdate.add(id);
         const mask = reader.readU16();
         let p = ENTITIES.PLAYERS[id];
+        const prevPlayerHp = p?.health;
 
         if (mask & 0x8000) { // Full Update
             const x = reader.readU16();
@@ -190,12 +213,17 @@ function handleUpdatePacket(reader) {
             p.isInvisible = isInvisible;
             p.username = username;
             p.chatMessage = chatMessage;
+            triggerDamageIndicator(prevPlayerHp, hp, x, y, dataMap.PLAYERS.baseRadius);
         } else { // Delta Update
             if (!p) continue; // Should not happen with well-behaved server
             if (mask & 0x01) p.newX = reader.readU16();
             if (mask & 0x02) p.newY = reader.readU16();
             if (mask & 0x04) p.newAngle = reader.readF32();
-            if (mask & 0x08) p.health = reader.readU16();
+            if (mask & 0x08) {
+                const newHp = reader.readU16();
+                triggerDamageIndicator(p.health, newHp, p.newX ?? p.x ?? 0, p.newY ?? p.y ?? 0, p.radius || dataMap.PLAYERS.baseRadius);
+                p.health = newHp;
+            }
             if (mask & 0x10) p.maxHealth = reader.readU16();
             if (mask & 0x20) p.newScore = reader.readU32();
             if (mask & 0x40) p.weaponRank = reader.readU8();
@@ -230,6 +258,7 @@ function handleUpdatePacket(reader) {
         mobIdsThisUpdate.add(id);
         const mask = reader.readU8();
         let m = ENTITIES.MOBS[id];
+        const prevMobHp = m?.health;
 
         if (mask & 0x80) { // Full Update
             const x = reader.readU16();
@@ -238,19 +267,27 @@ function handleUpdatePacket(reader) {
             const hp = reader.readU16();
             const maxHp = reader.readU16();
             const type = reader.readU8();
+            const swingState = reader.readU8();
 
             if (!m) m = new Mob(id, x, y, type);
             m.newX = x; m.newY = y; m.newAngle = angle;
             m.health = hp; m.maxHealth = maxHp; m.type = type;
+            m.newSwingState = swingState;
             if (m.type !== m.lastType) m.lastType = m.type;
+            triggerDamageIndicator(prevMobHp, hp, x, y, dataMap.MOBS[type]?.radius);
         } else { // Delta Update
             if (!m) continue;
             if (mask & 0x01) m.newX = reader.readU16();
             if (mask & 0x02) m.newY = reader.readU16();
             if (mask & 0x04) m.newAngle = reader.readF32();
-            if (mask & 0x08) m.health = reader.readU16();
+            if (mask & 0x08) {
+                const newHp = reader.readU16();
+                triggerDamageIndicator(m.health, newHp, m.newX ?? m.x ?? 0, m.newY ?? m.y ?? 0, dataMap.MOBS[m.type]?.radius);
+                m.health = newHp;
+            }
             if (mask & 0x10) m.maxHealth = reader.readU16();
             if (mask & 0x20) m.type = reader.readU8();
+            if (mask & 0x40) m.newSwingState = reader.readU8();
         }
     }
     for (const id in ENTITIES.MOBS) {
@@ -296,6 +333,7 @@ function handleUpdatePacket(reader) {
         objIdsThisUpdate.add(id);
         const mask = reader.readU8();
         let o = ENTITIES.OBJECTS[id];
+        const prevObjHp = o?.health;
 
         if (mask & 0x80) { // Full Update
             const x = reader.readU16();
@@ -303,20 +341,34 @@ function handleUpdatePacket(reader) {
             const type = reader.readI8();
             const health = reader.readU16();
             const amount = reader.readU32();
+            const isChestType = dataMap.CHEST_IDS.includes(type);
             if (!o) o = new GameObject(id, x, y, type);
             o.newX = x; o.newY = y; o.setType(type); o.health = health;
             o.amount = amount;
+            if (isChestType) {
+                triggerDamageIndicator(prevObjHp, health, x, y, dataMap.OBJECTS[type]?.radius);
+            }
         } else { // Delta Update
             if (!o) continue;
             if (mask & 0x01) o.newX = reader.readU16();
             if (mask & 0x02) o.newY = reader.readU16();
-            if (mask & 0x04) o.health = reader.readU16();
+            if (mask & 0x04) {
+                const newHp = reader.readU16();
+                if (dataMap.CHEST_IDS.includes(o.type)) {
+                    triggerDamageIndicator(o.health, newHp, o.newX ?? o.x ?? 0, o.newY ?? o.y ?? 0, dataMap.OBJECTS[o.type]?.radius);
+                }
+                o.health = newHp;
+            }
             if (mask & 0x08) o.setType(reader.readI8());
             if (mask & 0x10) o.amount = reader.readU32();
         }
     }
     for (const id in ENTITIES.OBJECTS) {
-        if (!objIdsThisUpdate.has(Number(id))) delete ENTITIES.OBJECTS[id];
+        if (!objIdsThisUpdate.has(Number(id))) {
+            const obj = ENTITIES.OBJECTS[id];
+            if (obj?.type === dataMap.COIN_ID) spawnCoinPickupVfx(obj);
+            delete ENTITIES.OBJECTS[id];
+        }
     }
 }
 
@@ -363,11 +415,14 @@ function handleAudioPacket(reader) {
     const volume = reader.readU8();
     const sfxName = dataMap.sfxMap[type];
     if (!sfxName) return;
+    const sfxCfg = dataMap.AUDIO[sfxName] || {};
 
     LC.playAudio({
         name: sfxName,
-        timestamp: dataMap.AUDIO[sfxName].defaultTimestamp,
-        volume: (volume / 100) * dataMap.AUDIO[sfxName].defaultVolume
+        timestamp: sfxCfg.defaultTimestamp ?? 0,
+        endTime: sfxCfg.defaultEndTime ?? sfxCfg.endTime ?? null,
+        volume: (volume / 100) * (sfxCfg.defaultVolume ?? 1),
+        speed: sfxCfg.defaultSpeed ?? 1
     });
 }
 

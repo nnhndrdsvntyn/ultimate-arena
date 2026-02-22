@@ -29,14 +29,25 @@ export const INVENTORY_CONFIG = {
     cornerRadius: 12
 };
 
+export const BACK_BUFFER_QUALITIES = [
+    { value: '480p', label: '480p (720×480)', width: 720, height: 480 },
+    { value: '720p', label: '720p (1280×720)', width: 1280, height: 720 },
+    { value: '1080p', label: '1080p (1920×1080) (recommended)', width: 1920, height: 1080 },
+    { value: '1440p', label: '2K: 1440p (2560×1440)', width: 2560, height: 1440 },
+    { value: '2160p', label: '4K (Ultra HD): 2160p (3840×2160)', width: 3840, height: 2160 },
+    { value: '4320p', label: '8K (Ultra HD): 4320p (7680×4320)', width: 7680, height: 4320 }
+];
+export const BACK_BUFFER_DEFAULT = '1080p';
+export const BACK_BUFFER_STORAGE_KEY = 'ua_back_buffer_quality';
+
 export const UPDATES_LOG = [
     {
-        version: '1.1.1',
+        version: '1.0.0',
         changes: ['More admin commands'],
         date: '2026-01-27'
     },
     {
-        version: '1.2.0',
+        version: '1.1.0',
         changes: [
             'Added hotbar, players can now hold multiple items',
             'Revamped images (new snowy rocks)',
@@ -48,7 +59,7 @@ export const UPDATES_LOG = [
         date: '2026-01-29'
     },
     {
-        version: '1.2.1',
+        version: '1.2.0',
         changes: [
             'Fixed mobs spawning outside their biome',
             'Hotbar slots extended from 3 => 5 + extended inventory with 30 more slots',
@@ -60,7 +71,7 @@ export const UPDATES_LOG = [
         date: '2026-01-31'
     },
     {
-        version: '1.2.2',
+        version: '1.3.0',
         changes: [
             'Added accessories (Some give certain buffs)',
             'Fixed slash attack sprites',
@@ -72,12 +83,24 @@ export const UPDATES_LOG = [
         date: '2026-02-08'
     },
     {
-        version: '1.2.3',
+        version: '1.3.1',
         changes: [
             'Fixed some UI bugs',
             'More natrual mob sizes',
         ],
         date: '2026-02-09'
+    },
+    {
+        version: '1.3.2',
+        changes: [
+            "Added pixel quality selection",
+            "UI tweaks",
+            "Added damage indicator text",
+            "Better coin pick-up animation.",
+            "Added minotaur mini-boss. (3 exist at any given time) on the grass side of the map.",
+            "Added rank 9 sword (two-sided axe)."
+        ],
+        date: '2026-02-22'
     }
 ];
 

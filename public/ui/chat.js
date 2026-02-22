@@ -16,6 +16,7 @@ import {
     sendGrantAdminCommand,
     sendInvisCommand,
     sendUninvisCommand,
+    sendActivateAbilityCommand,
     encodeUsername
 } from '../helpers.js';
 import { ws, Vars } from '../client.js';
@@ -58,7 +59,8 @@ const COMMANDS = [
     { name: '/reset', params: '' },
     { name: '/admin', params: '<playerId>' },
     { name: '/invis', params: '<@s|@p[id|range|all]>' },
-    { name: '/uninvis', params: '<@s|@p[id|range|all]>' }
+    { name: '/uninvis', params: '<@s|@p[id|range|all]>' },
+    { name: '/activateability', params: '<static_burst>' }
 ];
 
 const ENTITY_SUGGESTIONS_ALL = ['@s', '@p', '@m', '@o'];
@@ -70,7 +72,8 @@ const MOB_TYPE_SUGGESTIONS = [
     '@m[type=pig]',
     '@m[type=cow]',
     '@m[type=hearty]',
-    '@m[type=polar-bear]'
+    '@m[type=polar-bear]',
+    '@m[type=minotaur]'
 ];
 const ACCESSORY_SUGGESTIONS = ACCESSORY_KEYS.filter(k => k !== 'none');
 const SETATTR_SUGGESTIONS = ['invincible', 'speed', 'damage', 'strength', 'maxhealth'];
@@ -80,6 +83,7 @@ const ITEM_SUGGESTIONS = [
     'gold-coin',
     ...ACCESSORY_SUGGESTIONS
 ];
+const ABILITY_SUGGESTIONS = ['static_burst'];
 const CHAT_AUTOCOMPLETE_DEBUG = false;
 
 function updateCommandUI() {
@@ -246,6 +250,10 @@ function updateSuggestions(raw, activeCommand) {
         if (CHAT_AUTOCOMPLETE_DEBUG) {
             console.log('[ChatSuggest] /setattribute suggestions', suggestions);
         }
+    } else if (activeCommand?.name === '/activateability') {
+        if (tokenIndex === 1) {
+            suggestions = ABILITY_SUGGESTIONS.filter(s => s.startsWith(currentLower));
+        }
     }
 
     if (CHAT_AUTOCOMPLETE_DEBUG) {
@@ -321,7 +329,7 @@ export function parseEntityRange(entityToken) {
     const typeMatch = entityToken.match(/^@m\[type=([a-z\-]+)\]$/i);
     if (typeMatch) {
         const typeName = typeMatch[1].toLowerCase();
-        const typeMap = { chick: 1, pig: 2, cow: 3, hearty: 4, 'polar-bear': 5 };
+        const typeMap = { chick: 1, pig: 2, cow: 3, hearty: 4, 'polar-bear': 5, minotaur: 6 };
         const mobType = typeMap[typeName];
         if (!mobType) return null;
         const ids = Object.values(ENTITIES.MOBS)
@@ -376,6 +384,14 @@ export function handleChatToggle(myPlayer, homeUsrnInput) {
         }
         const ENTITY_TOKEN_RE = '@s|@p\\[(?:[\\d\\-]+|all)\\]|@m\\[(?:[\\d\\-]+|all|type=[a-z\\-]+)\\]';
         const PLAYER_ENTITY_TOKEN_RE = '@s|@p\\[(?:[\\d\\-]+|all)\\]';
+        const activateAbilityMatch = raw.match(/^\/activateability\s+([a-z_]+)$/i);
+        if (activateAbilityMatch) {
+            if (Vars.isAdmin) {
+                sendActivateAbilityCommand(activateAbilityMatch[1].toLowerCase());
+            } else {
+                showNotification("Invalid command.", 'red');
+            }
+        } else {
 
         // /give command: /give {target} {item} [amount]
         const giveTokens = raw.split(/\s+/);
@@ -685,7 +701,7 @@ export function handleChatToggle(myPlayer, homeUsrnInput) {
                                                                 mobIds.forEach(id => {
                                                                     const mob = ENTITIES.MOBS[id];
                                                                     if (!mob) return;
-                                                                    if (mob.type !== 3 && mob.type !== 5) return;
+                                                                    if (mob.type !== 3 && mob.type !== 5 && mob.type !== 6) return;
                                                                     sendAgroCommand(id, targetId, 0, 0);
                                                                 });
                                                             }
@@ -721,6 +737,7 @@ export function handleChatToggle(myPlayer, homeUsrnInput) {
                     }
                 }
             }
+        }
         }
         uiRefs.chatInput.value = '';
         uiRefs.chatInputWrapper.style.display = 'none';

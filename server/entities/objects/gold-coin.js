@@ -1,10 +1,6 @@
 import {
-    ENTITIES,
-    brokenObjects
+    ENTITIES
 } from '../../game.js';
-import {
-    colliding
-} from '../../helpers.js';
 import {
     GameObject
 } from './object.js';
@@ -24,8 +20,13 @@ export class GoldCoin extends GameObject {
     }
 
     process() {
-        // Auto-pickup is now handled by the Player class for better control over delays.
         super.process();
+    }
+
+    startCollection(player) {
+        if (!player || !player.isAlive) return false;
+        this.die(player);
+        return true;
     }
 
     die(killer) {
@@ -38,7 +39,7 @@ export class GoldCoin extends GameObject {
             killer.sendStatsUpdate();
         }
 
-        if (killer && performance.now() - killer.lastPickUpCoinTime > 20) { // don't spam sound packets too much
+        if (killer && performance.now() - (killer.lastPickUpCoinTime || 0) > 20) {
             killer.lastPickUpCoinTime = performance.now();
             const sfx = dataMap.sfxMap.indexOf('coin-collect');
             playSfx(this.x, this.y, sfx, this.radius + killer.radius);

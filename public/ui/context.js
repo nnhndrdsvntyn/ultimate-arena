@@ -10,7 +10,8 @@ export const uiState = {
     resetConfirmUntil: 0,
     forceHomeScreen: false,
     lastInvToggleTime: 0,
-    lastChatCloseTime: 0
+    lastChatCloseTime: 0,
+    isPaused: false
 };
 
 export const uiRefs = {

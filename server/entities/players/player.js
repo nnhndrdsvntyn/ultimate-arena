@@ -304,23 +304,14 @@ export class Player extends Entity {
         const now = performance.now();
 
         // If inventory is full (no empty slots AND no coin slots with room < 256), don't auto-pickup
-        const canFitMoreCoins = this.inventory.some((type, i) => (type === 0) || (type === 9 && this.inventoryCounts[i] < 256));
+        const canFitMoreCoins = this.inventory.some((type, i) => (type === 0) || (type === dataMap.COIN_ID && this.inventoryCounts[i] < 256));
         if (!canFitMoreCoins) return;
 
         for (const id in ENTITIES.OBJECTS) {
             const obj = ENTITIES.OBJECTS[id];
-            // Only auto-pickup coins (Type 9)
-            if (obj && obj.type === 9 && colliding(this, obj)) {
-                // Ensure 1s delay since spawn (prevents instant re-pickup on drop)
-                if (now - (obj.spawnTime || 0) > 1000) {
-                    const amount = obj.amount || 1;
-                    this.addGoldCoins(amount);
-                    if (obj.source === 'chest') {
-                        this.addScore(amount * 10);
-                    }
-                    ENTITIES.deleteEntity('object', obj.id);
-                }
-            }
+            if (!obj || obj.type !== dataMap.COIN_ID || obj.collectorId || !colliding(this, obj)) continue;
+            if (now - (obj.spawnTime || 0) <= 1000) continue;
+            obj.startCollection(this);
         }
     }
 
@@ -337,7 +328,7 @@ export class Player extends Entity {
         const baseType = rank & 0x7F;
         if (isAccessoryItemType(baseType)) return;
 
-        const dropObj = spawnObject(baseType, this.x, this.y, count, baseType === 9 ? 'player' : null);
+        const dropObj = spawnObject(baseType, this.x, this.y, count, baseType === dataMap.COIN_ID ? 'player' : null);
         if (dropObj) {
             dropObj.targetX = this.x + Math.cos(this.angle) * 100;
             dropObj.targetY = this.y + Math.sin(this.angle) * 100;
@@ -365,21 +356,18 @@ export class Player extends Entity {
                 // Respect 1s pickup delay for everything manually picked up too
                 if (performance.now() - (obj.spawnTime || 0) < 1000) continue;
 
-                const isCoin = obj.type === 9;
-                if (isCoin) continue; // Coins are auto-picked up, no manual pickup needed.
+                const isCoin = obj.type === dataMap.COIN_ID;
+                if (isCoin) {
+                    if (obj.collectorId) continue;
+                    if (obj.startCollection(this)) {
+                        return;
+                    }
+                    continue;
+                }
 
                 const stackable = dataMap.OBJECTS[obj.type]?.stackable;
 
                 if (stackable) {
-                    // For coins, we use the addGoldCoins logic which handles the 256 limit and multiple slots
-                    if (obj.type === 9) {
-                        const amount = obj.amount || 1;
-                        this.addGoldCoins(amount);
-                        ENTITIES.deleteEntity('object', obj.id);
-                        playSfx(this.x, this.y, dataMap.sfxMap.indexOf('coin-collect'), 1000);
-                        return;
-                    }
-
                     // Try to stack non-coin items
                     const existingSlot = this.inventory.indexOf(obj.type);
                     if (existingSlot !== -1) {
@@ -502,7 +490,7 @@ export class Player extends Entity {
         let remaining = amount;
         // Try to fill existing stacks (up to 256)
         for (let i = 0; i < 35; i++) {
-            if (this.inventory[i] === 9 && this.inventoryCounts[i] < 256) {
+            if (this.inventory[i] === dataMap.COIN_ID && this.inventoryCounts[i] < 256) {
                 const space = 256 - this.inventoryCounts[i];
                 const toAdd = Math.min(space, remaining);
                 this.inventoryCounts[i] += toAdd;
@@ -517,7 +505,7 @@ export class Player extends Entity {
             if (emptySlot === -1) break;
 
             const toAdd = Math.min(256, remaining);
-            this.inventory[emptySlot] = 9;
+            this.inventory[emptySlot] = dataMap.COIN_ID;
             this.inventoryCounts[emptySlot] = toAdd;
             remaining -= toAdd;
         }
@@ -525,7 +513,7 @@ export class Player extends Entity {
         // If still remaining (inventory full), drop on floor in clusters of 256
         while (remaining > 0) {
             const toDrop = Math.min(256, remaining);
-            const dropObj = spawnObject(9, this.x, this.y, toDrop, 'player');
+            const dropObj = spawnObject(dataMap.COIN_ID, this.x, this.y, toDrop, 'player');
             if (dropObj) {
                 dropObj.targetX = this.x + (Math.random() - 0.5) * 100;
                 dropObj.targetY = this.y + (Math.random() - 0.5) * 100;
@@ -541,7 +529,7 @@ export class Player extends Entity {
     getTotalCoins() {
         let total = 0;
         for (let i = 0; i < 35; i++) {
-            if (this.inventory[i] === 9) {
+            if (this.inventory[i] === dataMap.COIN_ID) {
                 total += this.inventoryCounts[i];
             }
         }
@@ -551,7 +539,7 @@ export class Player extends Entity {
     deductCoins(amount) {
         let remaining = amount;
         for (let i = 34; i >= 0; i--) { // Deduct from end of inventory first
-            if (this.inventory[i] === 9) {
+            if (this.inventory[i] === dataMap.COIN_ID) {
                 const toDeduct = Math.min(this.inventoryCounts[i], remaining);
                 this.inventoryCounts[i] -= toDeduct;
                 remaining -= toDeduct;
@@ -597,6 +585,7 @@ export class Player extends Entity {
         this.lastDiedTime = performance.now();
 
         this.lastCombatTime = -Infinity;
+        this.wasInCombat = false;
 
         this.sendStatsUpdate();
         this.isAlive = false;
@@ -628,7 +617,7 @@ export class Player extends Entity {
             const type = this.inventory[i] & 0x7F; // Handle thrown rank bit
             const count = this.inventoryCounts[i];
             if (type > 1 && !isAccessoryItemType(type)) { // Drop everything except default blade (rank 1) and accessories
-                spawnObject(type, this.x, this.y, count, type === 9 ? 'player' : null);
+                spawnObject(type, this.x, this.y, count, type === dataMap.COIN_ID ? 'player' : null);
             }
         }
 

@@ -1,9 +1,22 @@
 import { ENTITIES } from '../game.js';
-import { ws, Vars, LC } from '../client.js';
-import { writer } from '../helpers.js';
+import { Vars, LC } from '../client.js';
+import { sendPausePacket } from '../helpers.js';
 import { createEl } from './dom.js';
 import { uiRefs, uiState } from './context.js';
 import { isMobile, HOTBAR_CONFIG, UPDATES_LOG, version } from './config.js';
+
+function setPauseState(paused) {
+    if (uiState.isPaused === paused) return;
+    uiState.isPaused = paused;
+    uiState.forceHomeScreen = paused;
+    if (paused) {
+        sendPausePacket();
+    }
+}
+
+function requestPause() {
+    setPauseState(true);
+}
 
 export function createCombatText(parent) {
     const hb = HOTBAR_CONFIG;
@@ -56,11 +69,7 @@ export function createShieldIcon(parent) {
     }, parent, { id: 'pauseBtn' });
 
     shieldIcon.onclick = () => {
-        writer.reset();
-        writer.writeU8(6);
-        ws.send(writer.getBuffer());
-        Vars.lastDiedTime = performance.now();
-        if (LC) LC.zoomOut();
+        requestPause();
     };
 }
 

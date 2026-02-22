@@ -438,6 +438,11 @@ function handleCommandPacket(reader, ws, buffer) {
             cmdRun.uninvis(entType, startId, endId);
             break;
         }
+        case 20: { // Activate ability (admin self-cast)
+            const abilityName = reader.readString();
+            cmdRun.activateAbility(ws.id, abilityName);
+            break;
+        }
     }
 }
 

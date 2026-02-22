@@ -16,6 +16,8 @@ import {
 
 const VIKING_HIT_TARGET = 3;
 const VIKING_BONUS_MULT = 1.3;
+const MINOTAUR_PARRY_HALF_ANGLE = Math.PI / 3;
+const MINOTAUR_CHARGE_DISTANCE_ON_PARRY = 90;
 
 function getVikingHitInfo(shooter, baseDamage) {
     if (!shooter || !shooter.isAlive) return { damage: baseDamage, nextCount: 0, apply: false };
@@ -31,6 +33,37 @@ function commitVikingHit(shooter, nextCount) {
     if (!shooter) return;
     shooter.vikingHitCount = nextCount;
     shooter.sendStatsUpdate();
+}
+
+function normalizeAngle(rad) {
+    return ((rad + Math.PI) % (Math.PI * 2) + (Math.PI * 2)) % (Math.PI * 2) - Math.PI;
+}
+
+function canMinotaurParryThrow(mob, projectile) {
+    if (!mob || !projectile || projectile.type !== -1 || mob.type !== 6) return false;
+
+    // Must be within minotaur's sword swing reach.
+    const swingRange = (dataMap.SWORDS.imgs[9]?.swordWidth || 200) * 2;
+    const dx = projectile.x - mob.x;
+    const dy = projectile.y - mob.y;
+    const distSq = dx * dx + dy * dy;
+    if (distSq > swingRange * swingRange) return false;
+
+    // Must be in front-ish cone so it can parry without rotating.
+    const toProjectile = Math.atan2(dy, dx);
+    const delta = Math.abs(normalizeAngle(toProjectile - mob.angle));
+    return delta <= MINOTAUR_PARRY_HALF_ANGLE;
+}
+
+function chargeMinotaurTowardShooter(mob, shooter) {
+    if (!mob || !shooter) return;
+    const dx = shooter.x - mob.x;
+    const dy = shooter.y - mob.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist <= 0.001) return;
+    mob.x += (dx / dist) * MINOTAUR_CHARGE_DISTANCE_ON_PARRY;
+    mob.y += (dy / dist) * MINOTAUR_CHARGE_DISTANCE_ON_PARRY;
+    if (typeof mob.clamp === 'function') mob.clamp();
 }
 
 export class Projectile extends Entity {
@@ -56,6 +89,12 @@ export class Projectile extends Entity {
         this.distanceTraveled = 0;
         this.shooter = shooter;
         this.weaponRank = shooter.weapon.rank;
+        this.knockbackStrength = dataMap.PROJECTILES[this.weaponRank]?.knockbackStrength || 25;
+
+        // Minotaur slash projectiles hit harder in knockback than player slashes.
+        if (this.type !== -1 && this.shooter?.type === 6) {
+            this.knockbackStrength *= 2;
+        }
 
         ENTITIES.PROJECTILES[id] = this;
     }
@@ -77,6 +116,8 @@ export class Projectile extends Entity {
     }
 
     resolveCollisions() {
+        const shooterIsMob = typeof this.shooter?.type !== 'undefined';
+
         // check structures
         for (const id in ENTITIES.STRUCTURES) {
             const structure = ENTITIES.STRUCTURES[id];
@@ -87,16 +128,17 @@ export class Projectile extends Entity {
             if (colliding(this, structure, buffer)) {
                 if (structure.type === 3) {
                     // bushes slow it down, and make its damage half
-                    this.speed = dataMap.PROJECTILES[this.weaponRank].speed / 2;
-                    const baseDamage = (this.shooter.strength + dataMap.PROJECTILES[this.weaponRank]?.damage) * 1.15;
+                    const projStats = dataMap.PROJECTILES[this.weaponRank] || dataMap.PROJECTILES[this.type] || dataMap.PROJECTILES[1];
+                    this.speed = (projStats?.speed || this.speed || 30) / 2;
+                    const baseDamage = ((this.shooter?.strength || 0) + (projStats?.damage || 0)) * 1.15;
                     this.damage = baseDamage / 2;
                     if (this.type === -1) {
                         this.damage /= 1.5;
                     }
                     if (this.type == -1) {
-                        this.maxDistance = dataMap.PROJECTILES[this.weaponRank].maxDistance / 1.25;
+                        this.maxDistance = (projStats?.maxDistance || this.maxDistance || 100) / 1.25;
                     } else {
-                        this.maxDistance = dataMap.PROJECTILES[this.weaponRank].maxDistance / 1.5;
+                        this.maxDistance = (projStats?.maxDistance || this.maxDistance || 100) / 1.5;
                     }
                 } else {
                     // other structures block the projectile
@@ -129,7 +171,10 @@ export class Projectile extends Entity {
         // check with other projectiles
         for (const pid in ENTITIES.PROJECTILES) {
             const other = ENTITIES.PROJECTILES[pid];
-            if (!other || other.id === this.id || other.shooter.id === this.shooter.id) continue;
+            if (!other || other.id === this.id) continue;
+            // Ignore only true same-owner projectiles (same shooter object),
+            // not merely matching numeric ids across entity types.
+            if (other.shooter === this.shooter) continue;
 
             if (colliding(this, other)) {
                 // If either is a throw, both disappear
@@ -179,7 +224,9 @@ export class Projectile extends Entity {
         // check with players
         for (const id in ENTITIES.PLAYERS) {
             const player = ENTITIES.PLAYERS[id];
-            if (!player || player.id === this.shooter.id || !player.isAlive) continue;
+            if (!player || !player.isAlive) continue;
+            // Ignore true self-hit only when shooter is also a player.
+            if (!shooterIsMob && player.id === this.shooter.id) continue;
 
             let buffer = 0;
             if (this.type === -1) buffer += 50; // a little buffer for thrown swords
@@ -193,16 +240,13 @@ export class Projectile extends Entity {
                     if (tookDamage && viking.apply) {
                         commitVikingHit(this.shooter, viking.nextCount);
                     }
-                }
-
-                if (tookDamage) {
-                    if (this.type !== -1 && ACCESSORY_KEYS[player.accessoryId] === 'bush-cloak' && this.shooter) {
+                    if (this.type !== -1 && ACCESSORY_KEYS[player.accessoryId] === 'bush-cloak' && this.shooter && tookDamage) {
                         poison(this.shooter, 5, 750, 2000);
                     }
                     // knock player back
                     const knockbackAngle = Math.atan2(player.y - this.shooter.y, player.x - this.shooter.x);
-                    player.x += Math.cos(knockbackAngle) * dataMap.PROJECTILES[this.weaponRank].knockbackStrength;
-                    player.y += Math.sin(knockbackAngle) * dataMap.PROJECTILES[this.weaponRank].knockbackStrength;
+                    player.x += Math.cos(knockbackAngle) * this.knockbackStrength;
+                    player.y += Math.sin(knockbackAngle) * this.knockbackStrength;
                     player.clamp();
                 }
 
@@ -213,25 +257,43 @@ export class Projectile extends Entity {
         // check mobs
         for (const id in ENTITIES.MOBS) {
             const mob = ENTITIES.MOBS[id];
-            if (!mob || mob.id === this.shooter.id) continue;
+            if (!mob) continue;
+            // Ignore true self-hit only when shooter is also a mob.
+            if (shooterIsMob && mob.id === this.shooter.id) continue;
 
             let buffer = 0;
             if (this.type === -1) buffer += 50; // a little buffer for thrown swords
 
             if (colliding(this, mob, buffer)) {
+                // Minotaur can parry thrown swords from the front without turning.
+                if (canMinotaurParryThrow(mob, this)) {
+                    if (typeof mob.performSwing === 'function') {
+                        // Parry must be a real swing (spawns slash projectiles), not animation-only.
+                        mob.performSwing(true);
+                    } else {
+                        mob.swingState = 1;
+                    }
+                    if (this.shooter && typeof mob.alarm === 'function') {
+                        mob.alarm(this.shooter, 'hit');
+                    }
+                    chargeMinotaurTowardShooter(mob, this.shooter);
+                    const sfx = dataMap.sfxMap.indexOf('slash-clash');
+                    playSfx(mob.x, mob.y, sfx, 1000);
+                    ENTITIES.deleteEntity('projectile', this.id);
+                    return;
+                }
+
                 // damage mob
                 const viking = getVikingHitInfo(this.shooter, this.damage);
                 const tookDamage = mob.damage(viking.damage, this.shooter);
 
-                if (tookDamage) {
-                    // knock mob back
-                    const knockbackAngle = Math.atan2(mob.y - this.shooter.y, mob.x - this.shooter.x);
-                    mob.x += Math.cos(knockbackAngle) * dataMap.PROJECTILES[this.weaponRank].knockbackStrength;
-                    mob.y += Math.sin(knockbackAngle) * dataMap.PROJECTILES[this.weaponRank].knockbackStrength;
-                    mob.clamp();
-                    if (viking.apply) {
-                        commitVikingHit(this.shooter, viking.nextCount);
-                    }
+                // knock mob back based on projectile knockback strength.
+                const knockbackAngle = Math.atan2(mob.y - this.shooter.y, mob.x - this.shooter.x);
+                mob.x += Math.cos(knockbackAngle) * this.knockbackStrength;
+                mob.y += Math.sin(knockbackAngle) * this.knockbackStrength;
+                mob.clamp();
+                if (tookDamage && viking.apply) {
+                    commitVikingHit(this.shooter, viking.nextCount);
                 }
 
                 mob.alarm(this.shooter, 'hit');

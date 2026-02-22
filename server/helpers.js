@@ -465,6 +465,35 @@ class CommandMap {
         }
     }
 
+    activateAbility(playerId, abilityName) {
+        const player = ENTITIES.PLAYERS[playerId];
+        if (!player || !player.isAlive) return;
+
+        const ability = (abilityName || '').toLowerCase();
+        if (ability !== 'static_burst') return;
+
+        const electricSfx = dataMap.sfxMap.indexOf('electric-sfx1');
+        if (electricSfx >= 0) {
+            playSfx(player.x, player.y, electricSfx, 1200);
+        }
+
+        const count = 30;
+        const groupId = Math.random();
+        for (let i = 0; i < count; i++) {
+            const angle = (i / count) * Math.PI * 2;
+            ENTITIES.newEntity({
+                entityType: 'projectile',
+                id: getId('PROJECTILES'),
+                x: player.x + Math.cos(angle) * player.radius,
+                y: player.y + Math.sin(angle) * player.radius,
+                angle,
+                type: 10,
+                shooter: player,
+                groupId
+            });
+        }
+    }
+
     // regular commands
     upgrade(ws, attributeType) {
         let attributeMap = [0, 'maxHp', 'speed', 'damage'];

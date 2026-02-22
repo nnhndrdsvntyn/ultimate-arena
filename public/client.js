@@ -7,6 +7,7 @@ import {
     THROW_BTN_CONFIG, PICKUP_BTN_CONFIG, DROP_BTN_CONFIG, ATTACK_BTN_CONFIG,
     isMobile, HOTBAR_CONFIG, INVENTORY_CONFIG, ACCESSORY_SLOT_CONFIG, uiState
 } from './ui.js';
+import { BACK_BUFFER_QUALITIES, BACK_BUFFER_DEFAULT, BACK_BUFFER_STORAGE_KEY } from './ui/config.js';
 import { encodeUsername } from './helpers.js';
 
 // --- Configuration & Settings ---
@@ -48,6 +49,20 @@ const getStoredViewRange = () => {
 const defaultDeviceViewRange = isMobile ? VIEW_RANGE_MOBILE_DEFAULT : VIEW_RANGE_PC_DEFAULT;
 const initialViewRange = getStoredViewRange() ?? defaultDeviceViewRange;
 
+const getStoredBackBufferQuality = () => {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return null;
+    try {
+        return window.localStorage.getItem(BACK_BUFFER_STORAGE_KEY);
+    } catch (error) {
+        return null;
+    }
+};
+
+const getBackBufferOption = (value) => BACK_BUFFER_QUALITIES.find(opt => opt.value === value);
+const defaultBackBufferOption = getBackBufferOption(BACK_BUFFER_DEFAULT) ?? BACK_BUFFER_QUALITIES[0];
+const initialBackBufferOption = getBackBufferOption(getStoredBackBufferQuality()) ?? defaultBackBufferOption;
+const initialBackBufferQuality = initialBackBufferOption?.value ?? defaultBackBufferOption?.value ?? (BACK_BUFFER_QUALITIES[0]?.value ?? BACK_BUFFER_DEFAULT);
+
 export const Vars = {
     lastDiedTime: 0,
     myId: 0,
@@ -68,7 +83,73 @@ export const Vars = {
     inCombat: false,
     onlineCount: 0,
     vikingComboCount: 0,
+    backBufferQuality: initialBackBufferQuality
 };
+
+const DAMAGE_INDICATOR_DURATION = 800;
+const DAMAGE_INDICATOR_RISE = 28;
+const damageIndicators = [];
+const COIN_PICKUP_EFFECT_DURATION = 180;
+const COIN_PICKUP_EFFECT_MAX_DISTANCE = 140;
+const COIN_PICKUP_EFFECT_MAX_SPRITES = 5;
+const coinPickupEffects = [];
+
+export function addDamageIndicator(worldX, worldY, amount) {
+    if (!Number.isFinite(worldX) || !Number.isFinite(worldY)) return;
+    const rounded = Math.round(amount);
+    if (rounded <= 0) return;
+
+    damageIndicators.push({
+        text: `-${rounded}`,
+        x: worldX,
+        y: worldY,
+        start: performance.now(),
+        duration: DAMAGE_INDICATOR_DURATION
+    });
+}
+
+function getClosestCoinCollectorId(x, y) {
+    let bestId = null;
+    let bestDistSq = Infinity;
+
+    for (const p of Object.values(ENTITIES.PLAYERS)) {
+        if (!p?.isAlive) continue;
+        const dx = p.x - x;
+        const dy = p.y - y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < bestDistSq) {
+            bestDistSq = distSq;
+            bestId = p.id;
+        }
+    }
+
+    if (bestId === null) return null;
+    if (bestDistSq > COIN_PICKUP_EFFECT_MAX_DISTANCE * COIN_PICKUP_EFFECT_MAX_DISTANCE) return null;
+    return bestId;
+}
+
+export function spawnCoinPickupVfx(coinObj) {
+    if (!coinObj || coinObj.type !== dataMap.COIN_ID) return;
+
+    const startX = coinObj.newX ?? coinObj.x;
+    const startY = coinObj.newY ?? coinObj.y;
+    if (!Number.isFinite(startX) || !Number.isFinite(startY)) return;
+
+    const targetId = getClosestCoinCollectorId(startX, startY);
+    if (targetId === null) return;
+
+    const amount = Math.max(1, coinObj.amount || 1);
+    const spriteCount = Math.min(COIN_PICKUP_EFFECT_MAX_SPRITES, amount >= 5 ? 5 : amount);
+
+    coinPickupEffects.push({
+        startX,
+        startY,
+        targetId,
+        startTime: performance.now(),
+        spriteCount,
+        seed: Math.random() * Math.PI * 2
+    });
+}
 
 export function setViewRangeMult(value, { persist = true } = {}) {
     const clamped = clampViewRange(value);
@@ -83,6 +164,24 @@ export function setViewRangeMult(value, { persist = true } = {}) {
     return clamped;
 }
 
+export function setBackBufferQuality(value, { persist = true } = {}) {
+    const option = getBackBufferOption(value) ?? defaultBackBufferOption ?? BACK_BUFFER_QUALITIES[0];
+    if (!option) return null;
+
+    Vars.backBufferQuality = option.value;
+    LC.setBackBufferResolution(option.width, option.height);
+
+    if (persist && typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+        try {
+            window.localStorage.setItem(BACK_BUFFER_STORAGE_KEY, option.value);
+        } catch (error) {
+            // Ignore storage failures
+        }
+    }
+
+    return option;
+}
+
 export const camera = {
     x: 0, y: 0,
     target: { x: 0, y: 0 }
@@ -90,6 +189,7 @@ export const camera = {
 
 export const LC = new LibCanvas();
 LC.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+setBackBufferQuality(initialBackBufferQuality, { persist: false });
 
 // --- State Variables ---
 let cantJoin = false;
@@ -183,9 +283,20 @@ async function loadAssets() {
 function drawLoadingScreen() {
     if (!loadingState.active) return;
 
+    const scaleX = LC.scaleX ?? 1;
+    const scaleY = LC.scaleY ?? 1;
+
     LC.ctx.save();
-    LC.ctx.setTransform(1, 0, 0, 1, 0, 0);
-    LC.ctx.fillStyle = '#0f172a';
+    LC.ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+    if (LC.images?.['loading-background']) {
+        LC.drawImage({
+            name: 'loading-background',
+            pos: [0, 0],
+            size: [LC.width, LC.height],
+            transparency: 0.1
+        });
+    }
+    LC.ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
     LC.ctx.fillRect(0, 0, LC.width, LC.height);
 
     const barWidth = 400;
@@ -341,9 +452,12 @@ function render() {
     if (Settings.renderGrid) drawGrid(localPlayer);
 
     // Entities (Z-ordering implied by draw order)
-    [ENTITIES.STRUCTURES, ENTITIES.OBJECTS, ENTITIES.MOBS, ENTITIES.PROJECTILES, ENTITIES.PLAYERS].forEach(group => {
+    [ENTITIES.STRUCTURES, ENTITIES.OBJECTS, ENTITIES.MOBS, ENTITIES.PROJECTILES].forEach(group => {
         Object.values(group).forEach(e => e.draw());
     });
+    drawCoinPickupEffects();
+    Object.values(ENTITIES.PLAYERS).forEach(e => e.draw());
+    drawDamageIndicators();
 
     // Draw bushes with transparency layering (after players so they appear on top)
     const bushes = Object.values(ENTITIES.STRUCTURES).filter(s => s.type === 3);
@@ -366,7 +480,6 @@ function render() {
     });
 
     LC.ctx.restore();
-
     // UI & Overlays
     updateHUD(localPlayer);
     drawFPS();
@@ -382,6 +495,31 @@ function drawFPS() {
         color: 'rgba(255, 255, 255, 0.4)',
         textAlign: 'left'
     });
+}
+
+function drawDamageIndicators() {
+    const now = performance.now();
+    for (let i = damageIndicators.length - 1; i >= 0; i--) {
+        const indicator = damageIndicators[i];
+        const elapsed = now - indicator.start;
+        const progress = Math.min(1, elapsed / indicator.duration);
+        if (progress >= 1) {
+            damageIndicators.splice(i, 1);
+            continue;
+        }
+        const transparency = 1 - progress;
+        const rise = DAMAGE_INDICATOR_RISE * progress;
+        const screenX = indicator.x - camera.x;
+        const screenY = indicator.y - camera.y - rise;
+        LC.drawText({
+            text: indicator.text,
+            pos: [screenX, screenY],
+            font: 'bold 16px Inter',
+            color: '#ff0000',
+            textAlign: 'center',
+            transparency
+        });
+    }
 }
 
 function drawGrid(lp) {
@@ -412,9 +550,17 @@ function updateHUD(lp) {
     updateHUDVisibility(isAlive);
     updateShieldUI(lp?.hasShield);
 
+    const homeScreen = document.getElementById('home-screen');
+    const respawnScreen = document.getElementById('respawn-screen');
+
+    if (uiState.forceHomeScreen) {
+        if (homeScreen) homeScreen.style.display = 'flex';
+        if (respawnScreen) respawnScreen.style.display = 'none';
+        updateHomeOnlineCount(true);
+        return;
+    }
+
     if (!isAlive) {
-        const homeScreen = document.getElementById('home-screen');
-        const respawnScreen = document.getElementById('respawn-screen');
         const shouldShowRespawn = !uiState.forceHomeScreen && (Vars.lastDiedTime > 0);
         if (shouldShowRespawn) {
             if (homeScreen) homeScreen.style.display = 'none';
@@ -428,8 +574,6 @@ function updateHUD(lp) {
             updateJoinButton();
         }
     } else {
-        const homeScreen = document.getElementById('home-screen');
-        const respawnScreen = document.getElementById('respawn-screen');
         if (homeScreen) homeScreen.style.display = 'none';
         if (respawnScreen) respawnScreen.style.display = 'none';
         uiState.forceHomeScreen = false;
@@ -441,6 +585,49 @@ function updateHUD(lp) {
         drawInventory();
         if (isMobile || Settings.forceMobileUI) drawMobileButtons(lp);
         drawDraggedItem();
+    }
+}
+
+function drawCoinPickupEffects() {
+    const now = performance.now();
+    const radius = dataMap.OBJECTS[dataMap.COIN_ID]?.radius || 15;
+    const baseSize = radius * 2;
+
+    for (let i = coinPickupEffects.length - 1; i >= 0; i--) {
+        const effect = coinPickupEffects[i];
+        const target = ENTITIES.PLAYERS[effect.targetId];
+
+        if (!target?.isAlive) {
+            coinPickupEffects.splice(i, 1);
+            continue;
+        }
+
+        const elapsed = now - effect.startTime;
+        const t = Math.min(1, elapsed / COIN_PICKUP_EFFECT_DURATION);
+        if (t >= 1) {
+            coinPickupEffects.splice(i, 1);
+            continue;
+        }
+
+        const eased = 1 - Math.pow(1 - t, 3);
+        const x = effect.startX + (target.x - effect.startX) * eased;
+        const y = effect.startY + (target.y - effect.startY) * eased;
+        const spread = (1 - t) * 7;
+        const alpha = 1 - t * 0.8;
+
+        for (let j = 0; j < effect.spriteCount; j++) {
+            const angle = effect.seed + ((j / effect.spriteCount) * Math.PI * 2);
+            const ox = Math.cos(angle) * spread;
+            const oy = Math.sin(angle) * spread;
+            const size = baseSize * (1 - t * 0.2);
+
+            LC.drawImage({
+                name: 'gold-coin',
+                pos: [x - camera.x + ox - size / 2, y - camera.y + oy - size / 2],
+                size: [size, size],
+                transparency: alpha
+            });
+        }
     }
 }
 
@@ -684,7 +871,7 @@ function fitIconSize(maxSize, aspect) {
 }
 
 function getItemIconInfo(lookupType) {
-    if (lookupType === 9) {
+    if (lookupType === dataMap.COIN_ID) {
         return { imgName: 'gold-coin', rotation: 0, aspect: 1 };
     }
     if (isAccessoryItemType(lookupType)) {
@@ -794,6 +981,7 @@ const respawnBtn = document.getElementById('respawnBtn');
 const respawnHomeBtn = document.getElementById('respawnHomeBtn');
 
 const tryJoin = () => {
+    if (uiState.isPaused) return;
     if (performance.now() - Vars.lastDiedTime > 1700) {
         const username = usernameInput?.value || localStorage.username || '';
         ws.send(encodeUsername(username));
@@ -805,6 +993,7 @@ if (joinBtn) {
     joinBtn.onclick = () => {
         localStorage.username = usernameInput.value;
         uiState.forceHomeScreen = false;
+        uiState.isPaused = false;
         tryJoin();
     };
 }
@@ -815,6 +1004,7 @@ if (respawnBtn) {
             localStorage.username = usernameInput.value || localStorage.username || '';
         }
         uiState.forceHomeScreen = false;
+        uiState.isPaused = false;
         tryJoin();
     };
 }

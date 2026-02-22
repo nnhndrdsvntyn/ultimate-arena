@@ -797,33 +797,38 @@ export function setupDesktopControls() {
         sendRotation(angle);
     });
 
-    window.addEventListener("mousedown", (e) => {
-        if (isUIElement(e.target)) return;
+        window.addEventListener("mousedown", (e) => {
+            if (isUIElement(e.target)) return;
 
-        const myPlayer = ENTITIES.PLAYERS[Vars.myId];
-        if (isClickingAccessorySlot(e.clientX, e.clientY)) {
-            if (myPlayer?.accessoryId > 0) {
-                Vars.dragAccessory = true;
-                Vars.dragAccessoryId = myPlayer.accessoryId;
+            const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+            const slotClicked = isClickingHotbar(e.clientX, e.clientY);
+            const invSlot = isClickingInventory(e.clientX, e.clientY);
+
+            if (e.shiftKey && uiState.isShopOpen && uiState.activeShopTab === 'Sell') {
+                const clickedSlot = slotClicked !== -1 ? slotClicked : invSlot;
+                if (clickedSlot !== -1) {
+                    const queued = queueSellSlot(clickedSlot);
+                    if (queued) return;
+                }
             }
-            return;
-        }
 
-        const slotClicked = isClickingHotbar(e.clientX, e.clientY);
-        const invSlot = isClickingInventory(e.clientX, e.clientY);
+            if (e.shiftKey) {
+                if (isClickingAccessorySlot(e.clientX, e.clientY)) {
+                    if (myPlayer?.accessoryId > 0 && findFirstFreeSlot() !== -1) {
+                        sendEquipAccessoryPacket(0);
+                    }
+                    return;
+                }
 
-        if (e.shiftKey && uiState.isShopOpen && uiState.activeShopTab === 'Sell') {
-            const clickedSlot = slotClicked !== -1 ? slotClicked : invSlot;
-            if (clickedSlot !== -1) {
-                const queued = queueSellSlot(clickedSlot);
-                if (queued) return;
-            }
-        }
-
-        if (e.shiftKey) {
-            // Hotbar -> Inventory
-            if (uiState.isInventoryOpen && slotClicked !== -1 && slotClicked < 5 && Vars.myInventory[slotClicked] > 0 && !uiState.itemsInSellQueue.includes(slotClicked)) {
-                for (let i = 5; i < 35; i++) {
+                const accessorySlotEmpty = myPlayer?.accessoryId === 0;
+                const clickedSlot = slotClicked !== -1 ? slotClicked : invSlot;
+                if (accessorySlotEmpty && clickedSlot !== -1 && isAccessoryItemType(Vars.myInventory[clickedSlot] & 0x7F)) {
+                    sendEquipAccessoryPacket(Vars.myInventory[clickedSlot], clickedSlot);
+                    return;
+                }
+                // Hotbar -> Inventory
+                if (uiState.isInventoryOpen && slotClicked !== -1 && slotClicked < 5 && Vars.myInventory[slotClicked] > 0 && !uiState.itemsInSellQueue.includes(slotClicked)) {
+                    for (let i = 5; i < 35; i++) {
                     if (Vars.myInventory[i] === 0 && !uiState.itemsInSellQueue.includes(i)) {
                         Vars.myInventory[i] = Vars.myInventory[slotClicked];
                         Vars.myInventory[slotClicked] = 0;
@@ -890,4 +895,13 @@ function queueSellSlot(slotIdx) {
     uiState.itemsInSellQueue.push(slotIdx);
     updateShopBody();
     return true;
+}
+
+function findFirstFreeSlot() {
+    for (let i = 0; i < 35; i++) {
+        if (Vars.myInventory[i] === 0 && !uiState.itemsInSellQueue.includes(i)) {
+            return i;
+        }
+    }
+    return -1;
 }

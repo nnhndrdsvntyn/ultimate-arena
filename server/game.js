@@ -17,6 +17,9 @@ import {
     PolarBear
 } from './entities/mobs/polarbear.js';
 import {
+    Minotaur
+} from './entities/mobs/minotaur.js';
+import {
     Rock
 } from './entities/structures/rock.js';
 import {
@@ -95,6 +98,9 @@ export const ENTITIES = {
                 case 5:
                     new PolarBear(id, x, y);
                     break;
+                case 6:
+                    new Minotaur(id, x, y);
+                    break;
             }
         } else if (entityType === 'structure') {
             entityType = 4;
@@ -113,7 +119,7 @@ export const ENTITIES = {
             entityType = 5;
             if (dataMap.CHEST_IDS.includes(type)) {
                 new Chest(id, x, y, type);
-            } else if (type === 9) {
+            } else if (type === dataMap.COIN_ID) {
                 new GoldCoin(id, x, y, type, amount, source);
             } else {
                 new GameObject(id, x, y, type);
@@ -263,6 +269,9 @@ export function getRandomMobPosition(type) {
     if (type === 5) { // Polar Bear (Right side / Snow)
         x = Math.floor(MAP_SIZE[0] * 0.53 + Math.random() * (MAP_SIZE[0] * 0.47));
         y = Math.floor(Math.random() * MAP_SIZE[1]);
+    } else if (type === 6) { // Minotaur (Left side / Green)
+        x = Math.floor(Math.random() * 4700);
+        y = Math.floor(Math.random() * 10000);
     } else if (type === 4) { // Hearty (Middle-ish)
         x = Math.floor(Math.random() * 10000);
         y = Math.floor(Math.random() * 10000);
@@ -280,10 +289,11 @@ setTimeout(() => {
         mob2: 50, // Pig
         mob3: 50, // Cow
         mob4: 25, // Hearty
-        mob5: 20  // Polar Bear (changed from 50 => 20)
+        mob5: 20, // Polar Bear (changed from 50 => 20)
+        mob6: 3   // Minotaur
     };
 
-    for (let type = 1; type <= 5; type++) {
+    for (let type = 1; type <= 6; type++) {
         const count = counts[`mob${type}`];
         for (let i = 0; i < count; i++) {
             const { x, y } = getRandomMobPosition(type);

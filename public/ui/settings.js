@@ -2,6 +2,7 @@ import {
     Settings,
     Vars,
     setViewRangeMult,
+    setBackBufferQuality,
     VIEW_RANGE_MIN,
     VIEW_RANGE_MAX,
     VIEW_RANGE_STEP,
@@ -11,6 +12,7 @@ import {
     VIEW_RANGE_RECOMMENDED_DESKTOP
 } from '../client.js';
 import { sendAdminKey } from '../helpers.js';
+import { BACK_BUFFER_QUALITIES } from './config.js';
 import { createEl, makeDraggable } from './dom.js';
 import { uiRefs, uiState } from './context.js';
 import { resetInputs } from './input.js';
@@ -114,6 +116,10 @@ function renderVisualsTab() {
         className: 'range-default-note',
         textContent: `RECOMMENDED: MOBILE: ${VIEW_RANGE_RECOMMENDED_MOBILE.toFixed(1)} · DESKTOP: ${VIEW_RANGE_RECOMMENDED_DESKTOP.toFixed(1)}`
     });
+
+    createEl('div', { userSelect: 'none' }, uiRefs.settingsBody, { className: 'settings-section-header', textContent: 'Back-buffer Quality' });
+    const backBufferSelect = addSelectSetting(uiRefs.settingsBody, 'Resolution', BACK_BUFFER_QUALITIES, (value) => setBackBufferQuality(value));
+    backBufferSelect.value = Vars.backBufferQuality;
 }
 
 function renderStatsTab() {
@@ -230,7 +236,16 @@ export function addSelectSetting(parent, label, options, onChange) {
     }, item, { className: 'setting-input' });
 
     options.forEach(opt => {
-        createEl('option', {}, select, { value: opt, textContent: opt });
+        const isObject = typeof opt === 'object' && opt !== null;
+        const optionValue = isObject ? opt.value : opt;
+        const optionLabel = isObject ? (opt.label ?? optionValue) : opt;
+        const optionEl = createEl('option', {}, select, {
+            value: optionValue,
+            textContent: optionLabel
+        });
+        if (isObject && opt.disabled) {
+            optionEl.disabled = true;
+        }
     });
 
     select.onchange = () => {
