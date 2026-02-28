@@ -9,7 +9,8 @@ import {
     dataMap,
     isSwordRank,
     isAccessoryId,
-    accessoryItemTypeFromId
+    accessoryItemTypeFromId,
+    isChestObjectType
 } from '../public/shared/datamap.js';
 
 // networking
@@ -162,6 +163,100 @@ export function playSfx(xorigin, yorigin, type, range) {
     });
 }
 
+export function emitLightningShotFx(startX, startY, endX, endY, durationMs = 1000) {
+    const fxWriter = new PacketWriter(32);
+    fxWriter.reset();
+    fxWriter.writeU8(21); // Lightning shot effect
+    fxWriter.writeU16(Math.max(0, Math.min(65535, Math.round(startX))));
+    fxWriter.writeU16(Math.max(0, Math.min(65535, Math.round(startY))));
+    fxWriter.writeU16(Math.max(0, Math.min(65535, Math.round(endX))));
+    fxWriter.writeU16(Math.max(0, Math.min(65535, Math.round(endY))));
+    fxWriter.writeU16(Math.max(1, Math.min(10000, Math.round(durationMs))));
+    const packet = fxWriter.getBuffer();
+    wss.clients.forEach(client => {
+        client.send(packet);
+    });
+}
+
+export function emitCoinPickupFx(startX, startY, targetPlayerId, amount = 1) {
+    const fxWriter = new PacketWriter(16);
+    fxWriter.reset();
+    fxWriter.writeU8(22); // Coin pickup effect
+    fxWriter.writeU16(Math.max(0, Math.min(65535, Math.round(startX))));
+    fxWriter.writeU16(Math.max(0, Math.min(65535, Math.round(startY))));
+    fxWriter.writeU8(Math.max(0, Math.min(255, Math.round(targetPlayerId))));
+    fxWriter.writeU16(Math.max(1, Math.min(65535, Math.round(amount))));
+    const packet = fxWriter.getBuffer();
+    wss.clients.forEach(client => {
+        client.send(packet);
+    });
+}
+
+export function emitEnergyBurstFx(x, y, radius = 500, durationMs = 700, waves = 3) {
+    const fxWriter = new PacketWriter(16);
+    fxWriter.reset();
+    fxWriter.writeU8(23); // Energy burst effect
+    fxWriter.writeU16(Math.max(0, Math.min(65535, Math.round(x))));
+    fxWriter.writeU16(Math.max(0, Math.min(65535, Math.round(y))));
+    fxWriter.writeU16(Math.max(1, Math.min(65535, Math.round(radius))));
+    fxWriter.writeU16(Math.max(1, Math.min(10000, Math.round(durationMs))));
+    fxWriter.writeU8(Math.max(1, Math.min(8, Math.round(waves))));
+    const packet = fxWriter.getBuffer();
+    wss.clients.forEach(client => {
+        client.send(packet);
+    });
+}
+
+export function emitCriticalHitFxToPlayer(playerId, x, y) {
+    const pid = Math.max(0, Math.min(255, Math.round(playerId)));
+    const targetX = Math.max(0, Math.min(65535, Math.round(x)));
+    const targetY = Math.max(0, Math.min(65535, Math.round(y)));
+
+    const fxWriter = new PacketWriter(8);
+    fxWriter.reset();
+    fxWriter.writeU8(24); // Critical hit marker
+    fxWriter.writeU16(targetX);
+    fxWriter.writeU16(targetY);
+    const packet = fxWriter.getBuffer();
+
+    wss.clients.forEach(client => {
+        if (client.id === pid) client.send(packet);
+    });
+}
+
+export function spawnEnergyBurstProjectiles(source, options = {}) {
+    if (!source) return;
+    if (source.isAlive === false) return;
+    if (Number.isFinite(source.hp) && source.hp <= 0) return;
+
+    const count = Number.isFinite(options.count) && options.count > 0 ? Math.floor(options.count) : 30;
+    const logicOnly = options.logicOnly !== false;
+    const durationMs = Number.isFinite(options.durationMs) && options.durationMs > 0 ? Math.round(options.durationMs) : 700;
+    const fxWaves = Number.isFinite(options.fxWaves) && options.fxWaves > 0 ? Math.round(options.fxWaves) : 3;
+    const groupId = Math.random();
+    for (let i = 0; i < count; i++) {
+        const angle = (i / count) * Math.PI * 2;
+        const projectileOptions = {};
+        if (logicOnly) projectileOptions.logicOnly = true;
+
+        ENTITIES.newEntity({
+            entityType: 'projectile',
+            id: getId('PROJECTILES'),
+            x: source.x + Math.cos(angle) * source.radius,
+            y: source.y + Math.sin(angle) * source.radius,
+            angle,
+            type: 10,
+            shooter: source,
+            groupId,
+            projectileOptions: Object.keys(projectileOptions).length ? projectileOptions : undefined
+        });
+    }
+
+    // Visuals are driven by a dedicated light packet instead of syncing every burst projectile.
+    const burstRadius = dataMap.PROJECTILES[10]?.maxDistance || 500;
+    emitEnergyBurstFx(source.x, source.y, burstRadius, durationMs, fxWaves);
+}
+
 export function poison(entity, dmgPerRate, rate, duration) {
     if (!entity || typeof entity.damage !== 'function') return;
     if (dmgPerRate <= 0 || rate <= 0 || duration <= 0) return;
@@ -307,7 +402,7 @@ class CommandMap {
 
         for (const objectId in ENTITIES.OBJECTS) {
             const object = ENTITIES.OBJECTS[objectId];
-            if (dataMap.CHEST_IDS.includes(object.type)) {
+            if (isChestObjectType(object.type)) {
                 if (chestType !== null && object.type !== chestType) continue;
 
                 const dx = object.x - player.x;
@@ -328,7 +423,7 @@ class CommandMap {
     breakChests(dropLoot = false) {
         for (const objectId in ENTITIES.OBJECTS) {
             const object = ENTITIES.OBJECTS[objectId];
-            if (dataMap.CHEST_IDS.includes(object.type)) {
+            if (isChestObjectType(object.type)) {
                 if (!dropLoot) object.shouldDropLoop = false;
                 object.die(null);
             }
@@ -338,7 +433,7 @@ class CommandMap {
     clearDrops() {
         for (const objectId in ENTITIES.OBJECTS) {
             const object = ENTITIES.OBJECTS[objectId];
-            if (!dataMap.CHEST_IDS.includes(object.type)) { // If not a chest, it's a drop (or coin)
+            if (!isChestObjectType(object.type)) { // If not a chest, it's a drop (or coin)
                 if (object.die) object.die(null);
             }
         }
@@ -426,7 +521,7 @@ class CommandMap {
         if (!chest) {
             return;
         }
-        if (!dataMap.CHEST_IDS.includes(chest.type)) {
+        if (!isChestObjectType(chest.type)) {
             return; // Not a chest
         }
         chest.shouldDropLoop = dropLoot;
@@ -465,33 +560,70 @@ class CommandMap {
         }
     }
 
-    activateAbility(playerId, abilityName) {
+    activateAbility(playerId, abilityName, targetX = null, targetY = null, durationSeconds = null) {
         const player = ENTITIES.PLAYERS[playerId];
         if (!player || !player.isAlive) return;
 
         const ability = (abilityName || '').toLowerCase();
-        if (ability !== 'static_burst') return;
+        if (ability !== 'energy_burst' && ability !== 'lightning_shot' && ability !== 'stamina_boost' && ability !== 'speed_boost') return;
+
+        if (ability === 'stamina_boost') {
+            const seconds = Number.isFinite(durationSeconds) ? durationSeconds : 5;
+            player.activateStaminaBoost(seconds);
+            return;
+        }
+
+        if (ability === 'speed_boost') {
+            const seconds = Number.isFinite(durationSeconds) ? durationSeconds : 3;
+            player.activateMinotaurSpeedBoost(1.25, seconds);
+            return;
+        }
 
         const electricSfx = dataMap.sfxMap.indexOf('electric-sfx1');
         if (electricSfx >= 0) {
             playSfx(player.x, player.y, electricSfx, 1200);
         }
 
-        const count = 30;
-        const groupId = Math.random();
-        for (let i = 0; i < count; i++) {
-            const angle = (i / count) * Math.PI * 2;
-            ENTITIES.newEntity({
-                entityType: 'projectile',
-                id: getId('PROJECTILES'),
-                x: player.x + Math.cos(angle) * player.radius,
-                y: player.y + Math.sin(angle) * player.radius,
-                angle,
-                type: 10,
-                shooter: player,
-                groupId
-            });
+        if (ability === 'lightning_shot') {
+            if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) return;
+
+            const dx = targetX - player.x;
+            const dy = targetY - player.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            if (distance <= 1) return;
+
+            emitLightningShotFx(player.x, player.y, targetX, targetY, 500);
+
+            const angle = Math.atan2(dy, dx);
+            const hitboxSpacing = 20;
+            const steps = Math.max(1, Math.ceil(distance / hitboxSpacing));
+            const groupId = Math.random();
+            for (let i = 0; i <= steps; i++) {
+                const t = i / steps;
+                const px = player.x + dx * t;
+                const py = player.y + dy * t;
+                ENTITIES.newEntity({
+                    entityType: 'projectile',
+                    id: getId('PROJECTILES'),
+                    x: px,
+                    y: py,
+                    angle,
+                    type: 11,
+                    shooter: player,
+                    groupId,
+                    projectileOptions: {
+                        speedOverride: 0,
+                        noMove: true,
+                        logicOnly: true,
+                        ttlMs: 500,
+                        radiusOverride: 10
+                    }
+                });
+            }
+            return;
         }
+
+        spawnEnergyBurstProjectiles(player);
     }
 
     // regular commands

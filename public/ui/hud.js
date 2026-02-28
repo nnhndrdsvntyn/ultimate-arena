@@ -1,5 +1,5 @@
 import { ENTITIES } from '../game.js';
-import { Vars, LC } from '../client.js';
+import { Vars, LC, startJoinActionCooldown } from '../client.js';
 import { sendPausePacket } from '../helpers.js';
 import { createEl } from './dom.js';
 import { uiRefs, uiState } from './context.js';
@@ -10,6 +10,7 @@ function setPauseState(paused) {
     uiState.isPaused = paused;
     uiState.forceHomeScreen = paused;
     if (paused) {
+        startJoinActionCooldown();
         sendPausePacket();
     }
 }
@@ -20,7 +21,8 @@ function requestPause() {
 
 export function createCombatText(parent) {
     const hb = HOTBAR_CONFIG;
-    const bottom = hb.marginBottom + hb.slotSize + (hb.padding * 2) + 15;
+    const bottomLift = 40;
+    const bottom = hb.marginBottom + hb.slotSize + (hb.padding * 2) + 15 + bottomLift;
 
     uiRefs.combatText = createEl('div', {
         position: 'fixed',
@@ -39,7 +41,8 @@ export function createCombatText(parent) {
 
 export function createComboText(parent) {
     const hb = HOTBAR_CONFIG;
-    const bottom = hb.marginBottom + hb.slotSize + (hb.padding * 2) + 45;
+    const bottomLift = 40;
+    const bottom = hb.marginBottom + hb.slotSize + (hb.padding * 2) + 45 + bottomLift;
 
     uiRefs.comboText = createEl('div', {
         position: 'fixed',
@@ -178,10 +181,22 @@ export function setupUpdateLog() {
     const homeScreen = document.getElementById('home-screen');
     if (!homeScreen) return;
 
-    // Toggle button
-    const toggleBtn = createEl('button', {}, homeScreen, {
-        id: 'update-log-toggle',
-        textContent: '📋',
+    const discordLink = createEl('a', {}, homeScreen, {
+        id: 'home-discord-link',
+        href: 'https://discord.gg/ZN8GWJZD',
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        title: 'Join Discord'
+    });
+
+    createEl('img', {}, discordLink, {
+        src: './images/ui/discord-icon.png',
+        alt: 'Discord'
+    });
+
+    const infoToggle = createEl('button', {}, homeScreen, {
+        id: 'home-info-toggle',
+        textContent: 'Info',
         title: 'Toggle Update Log'
     });
 
@@ -204,9 +219,8 @@ export function setupUpdateLog() {
     }, homeScreen, { id: 'update-log' });
 
     // Toggle functionality
-    toggleBtn.onclick = () => {
+    infoToggle.onclick = () => {
         updateLog.classList.toggle('hidden');
-        toggleBtn.textContent = updateLog.classList.contains('hidden') ? '📋' : '📋';
     };
 
     // Header

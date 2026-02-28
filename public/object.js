@@ -12,8 +12,17 @@ import {
 import {
     dataMap,
     TPS,
-    isSwordRank
+    isSwordRank,
+    isChestObjectType,
+    isCoinObjectType
 } from "./shared/datamap.js";
+
+function getHealthBarColor(healthRatio) {
+    if (healthRatio >= 0.5) return '#22c55e';
+    if (healthRatio >= 0.25) return '#eab308';
+    return '#ef4444';
+}
+
 export class GameObject {
     constructor(id, x, y, type) {
         this.id = id;
@@ -41,7 +50,7 @@ export class GameObject {
         this.imgName = objData.imgName;
         this.radius = objData.radius;
 
-        if (dataMap.CHEST_IDS.includes(type)) {
+        if (isChestObjectType(type)) {
             this.health = objData.maxHealth;
             this.maxHealth = objData.maxHealth;
         } else {
@@ -75,13 +84,14 @@ export class GameObject {
         if (this.health !== undefined && this.maxHealth !== undefined) {
             const barWidth = this.radius * 2;
             const barHeight = 5;
-            const healthPercentage = Math.min(1, this.health / this.maxHealth);
+            const healthPercentage = Math.max(0, Math.min(1, this.health / Math.max(1, this.maxHealth)));
+            const healthColor = getHealthBarColor(healthPercentage);
 
             // Background of the health bar
             LC.drawRect({
                 pos: [screenPosX - barWidth / 2, screenPosY + this.radius * (proportions[1] / 2) + 5],
                 size: [barWidth, barHeight],
-                color: 'red',
+                color: 'rgba(128, 128, 128, 0.45)',
                 cornerRadius: 2
             });
 
@@ -89,7 +99,7 @@ export class GameObject {
             LC.drawRect({
                 pos: [screenPosX - barWidth / 2, screenPosY + this.radius * (proportions[1] / 2) + 5],
                 size: [barWidth * healthPercentage, barHeight],
-                color: 'lime',
+                color: healthColor,
                 cornerRadius: 2
             });
         }
@@ -106,7 +116,7 @@ export class GameObject {
             imgWidth = imgHeight * swordAspect;
         }
 
-        if (this.type === dataMap.COIN_ID) {
+        if (isCoinObjectType(this.type)) {
             let tempAmount = this.amount;
             let bunchIndex = 0;
             while (tempAmount > 0) {
@@ -144,7 +154,7 @@ export class GameObject {
         }
 
         // Draw chest ID if enabled
-        if (Settings.showChestIds && dataMap.CHEST_IDS.includes(this.type)) {
+        if (Settings.showChestIds && isChestObjectType(this.type)) {
             const idText = this.id.toString();
             const font = '30px Arial';
             const metrics = LC.measureText({ text: idText, font });

@@ -60,6 +60,9 @@ export class Mob extends Entity {
 
         this.nextTurnDelay = Math.floor(Math.random() * 3001) + 3000;
     }
+    getAlarmSpeedMultiplier() {
+        return 1.5;
+    }
     damage(health, attacker) {
         if (this.invincible) return false;
         if (performance.now() - this.lastDamagedTime < 200) return false; // invincible for 10 ticks (200 / 20)
@@ -101,6 +104,36 @@ export class Mob extends Entity {
         // speed boost
         this.speed = dataMap.MOBS[this.type].speed * 1.5;
 
+    }
+    resetAlarmState() {
+        this.isAlarmed = false;
+        this.target = null;
+        this.speed = dataMap.MOBS[this.type].speed;
+    }
+    getLiveTarget(requireSameReference = false) {
+        if (!this.target) return null;
+        const target = ENTITIES.PLAYERS[this.target.id];
+        if (!target || !target.isAlive) return null;
+        if (requireSameReference && target !== this.target) return null;
+        return target;
+    }
+    shouldWanderTurn() {
+        return performance.now() - this.lastTurnTime > this.nextTurnDelay;
+    }
+    isTargetHidden(target, bushCollisionPadding = null) {
+        if (!target) return true;
+
+        let targetInBush = false;
+        if (typeof bushCollisionPadding === 'number') {
+            for (const structure of Object.values(ENTITIES.STRUCTURES)) {
+                if (structure.type === 3 && colliding(structure, target, bushCollisionPadding)) {
+                    targetInBush = true;
+                    break;
+                }
+            }
+        }
+
+        return targetInBush || target.isHidden || target.isInvisible;
     }
     die(killer) {
         // activate the mobs death action
@@ -145,31 +178,30 @@ export class Mob extends Entity {
             // push to center and downstream
             this.x += dx * 0.001;
             this.y += 3;
+        } else {
+            const baseSpeed = dataMap.MOBS[this.type].speed;
+            this.speed = this.isAlarmed ? baseSpeed * this.getAlarmSpeedMultiplier() : baseSpeed;
         }
 
         // Keep left-side mobs on left biome edge.
-        if ([1, 2, 3, 6].includes(this.type)) {
-            if (this.x > MAP_SIZE[0] * 0.47 - this.radius) {
-                this.angle = Math.PI - 0.5 + Math.random(); // simulate jittering
-                this.target = null;
-            }
+        // Minotaur is exempt while alarmed so it can chase/swim across the map.
+        let returningToSide = false;
+        const keepOnLeftSide = [1, 2, 3].includes(this.type) || (this.type === 6 && !this.isAlarmed);
+        if (keepOnLeftSide && this.x > MAP_SIZE[0] * 0.47 - this.radius) {
+            returningToSide = true;
+            this.angle = Math.PI; // return straight left
+            this.target = null;
         }
 
         if (this.isAlarmed) {
             if (currentTime - this.startHuntingTime > this.alarmDuration) {
-                this.isAlarmed = false;
-                this.speed = dataMap.MOBS[this.type].speed;
-                this.target = null;
+                this.resetAlarmState();
             } else if (this.target) {
                 if (this.target.lastDiedTime > this.startHuntingTime) {
-                    this.isAlarmed = false;
-                    this.speed = dataMap.MOBS[this.type].speed;
-                    this.target = null;
+                    this.resetAlarmState();
                 }
             } else {
-                this.isAlarmed = false;
-                this.target = null;
-                this.speed = dataMap.MOBS[this.type].speed;
+                this.resetAlarmState();
             }
         }
 
@@ -180,12 +212,13 @@ export class Mob extends Entity {
                 // TURN RIGHT
                 this.angle = 0;
                 this.target = null;
-                this.isAlarmed = false;
-                this.speed = dataMap.MOBS[this.type].speed;
+                this.resetAlarmState();
             }
         }
         // main stuff
-        if (performance.now() - this.lastTurnTime > this.nextTurnDelay || this.isAlarmed) this.turn();
+        if (!returningToSide && (performance.now() - this.lastTurnTime > this.nextTurnDelay || this.isAlarmed)) {
+            this.turn();
+        }
         this.move();
         this.clamp();
     }

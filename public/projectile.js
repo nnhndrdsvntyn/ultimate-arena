@@ -26,6 +26,7 @@ export class Projectile {
         this.type = type;
         this.weaponRank = weaponRank;
         this.radius = 10;
+        this.renderLength = 0;
 
         ENTITIES.PROJECTILES[id] = this;
     }
@@ -85,10 +86,17 @@ export class Projectile {
             let proportions = {
                 ...dataMap.PROJECTILES[this.type].imgProportions
             };
+            let drawWidth = proportions[0] * this.radius;
+            let drawHeight = proportions[1] * this.radius;
+            if (this.type === 10) {
+                if ((this.renderLength || 0) > 0) {
+                    drawWidth = this.renderLength;
+                }
+            }
             LC.drawImage({
                 name: dataMap.PROJECTILES[this.type].imgName,
-                pos: [screenPosX - this.radius * (proportions[0] / 2), screenPosY - this.radius * (proportions[1] / 2)],
-                size: [proportions[0] * this.radius, proportions[1] * this.radius],
+                pos: [screenPosX - (drawWidth / 2), screenPosY - (drawHeight / 2)],
+                size: [drawWidth, drawHeight],
                 rotation: this.angle,
             });
         }

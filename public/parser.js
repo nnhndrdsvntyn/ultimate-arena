@@ -25,12 +25,19 @@ import {
 import {
     Vars,
     LC,
+    startJoinActionCooldown,
     addDamageIndicator,
-    spawnCoinPickupVfx
+    addCriticalHitIndicator,
+    spawnMobDeathFade,
+    spawnCoinPickupVfxToPlayer,
+    spawnEnergyBurstFx,
+    spawnLightningShotFx
 } from './client.js';
 import {
     dataMap,
-    isSwordRank
+    isSwordRank,
+    isChestObjectType,
+    isCoinObjectType
 } from './shared/datamap.js';
 
 // --- Packet Type Map ---
@@ -46,12 +53,17 @@ const PACKET_TYPES = {
     ADMIN_AUTH: 11,
     INVENTORY: 15,
     STATS: 18,
-    PLAYER_COUNT: 20
+    PLAYER_COUNT: 20,
+    LIGHTNING_SHOT_FX: 21,
+    COIN_PICKUP_FX: 22,
+    ENERGY_BURST_FX: 23,
+    CRITICAL_HIT_FX: 24
 };
 
 function triggerDamageIndicator(prevHp, newHp, x, y, radius = 0) {
-    if (!Number.isFinite(prevHp) || !Number.isFinite(newHp)) return;
-    const delta = prevHp - newHp;
+    if (!Number.isFinite(prevHp)) return;
+    const nextHp = Number.isFinite(newHp) ? newHp : 0;
+    const delta = prevHp - nextHp;
     if (delta <= 0) return;
     const { px, py } = jitterOnEntity(x, y, radius);
     addDamageIndicator(px, py, delta);
@@ -109,6 +121,18 @@ export function parsePacket(buffer) {
             break;
         case PACKET_TYPES.PLAYER_COUNT:
             handlePlayerCountPacket(reader);
+            break;
+        case PACKET_TYPES.LIGHTNING_SHOT_FX:
+            handleLightningShotFxPacket(reader);
+            break;
+        case PACKET_TYPES.COIN_PICKUP_FX:
+            handleCoinPickupFxPacket(reader);
+            break;
+        case PACKET_TYPES.ENERGY_BURST_FX:
+            handleEnergyBurstFxPacket(reader);
+            break;
+        case PACKET_TYPES.CRITICAL_HIT_FX:
+            handleCriticalHitFxPacket(reader);
             break;
         default:
             // console.warn(`Unknown packet type: ${packetType}`);
@@ -291,7 +315,11 @@ function handleUpdatePacket(reader) {
         }
     }
     for (const id in ENTITIES.MOBS) {
-        if (!mobIdsThisUpdate.has(Number(id))) delete ENTITIES.MOBS[id];
+        if (!mobIdsThisUpdate.has(Number(id))) {
+            const mob = ENTITIES.MOBS[id];
+            if (mob?.type === 6) spawnMobDeathFade(mob);
+            delete ENTITIES.MOBS[id];
+        }
     }
 
     // Update Projectiles
@@ -312,6 +340,7 @@ function handleUpdatePacket(reader) {
             if (!p) p = new Projectile(id, x, y, angle, type, rank);
             p.newX = x; p.newY = y; p.newAngle = angle;
             p.type = type; p.weaponRank = rank;
+            p.renderLength = (type === 10) ? reader.readU16() : 0;
         } else { // Delta Update
             if (!p) continue;
             if (mask & 0x01) p.newX = reader.readU16();
@@ -319,6 +348,7 @@ function handleUpdatePacket(reader) {
             if (mask & 0x04) p.newAngle = reader.readF32();
             if (mask & 0x08) p.type = reader.readI8();
             if (mask & 0x10) p.weaponRank = reader.readU8();
+            if (mask & 0x20) p.renderLength = reader.readU16();
         }
     }
     for (const id in ENTITIES.PROJECTILES) {
@@ -341,7 +371,7 @@ function handleUpdatePacket(reader) {
             const type = reader.readI8();
             const health = reader.readU16();
             const amount = reader.readU32();
-            const isChestType = dataMap.CHEST_IDS.includes(type);
+            const isChestType = isChestObjectType(type);
             if (!o) o = new GameObject(id, x, y, type);
             o.newX = x; o.newY = y; o.setType(type); o.health = health;
             o.amount = amount;
@@ -354,7 +384,7 @@ function handleUpdatePacket(reader) {
             if (mask & 0x02) o.newY = reader.readU16();
             if (mask & 0x04) {
                 const newHp = reader.readU16();
-                if (dataMap.CHEST_IDS.includes(o.type)) {
+                if (isChestObjectType(o.type)) {
                     triggerDamageIndicator(o.health, newHp, o.newX ?? o.x ?? 0, o.newY ?? o.y ?? 0, dataMap.OBJECTS[o.type]?.radius);
                 }
                 o.health = newHp;
@@ -365,8 +395,6 @@ function handleUpdatePacket(reader) {
     }
     for (const id in ENTITIES.OBJECTS) {
         if (!objIdsThisUpdate.has(Number(id))) {
-            const obj = ENTITIES.OBJECTS[id];
-            if (obj?.type === dataMap.COIN_ID) spawnCoinPickupVfx(obj);
             delete ENTITIES.OBJECTS[id];
         }
     }
@@ -388,6 +416,7 @@ function handleLeaderboardPacket(reader) {
 function handleDiedPacket(reader) {
     LC.zoomOut();
     Vars.lastDiedTime = performance.now();
+    startJoinActionCooldown();
 
     const victimType = reader.readU8();
     const victimId = victimType === 1 ? reader.readU8() : reader.readU16();
@@ -428,6 +457,9 @@ function handleAudioPacket(reader) {
 
 function handleKickedPacket(reader) {
     const message = reader.readString();
+    Vars.lastDiedTime = performance.now();
+    startJoinActionCooldown();
+    uiState.forceHomeScreen = true;
     alert(`KICKED: ${message}`);
 }
 
@@ -487,6 +519,9 @@ function handleStatsPacket(reader) {
     Vars.myStats.goldCoins = reader.readU32();
     Vars.inCombat = reader.readU8();
     Vars.vikingComboCount = reader.readU8();
+    Vars.abilityCooldownMs = reader.readU16();
+    Vars.abilityCooldownRemainingMs = reader.readU16();
+    Vars.abilityCooldownEndsAt = performance.now() + Vars.abilityCooldownRemainingMs;
 
     // Re-render stats if they are visible
     if (uiState.isSettingsOpen && uiState.activeTab === 'Stats') {
@@ -505,6 +540,38 @@ function handlePlayerCountPacket(reader) {
     if (!homeScreen || homeScreen.style.display === 'none') return;
     const count = Math.max(0, Vars.onlineCount || 0);
     countEl.textContent = `${count} player${count === 1 ? '' : 's'} online`;
+}
+
+function handleLightningShotFxPacket(reader) {
+    const startX = reader.readU16();
+    const startY = reader.readU16();
+    const endX = reader.readU16();
+    const endY = reader.readU16();
+    const durationMs = reader.readU16();
+    spawnLightningShotFx(startX, startY, endX, endY, durationMs);
+}
+
+function handleCoinPickupFxPacket(reader) {
+    const startX = reader.readU16();
+    const startY = reader.readU16();
+    const targetPlayerId = reader.readU8();
+    const amount = reader.readU16();
+    spawnCoinPickupVfxToPlayer(startX, startY, targetPlayerId, amount);
+}
+
+function handleEnergyBurstFxPacket(reader) {
+    const x = reader.readU16();
+    const y = reader.readU16();
+    const radius = reader.readU16();
+    const durationMs = reader.readU16();
+    const waves = reader.readU8();
+    spawnEnergyBurstFx(x, y, radius, durationMs, waves);
+}
+
+function handleCriticalHitFxPacket(reader) {
+    const x = reader.readU16();
+    const y = reader.readU16();
+    addCriticalHitIndicator(x, y);
 }
 
 // --- Helper Classes ---

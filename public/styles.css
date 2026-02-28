@@ -176,7 +176,9 @@ body,
 #home-screen.unblurred #input-container,
 #home-screen.unblurred #credits,
 #home-screen.unblurred #update-log,
-#home-screen.unblurred #update-log-toggle {
+#home-screen.unblurred #home-info-toggle,
+#home-screen.unblurred #home-discord-link,
+#home-screen.unblurred #home-form-link {
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
@@ -186,8 +188,66 @@ body,
 #home-screen #input-container,
 #home-screen #credits,
 #home-screen #update-log,
-#home-screen #update-log-toggle {
+#home-screen #home-info-toggle,
+#home-screen #home-discord-link,
+#home-screen #home-form-link {
     transition: opacity 0.3s ease, visibility 0.3s ease;
+}
+
+#home-form-link {
+    position: absolute;
+    left: 16px;
+    bottom: 16px;
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 0.95rem;
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1.5px;
+    z-index: 100001;
+}
+
+#home-form-link:hover {
+    color: white;
+}
+
+#home-info-toggle {
+    position: absolute;
+    left: 16px;
+    bottom: 42px;
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 0.95rem;
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1.5px;
+    cursor: pointer;
+    padding: 0;
+    z-index: 100001;
+}
+
+#home-info-toggle:hover {
+    color: white;
+}
+
+#home-discord-link {
+    position: absolute;
+    left: 16px;
+    bottom: 68px;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100001;
+}
+
+#home-discord-link img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
 }
 
 /* Home Blur Toggle Button */
@@ -301,7 +361,7 @@ body,
 /* Chat Styles */
 #chat-input-wrapper {
     position: absolute;
-    bottom: 120px;
+    bottom: 165px;
     left: 50%;
     transform: translateX(-50%);
     pointer-events: none;
@@ -1052,27 +1112,17 @@ body,
         padding: 8px;
     }
 
-    #update-log-toggle {
-        position: absolute;
-        top: 60px;
-        right: 8px;
-        width: 36px;
-        height: 36px;
-        background: rgba(255, 255, 255, 0.08);
-        border: 2px solid rgba(255, 255, 255, 0.2);
-        border-radius: 8px;
-        color: rgba(255, 255, 255, 0.9);
-        cursor: pointer;
-        font-size: 1.2rem;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: all 0.3s ease;
+    #home-info-toggle {
+        left: 12px;
+        bottom: 40px;
+        font-size: 0.85rem;
     }
 
-    #update-log-toggle:hover {
-        background: rgba(255, 255, 255, 0.18);
-        border-color: rgba(255, 255, 255, 0.35);
+    #home-discord-link {
+        left: 12px;
+        bottom: 62px;
+        width: 24px;
+        height: 24px;
     }
 
     /* Small Mobile Buttons */
@@ -1091,30 +1141,6 @@ body,
         width: 34px;
         height: 34px;
     }
-}
-
-#update-log-toggle {
-    position: absolute;
-    top: 2rem;
-    right: 2rem;
-    width: 40px;
-    height: 40px;
-    background: rgba(255, 255, 255, 0.08);
-    border: 2px solid rgba(255, 255, 255, 0.2);
-    border-radius: 8px;
-    color: rgba(255, 255, 255, 0.9);
-    cursor: pointer;
-    font-size: 1.3rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.3s ease;
-    z-index: 100001;
-}
-
-#update-log-toggle:hover {
-    background: rgba(255, 255, 255, 0.18);
-    border-color: rgba(255, 255, 255, 0.35);
 }
 
 #update-log.hidden {

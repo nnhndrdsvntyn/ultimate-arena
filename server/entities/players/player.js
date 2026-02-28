@@ -4,6 +4,8 @@ import {
 import {
     dataMap,
     isSwordRank,
+    isCoinObjectType,
+    getCoinObjectType,
     isAccessoryItemType,
     accessoryIdFromItemType,
     accessoryItemTypeFromId,
@@ -75,6 +77,7 @@ export class Player extends Entity {
         this.attributeBuffs = { speed: 0, maxHp: 0, damage: 0 };
         this.lastStatsSpeed = Math.round(this.speed);
         this.vikingHitCount = 0;
+        this.lastVikingHitTime = 0;
 
         // --- Timers & Cooldowns ---
         this.lastDamagedTime = 0;
@@ -88,6 +91,13 @@ export class Player extends Entity {
 
         this.attackCooldownTime = dataMap.PLAYERS.baseAttackCooldown;
         this.throwSwordCoolDownTime = dataMap.PLAYERS.baseThrowSwordCooldown;
+        this.activeAbility = '';
+        this.abilityCooldownMs = 0;
+        this.lastAbilityUseTime = 0;
+        this.staminaBoostUntil = 0;
+        this.minotaurSpeedBoostUntil = 0;
+        this.minotaurSpeedBoostMult = 1;
+        this.pendingWeaponReturnTimer = null;
 
         // --- Social & Movement ---
         this.username = '';
@@ -186,13 +196,16 @@ export class Player extends Entity {
             }
         }
 
+        const baseSpeed = this.defaultSpeed + this.attributeBuffs.speed;
+        const speedBoostMult = this.isMinotaurSpeedBoostActive() ? this.minotaurSpeedBoostMult : 1;
+
         if (this.inWater) {
-            this.speed = (this.defaultSpeed + this.attributeBuffs.speed) * 0.5;
+            this.speed = baseSpeed * 0.5 * speedBoostMult;
             const dx = (MAP_SIZE[0] / 2) - this.x;
             this.x += dx * 0.005;
             this.y += 3;
         } else {
-            this.speed = this.defaultSpeed + this.attributeBuffs.speed;
+            this.speed = baseSpeed * speedBoostMult;
         }
     }
 
@@ -204,18 +217,70 @@ export class Player extends Entity {
     }
 
     applyAccessoryEffects() {
+        const now = performance.now();
         const accessoryKey = ACCESSORY_KEYS[this.accessoryId];
         const accessoryMult = dataMap.ACCESSORIES[accessoryKey]?.viewRangeMult || 1;
         const base = (typeof this.viewRangeOverride === 'number')
             ? this.viewRangeOverride
             : this.baseViewRangeMult;
         this.viewRangeMult = Math.max(0.1, base * accessoryMult);
-        const swingMult = accessoryKey === 'pirate-hat' ? 0.7 : 1;
+        const swingMult = this.isStaminaBoostActive() ? 0.7 : 1;
         this.attackCooldownTime = Math.max(100, dataMap.PLAYERS.baseAttackCooldown * swingMult);
-        if (accessoryKey !== 'viking-hat' && this.vikingHitCount !== 0) {
-            this.vikingHitCount = 0;
+        const nextAbility = this.getEquippedAbility();
+        const nextAbilityCooldown = this.getAbilityCooldownMs(nextAbility);
+        if (this.activeAbility !== nextAbility || this.abilityCooldownMs !== nextAbilityCooldown) {
+            this.activeAbility = nextAbility;
+            this.abilityCooldownMs = nextAbilityCooldown;
             this.sendStatsUpdate();
         }
+        if (accessoryKey !== 'viking-hat' && this.vikingHitCount !== 0) {
+            this.vikingHitCount = 0;
+            this.lastVikingHitTime = 0;
+            this.sendStatsUpdate();
+        }
+        if (accessoryKey === 'viking-hat' && this.vikingHitCount > 0) {
+            if (now - (this.lastVikingHitTime || 0) >= 5000) {
+                this.vikingHitCount = 0;
+                this.lastVikingHitTime = 0;
+                this.sendStatsUpdate();
+            }
+        }
+    }
+
+    getEquippedAbility() {
+        const accessoryKey = ACCESSORY_KEYS[this.accessoryId];
+        if (accessoryKey === 'pirate-hat') return 'stamina_boost';
+        if (accessoryKey === 'minotaur-hat') return 'speed_boost';
+        return '';
+    }
+
+    getAbilityCooldownMs(abilityName = this.activeAbility) {
+        if (abilityName === 'stamina_boost') return 10000;
+        if (abilityName === 'speed_boost') return 10000;
+        if (abilityName === 'energy_burst') return 5000;
+        return 0;
+    }
+
+    isStaminaBoostActive() {
+        return performance.now() < (this.staminaBoostUntil || 0);
+    }
+
+    activateStaminaBoost(durationSeconds = 5) {
+        const clampedDuration = Math.max(1, Math.min(60, Math.round(durationSeconds)));
+        this.staminaBoostUntil = performance.now() + (clampedDuration * 1000);
+        this.sendStatsUpdate();
+    }
+
+    isMinotaurSpeedBoostActive() {
+        return performance.now() < (this.minotaurSpeedBoostUntil || 0);
+    }
+
+    activateMinotaurSpeedBoost(multiplier = 1.25, durationSeconds = 3) {
+        const safeMult = Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1.25;
+        const clampedDuration = Math.max(1, Math.min(60, Math.round(durationSeconds)));
+        this.minotaurSpeedBoostMult = safeMult;
+        this.minotaurSpeedBoostUntil = performance.now() + (clampedDuration * 1000);
+        this.sendStatsUpdate();
     }
 
     updateAnimations() {
@@ -278,6 +343,16 @@ export class Player extends Entity {
 
         // Mark as ghost (thrown)
         this.inventory[this.selectedSlot] |= 0x80;
+
+        if (this.pendingWeaponReturnTimer) {
+            clearTimeout(this.pendingWeaponReturnTimer);
+            this.pendingWeaponReturnTimer = null;
+        }
+        this.pendingWeaponReturnTimer = setTimeout(() => {
+            this.pendingWeaponReturnTimer = null;
+            this.returnWeapon(baseRank);
+        }, this.throwSwordCoolDownTime);
+
         this.sendInventoryUpdate();
         this.sendStatsUpdate();
     }
@@ -304,13 +379,13 @@ export class Player extends Entity {
         const now = performance.now();
 
         // If inventory is full (no empty slots AND no coin slots with room < 256), don't auto-pickup
-        const canFitMoreCoins = this.inventory.some((type, i) => (type === 0) || (type === dataMap.COIN_ID && this.inventoryCounts[i] < 256));
+        const canFitMoreCoins = this.inventory.some((type, i) => (type === 0) || (isCoinObjectType(type) && this.inventoryCounts[i] < 256));
         if (!canFitMoreCoins) return;
 
         for (const id in ENTITIES.OBJECTS) {
             const obj = ENTITIES.OBJECTS[id];
-            if (!obj || obj.type !== dataMap.COIN_ID || obj.collectorId || !colliding(this, obj)) continue;
-            if (now - (obj.spawnTime || 0) <= 1000) continue;
+            if (!obj || !isCoinObjectType(obj.type) || obj.collectorId || !colliding(this, obj)) continue;
+            if (now - (obj.spawnTime || 0) <= 200) continue;
             obj.startCollection(this);
         }
     }
@@ -326,9 +401,8 @@ export class Player extends Entity {
         if (rank <= 0 || count <= 0) return;
 
         const baseType = rank & 0x7F;
-        if (isAccessoryItemType(baseType)) return;
 
-        const dropObj = spawnObject(baseType, this.x, this.y, count, baseType === dataMap.COIN_ID ? 'player' : null);
+        const dropObj = spawnObject(baseType, this.x, this.y, count, isCoinObjectType(baseType) ? 'player' : null);
         if (dropObj) {
             dropObj.targetX = this.x + Math.cos(this.angle) * 100;
             dropObj.targetY = this.y + Math.sin(this.angle) * 100;
@@ -353,10 +427,10 @@ export class Player extends Entity {
                 // Ensure the object is pickable (isEphemeral)
                 if (!dataMap.OBJECTS[obj.type]?.isEphemeral) continue;
 
-                // Respect 1s pickup delay for everything manually picked up too
-                if (performance.now() - (obj.spawnTime || 0) < 1000) continue;
+                // Respect 200ms pickup delay for everything manually picked up too
+                if (performance.now() - (obj.spawnTime || 0) < 200) continue;
 
-                const isCoin = obj.type === dataMap.COIN_ID;
+                const isCoin = isCoinObjectType(obj.type);
                 if (isCoin) {
                     if (obj.collectorId) continue;
                     if (obj.startCollection(this)) {
@@ -404,13 +478,7 @@ export class Player extends Entity {
             this.inventory[ghostIdx] = rank;
             this.inventoryCounts[ghostIdx] = 1;
         } else {
-            // Find any empty slot
-            const emptyIdx = this.inventory.indexOf(0);
-            if (emptyIdx !== -1) {
-                this.inventory[emptyIdx] = rank;
-                this.inventoryCounts[emptyIdx] = 1;
-            }
-            else spawnObject(rank, this.x, this.y); // Floor if full
+            return;
         }
         this.sendInventoryUpdate();
         this.sendStatsUpdate();
@@ -438,7 +506,8 @@ export class Player extends Entity {
     buyAccessory(accessoryId) {
         if (!this.isAlive || !isAccessoryId(accessoryId) || accessoryId === 0) return;
 
-        const cost = dataMap.ACCESSORY_PRICE || 30;
+        const accessoryKey = ACCESSORY_KEYS[accessoryId];
+        const cost = dataMap.ACCESSORY_PRICES?.[accessoryKey] || dataMap.ACCESSORY_PRICE || 30;
         if (this.getTotalCoins() < cost) return;
 
         const emptySlot = this.inventory.indexOf(0);
@@ -490,7 +559,7 @@ export class Player extends Entity {
         let remaining = amount;
         // Try to fill existing stacks (up to 256)
         for (let i = 0; i < 35; i++) {
-            if (this.inventory[i] === dataMap.COIN_ID && this.inventoryCounts[i] < 256) {
+            if (isCoinObjectType(this.inventory[i]) && this.inventoryCounts[i] < 256) {
                 const space = 256 - this.inventoryCounts[i];
                 const toAdd = Math.min(space, remaining);
                 this.inventoryCounts[i] += toAdd;
@@ -505,7 +574,7 @@ export class Player extends Entity {
             if (emptySlot === -1) break;
 
             const toAdd = Math.min(256, remaining);
-            this.inventory[emptySlot] = dataMap.COIN_ID;
+            this.inventory[emptySlot] = getCoinObjectType();
             this.inventoryCounts[emptySlot] = toAdd;
             remaining -= toAdd;
         }
@@ -513,7 +582,7 @@ export class Player extends Entity {
         // If still remaining (inventory full), drop on floor in clusters of 256
         while (remaining > 0) {
             const toDrop = Math.min(256, remaining);
-            const dropObj = spawnObject(dataMap.COIN_ID, this.x, this.y, toDrop, 'player');
+            const dropObj = spawnObject(getCoinObjectType(), this.x, this.y, toDrop, 'player');
             if (dropObj) {
                 dropObj.targetX = this.x + (Math.random() - 0.5) * 100;
                 dropObj.targetY = this.y + (Math.random() - 0.5) * 100;
@@ -529,7 +598,7 @@ export class Player extends Entity {
     getTotalCoins() {
         let total = 0;
         for (let i = 0; i < 35; i++) {
-            if (this.inventory[i] === dataMap.COIN_ID) {
+            if (isCoinObjectType(this.inventory[i])) {
                 total += this.inventoryCounts[i];
             }
         }
@@ -539,7 +608,7 @@ export class Player extends Entity {
     deductCoins(amount) {
         let remaining = amount;
         for (let i = 34; i >= 0; i--) { // Deduct from end of inventory first
-            if (this.inventory[i] === dataMap.COIN_ID) {
+            if (isCoinObjectType(this.inventory[i])) {
                 const toDeduct = Math.min(this.inventoryCounts[i], remaining);
                 this.inventoryCounts[i] -= toDeduct;
                 remaining -= toDeduct;
@@ -559,8 +628,13 @@ export class Player extends Entity {
     damage(health, attacker) {
         if (this.invincible || performance.now() - this.lastDamagedTime < 200) return false;
 
+        let finalHealthLoss = health;
+        if (attacker && attacker !== this && ACCESSORY_KEYS[this.accessoryId] === 'minotaur-hat') {
+            finalHealthLoss *= 0.8;
+        }
+
         this.lastDamagedTime = performance.now();
-        this.hp -= health;
+        this.hp -= finalHealthLoss;
         if (attacker && attacker instanceof Player && !attacker?.noKillCredit) {
             this.lastDamager = attacker;
         }
@@ -616,9 +690,13 @@ export class Player extends Entity {
         for (let i = 0; i < 35; i++) {
             const type = this.inventory[i] & 0x7F; // Handle thrown rank bit
             const count = this.inventoryCounts[i];
-            if (type > 1 && !isAccessoryItemType(type)) { // Drop everything except default blade (rank 1) and accessories
-                spawnObject(type, this.x, this.y, count, type === dataMap.COIN_ID ? 'player' : null);
+            if (type > 1) { // Drop everything except default blade (rank 1)
+                spawnObject(type, this.x, this.y, count, isCoinObjectType(type) ? 'player' : null);
             }
+        }
+        // Drop equipped accessory (it is not stored in inventory while equipped).
+        if (this.equippedAccessoryItemType > 0) {
+            spawnObject(this.equippedAccessoryItemType, this.x, this.y, 1, 'player');
         }
 
         // Reset state
@@ -633,8 +711,23 @@ export class Player extends Entity {
         this.attacking = false;
         this.keys = { w: 0, a: 0, s: 0, d: 0 };
         this.lastDamager = null;
+        this.vikingHitCount = 0;
+        this.lastVikingHitTime = 0;
+        this.activeAbility = '';
+        this.abilityCooldownMs = 0;
+        this.lastAbilityUseTime = 0;
+        this.staminaBoostUntil = 0;
+        this.minotaurSpeedBoostUntil = 0;
+        this.minotaurSpeedBoostMult = 1;
+        this.equippedAccessoryItemType = 0;
+        this.accessoryId = 0;
+        if (this.pendingWeaponReturnTimer) {
+            clearTimeout(this.pendingWeaponReturnTimer);
+            this.pendingWeaponReturnTimer = null;
+        }
 
         this.sendInventoryUpdate();
+        this.sendStatsUpdate();
     }
 
     heal() {
@@ -711,6 +804,11 @@ export class Player extends Entity {
         const projDmg = dataMap.PROJECTILES[weaponRank]?.damage || 0;
         const dmgHit = Math.round((this.strength + projDmg) * 1.15);
         const inCombat = performance.now() - this.lastCombatTime < 10000;
+        const abilityCooldownMs = Math.max(0, this.abilityCooldownMs || 0);
+        const elapsedSinceAbilityUse = performance.now() - (this.lastAbilityUseTime || 0);
+        const abilityCooldownRemainingMs = abilityCooldownMs > 0
+            ? Math.max(0, abilityCooldownMs - elapsedSinceAbilityUse)
+            : 0;
 
         ws.packetWriter.reset();
         ws.packetWriter.writeU8(18);
@@ -722,6 +820,8 @@ export class Player extends Entity {
         ws.packetWriter.writeU32(this.getTotalCoins());
         ws.packetWriter.writeU8(inCombat ? 1 : 0);
         ws.packetWriter.writeU8(this.vikingHitCount || 0);
+        ws.packetWriter.writeU16(Math.min(65535, Math.floor(abilityCooldownMs)));
+        ws.packetWriter.writeU16(Math.min(65535, Math.floor(abilityCooldownRemainingMs)));
         ws.send(ws.packetWriter.getBuffer());
     }
 
@@ -779,17 +879,44 @@ export class Player extends Entity {
         this.sendStatsUpdate();
     }
 
-    unequipAccessory() {
+    unequipAccessory(preferredSlot = -1) {
         if (!this.equippedAccessoryItemType) {
             this.accessoryId = 0;
             return;
         }
 
-        const emptySlot = this.inventory.indexOf(0);
-        if (emptySlot === -1) return;
+        let targetSlot = -1;
+        if (Number.isInteger(preferredSlot) &&
+            preferredSlot >= 0 &&
+            preferredSlot < this.inventory.length &&
+            this.inventory[preferredSlot] === 0) {
+            targetSlot = preferredSlot;
+        } else {
+            targetSlot = this.inventory.indexOf(0);
+        }
+        if (targetSlot === -1) return;
 
-        this.inventory[emptySlot] = this.equippedAccessoryItemType;
-        this.inventoryCounts[emptySlot] = 1;
+        this.inventory[targetSlot] = this.equippedAccessoryItemType;
+        this.inventoryCounts[targetSlot] = 1;
+        this.equippedAccessoryItemType = 0;
+        this.accessoryId = 0;
+        this.sendInventoryUpdate();
+        this.sendStatsUpdate();
+    }
+
+    dropEquippedAccessory() {
+        if (!this.equippedAccessoryItemType) {
+            this.accessoryId = 0;
+            return;
+        }
+
+        const dropObj = spawnObject(this.equippedAccessoryItemType, this.x, this.y, 1, 'player');
+        if (dropObj) {
+            dropObj.targetX = this.x + Math.cos(this.angle) * 100;
+            dropObj.targetY = this.y + Math.sin(this.angle) * 100;
+            dropObj.teleportTicks = 2;
+        }
+
         this.equippedAccessoryItemType = 0;
         this.accessoryId = 0;
         this.sendInventoryUpdate();

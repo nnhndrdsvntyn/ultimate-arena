@@ -2,16 +2,49 @@ import {
     Mob
 } from "./mob.js";
 import {
-    ENTITIES
+    Player
+} from "../players/player.js";
+import {
+    ENTITIES,
+    spawnObject
 } from '../../game.js';
 import {
-    dataMap
+    dataMap,
+    getCoinObjectType,
+    ACCESSORY_NAME_TO_ID,
+    accessoryItemTypeFromId
 } from '../../../public/shared/datamap.js';
 import {
     colliding,
     playSfx,
-    getId
+    getId,
+    spawnEnergyBurstProjectiles
 } from '../../helpers.js';
+
+const BURST_COOLDOWN_MIN_MS = 3000;
+const BURST_COOLDOWN_RANDOM_MS = 2000;
+const BURST_DURATION_MS = 3000;
+const BURST_LEAP_INTERVAL_MS = 1000;
+const BURST_LEAP_DISTANCE = 75;
+const SHOCKWAVE_ROLL_MIN_MS = 2000;
+const SHOCKWAVE_ROLL_RANDOM_MS = 3000;
+const SHOCKWAVE_PROC_CHANCE = 0.25;
+const SHOCKWAVE_FREEZE_MS = 900;
+const SHOCKWAVE_WAVE_COUNT = 3;
+const SHOCKWAVE_WAVE_INTERVAL_MS = 300;
+const TURN_RATE_RAD = 10 * (Math.PI / 180);
+const SWING_FACING_HALF_ARC = Math.PI / 2;
+const SLASH_OFFSETS = [-Math.PI / 10, 0, Math.PI / 10];
+const CLOSE_PROXIMITY_BURST_RANGE = 180;
+const CLOSE_PROXIMITY_BURST_DELAY_MS = 5000;
+const CLOSE_PROXIMITY_PUSHBACK = 60;
+const MIN_DEATH_COIN_DROP = 800;
+const MAX_DEATH_COIN_DROP = 1500;
+const MIN_DEATH_COIN_STACK = 5;
+const MAX_DEATH_COIN_STACK = 25;
+const DEATH_COIN_SPREAD = 140;
+const SWORD9_DROP_CHANCE = 0.25;
+const BONUS_DROP_SPREAD = 80;
 
 export class Minotaur extends Mob {
     constructor(id, x, y) {
@@ -25,37 +58,115 @@ export class Minotaur extends Mob {
         this.burstActive = false;
         this.burstStartTime = 0;
         this.lastBurstLeapTime = 0;
-        this.nextBurstTime = performance.now() + (3000 + Math.random() * 2000);
-        this.nextShockwaveRollTime = performance.now() + (2000 + Math.random() * 3000);
+        this.nextBurstTime = performance.now() + this.getRandomBurstCooldownMs();
+        this.nextShockwaveRollTime = performance.now() + this.getRandomShockwaveCooldownMs();
         this.freezeUntil = 0;
         this.shockwaveActive = false;
         this.shockwaveWavesEmitted = 0;
         this.nextShockwaveWaveTime = 0;
+        this.closeProximityStartTime = 0;
+    }
+
+    getHealthRatio() {
+        if (!this.maxHp || this.maxHp <= 0) return 1;
+        return Math.max(0, Math.min(1, this.hp / this.maxHp));
+    }
+
+    getDifficultyStage() {
+        const ratio = this.getHealthRatio();
+        if (ratio <= 0.2) return 3;
+        if (ratio <= 0.6) return 2;
+        return 1;
+    }
+
+    getAttackDamageMultiplier() {
+        const stage = this.getDifficultyStage();
+        if (stage === 3) return 1.5;
+        if (stage === 2) return 1.25;
+        return 1;
+    }
+
+    getBurstCooldownWindowMs() {
+        const stage = this.getDifficultyStage();
+        if (stage === 3) return { min: 1000, max: 3000 }; // 1-3s
+        if (stage === 2) return { min: 2000, max: 4000 }; // 2-4s
+        return { min: BURST_COOLDOWN_MIN_MS, max: BURST_COOLDOWN_MIN_MS + BURST_COOLDOWN_RANDOM_MS }; // 3-5s
+    }
+
+    getShockwaveCooldownWindowMs() {
+        const stage = this.getDifficultyStage();
+        if (stage === 3) return { min: 2000, max: 4000 }; // 2-4s
+        return { min: SHOCKWAVE_ROLL_MIN_MS, max: SHOCKWAVE_ROLL_MIN_MS + SHOCKWAVE_ROLL_RANDOM_MS }; // 2-5s
+    }
+
+    getShockwaveProcChance() {
+        const stage = this.getDifficultyStage();
+        if (stage === 3) return 0.4;
+        if (stage === 2) return 0.35;
+        return SHOCKWAVE_PROC_CHANCE;
+    }
+
+    getRandomBurstCooldownMs() {
+        const { min, max } = this.getBurstCooldownWindowMs();
+        return getRandomIntInclusive(min, max);
+    }
+
+    getRandomShockwaveCooldownMs() {
+        const { min, max } = this.getShockwaveCooldownWindowMs();
+        return getRandomIntInclusive(min, max);
+    }
+
+    clampStageTimers(now) {
+        const burstWindow = this.getBurstCooldownWindowMs();
+        if (!this.burstActive && this.nextBurstTime - now > burstWindow.max) {
+            this.nextBurstTime = now + burstWindow.max;
+        }
+
+        const shockwaveWindow = this.getShockwaveCooldownWindowMs();
+        if (this.nextShockwaveRollTime - now > shockwaveWindow.max) {
+            this.nextShockwaveRollTime = now + shockwaveWindow.max;
+        }
     }
 
     alarm(shooter, reason = 'hit') {
-        super.alarm(shooter, reason);
-        this.targetId = shooter?.id ?? this.targetId;
-        if (this.isAlarmed) {
-            this.speed = dataMap.MOBS[this.type].speed * 2;
+        const isPlayerShooter = shooter instanceof Player;
+
+        if (isPlayerShooter && shooter?.isInvisible) return;
+
+        if (isPlayerShooter) {
+            this.target = shooter;
+            this.targetId = shooter.id;
+            this.alarmReason = reason;
+        } else if (!this.target && this.targetId != null) {
+            this.target = ENTITIES.PLAYERS[this.targetId] || null;
         }
+
+        if (!this.isAlarmed) {
+            this.isAlarmed = true;
+            this.startHuntingTime = performance.now();
+        }
+
+        this.speed = dataMap.MOBS[this.type].speed * 2;
+    }
+
+    getAlarmSpeedMultiplier() {
+        return 2;
     }
 
     turn() {
         if (this.isAlarmed) {
-            const resolvedTarget = ENTITIES.PLAYERS[this.targetId] || (this.target ? ENTITIES.PLAYERS[this.target.id] : null);
-            if (!resolvedTarget || !resolvedTarget.isAlive) {
-                this.isAlarmed = false;
-                this.target = null;
+            const target = this.getAlarmedTarget();
+            if (!target) {
+                this.resetAlarmState();
                 this.targetId = null;
-                this.speed = dataMap.MOBS[this.type].speed;
                 return;
             }
-            this.target = resolvedTarget;
-            this.targetId = resolvedTarget.id;
 
-            // Angry Minotaur always faces and chases its target.
-            this.angle = Math.atan2(this.target.y - this.y, this.target.x - this.x);
+            // Angry Minotaur turns toward its target with a capped turn rate.
+            const desiredAngle = Math.atan2(target.y - this.y, target.x - this.x);
+            const angleDelta = normalizeAngle(desiredAngle - this.angle);
+            const clampedDelta = Math.max(-TURN_RATE_RAD, Math.min(TURN_RATE_RAD, angleDelta));
+            this.angle = normalizeAngle(this.angle + clampedDelta);
             return;
         }
 
@@ -67,21 +178,19 @@ export class Minotaur extends Mob {
         const preY = this.y;
         super.process();
         const now = performance.now();
+        this.clampStageTimers(now);
         this.processShockwaveWaves(now);
+        this.processForcedCloseRangeBurst(now);
 
         if (now < this.freezeUntil) {
-            this.x = preX;
-            this.y = preY;
-            this.clamp();
+            this.freezeInPlace(preX, preY);
             return;
         }
 
         this.tryShockwave(now);
         if (now < this.freezeUntil) {
             // Start standing still immediately when shockwave procs.
-            this.x = preX;
-            this.y = preY;
-            this.clamp();
+            this.freezeInPlace(preX, preY);
             return;
         }
 
@@ -89,6 +198,68 @@ export class Minotaur extends Mob {
         this.processLeapBurst();
         this.updateSwingState();
         this.trySwingAttack();
+    }
+
+    processForcedCloseRangeBurst(now) {
+        if (!this.isAlarmed) {
+            this.closeProximityStartTime = 0;
+            return;
+        }
+        const target = this.getAlarmedTarget();
+        if (!target || !target.isAlive) {
+            this.closeProximityStartTime = 0;
+            return;
+        }
+
+        const dx = target.x - this.x;
+        const dy = target.y - this.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq > CLOSE_PROXIMITY_BURST_RANGE * CLOSE_PROXIMITY_BURST_RANGE) {
+            this.closeProximityStartTime = 0;
+            return;
+        }
+
+        if (!this.closeProximityStartTime) {
+            this.closeProximityStartTime = now;
+            return;
+        }
+        if (now - this.closeProximityStartTime < CLOSE_PROXIMITY_BURST_DELAY_MS) return;
+
+        // Trigger guaranteed burst when a target camps too close for too long.
+        this.spawnShockwaveProjectiles();
+        this.pushTargetAway(target, CLOSE_PROXIMITY_PUSHBACK);
+        this.closeProximityStartTime = now;
+    }
+
+    pushTargetAway(target, distance) {
+        if (!target) return;
+        let dx = target.x - this.x;
+        let dy = target.y - this.y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist <= 0.001) {
+            dx = Math.cos(this.angle);
+            dy = Math.sin(this.angle);
+            dist = 1;
+        }
+        target.x += (dx / dist) * distance;
+        target.y += (dy / dist) * distance;
+        if (typeof target.clamp === 'function') target.clamp();
+    }
+
+    freezeInPlace(x, y) {
+        this.x = x;
+        this.y = y;
+        this.clamp();
+    }
+
+    getAlarmedTarget() {
+        const targetFromId = this.targetId != null ? ENTITIES.PLAYERS[this.targetId] : null;
+        const targetFromRef = this.getLiveTarget();
+        const target = targetFromId || targetFromRef;
+        if (!target || !target.isAlive) return null;
+        this.target = target;
+        this.targetId = target.id;
+        return target;
     }
 
     resolveMobCollisions() {
@@ -115,26 +286,25 @@ export class Minotaur extends Mob {
     }
 
     processLeapBurst() {
-        if (!this.isAlarmed || !this.target) return;
-
-        const target = ENTITIES.PLAYERS[this.target.id];
-        if (!target || !target.isAlive) return;
+        if (!this.isAlarmed) return;
+        const target = this.getAlarmedTarget();
+        if (!target) return;
 
         const now = performance.now();
         if (!this.burstActive) {
             if (now < this.nextBurstTime) return;
             this.burstActive = true;
             this.burstStartTime = now;
-            this.lastBurstLeapTime = now - 1000;
+            this.lastBurstLeapTime = now - BURST_LEAP_INTERVAL_MS;
         }
 
-        if (now - this.burstStartTime >= 3000) {
+        if (now - this.burstStartTime >= BURST_DURATION_MS) {
             this.burstActive = false;
-            this.nextBurstTime = now + (3000 + Math.random() * 2000);
+            this.nextBurstTime = now + this.getRandomBurstCooldownMs();
             return;
         }
 
-        if (now - this.lastBurstLeapTime < 1000) return;
+        if (now - this.lastBurstLeapTime < BURST_LEAP_INTERVAL_MS) return;
         this.lastBurstLeapTime = now;
 
         const dx = target.x - this.x;
@@ -142,9 +312,8 @@ export class Minotaur extends Mob {
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist <= 0.001) return;
 
-        const leapDistance = 75;
-        this.x += (dx / dist) * leapDistance;
-        this.y += (dy / dist) * leapDistance;
+        this.x += (dx / dist) * BURST_LEAP_DISTANCE;
+        this.y += (dy / dist) * BURST_LEAP_DISTANCE;
         this.clamp();
     }
 
@@ -158,9 +327,8 @@ export class Minotaur extends Mob {
     }
 
     trySwingAttack() {
-        if (!this.isAlarmed || !this.target) return;
-
-        const target = ENTITIES.PLAYERS[this.target.id];
+        if (!this.isAlarmed) return;
+        const target = this.getAlarmedTarget();
         if (!target || !target.isAlive || target.hasShield || target.isInvisible) return;
 
         const dx = target.x - this.x;
@@ -168,6 +336,9 @@ export class Minotaur extends Mob {
         const distSq = dx * dx + dy * dy;
         const swingRange = dataMap.SWORDS['imgs'][9].swordWidth * 1.5;
         if (distSq > swingRange * swingRange) return;
+        const targetAngle = Math.atan2(dy, dx);
+        const facingDelta = Math.abs(normalizeAngle(targetAngle - this.angle));
+        if (facingDelta > SWING_FACING_HALF_ARC) return; // target must be in front hemisphere
         if (!this.hasClearSwingLine(target)) return;
 
         const now = Date.now();
@@ -206,8 +377,7 @@ export class Minotaur extends Mob {
 
     spawnSlashProjectiles() {
         const groupId = Math.random();
-        const offsets = [-Math.PI / 10, 0, Math.PI / 10];
-        for (const angleOffset of offsets) {
+        for (const angleOffset of SLASH_OFFSETS) {
             const projectileAngle = this.angle + angleOffset;
             ENTITIES.newEntity({
                 entityType: 'projectile',
@@ -226,13 +396,12 @@ export class Minotaur extends Mob {
         if (!this.isAlarmed) return;
         if (now < this.nextShockwaveRollTime) return;
 
-        this.nextShockwaveRollTime = now + (2000 + Math.random() * 3000);
+        this.nextShockwaveRollTime = now + this.getRandomShockwaveCooldownMs();
 
         // "have a chance" every 2-5s
-        const procChance = 0.4;
-        if (Math.random() > procChance) return;
+        if (Math.random() > this.getShockwaveProcChance()) return;
 
-        this.freezeUntil = now + 900;
+        this.freezeUntil = now + SHOCKWAVE_FREEZE_MS;
         this.swingState = 0; // reset swing while frozen
         this.shockwaveActive = true;
         this.shockwaveWavesEmitted = 0;
@@ -247,34 +416,74 @@ export class Minotaur extends Mob {
     processShockwaveWaves(now) {
         if (!this.shockwaveActive) return;
 
-        while (this.shockwaveWavesEmitted < 3 && now >= this.nextShockwaveWaveTime) {
+        while (this.shockwaveWavesEmitted < SHOCKWAVE_WAVE_COUNT && now >= this.nextShockwaveWaveTime) {
             this.spawnShockwaveProjectiles();
             this.shockwaveWavesEmitted++;
-            this.nextShockwaveWaveTime += 300;
+            this.nextShockwaveWaveTime += SHOCKWAVE_WAVE_INTERVAL_MS;
         }
 
-        if (this.shockwaveWavesEmitted >= 3 || now > this.freezeUntil) {
+        if (this.shockwaveWavesEmitted >= SHOCKWAVE_WAVE_COUNT || now > this.freezeUntil) {
             this.shockwaveActive = false;
         }
     }
 
     spawnShockwaveProjectiles() {
-        const groupId = Math.random();
-        const count = 30;
-        for (let i = 0; i < count; i++) {
-            const angle = (i / count) * Math.PI * 2;
-            ENTITIES.newEntity({
-                entityType: 'projectile',
-                id: getId('PROJECTILES'),
-                x: this.x + Math.cos(angle) * this.radius,
-                y: this.y + Math.sin(angle) * this.radius,
-                angle,
-                type: 10,
-                shooter: this,
-                groupId
-            });
+        spawnEnergyBurstProjectiles(this);
+    }
+
+    die(killer) {
+        this.scatterDeathCoins();
+        this.rollBonusDrops();
+        super.die(killer);
+    }
+
+    rollBonusDrops() {
+        if (Math.random() < SWORD9_DROP_CHANCE) {
+            this.spawnDropAtDeathPosition(9);
+        }
+        this.spawnMinotaurHatDrop();
+    }
+
+    spawnDropAtDeathPosition(type) {
+        const angle = Math.random() * Math.PI * 2;
+        const distance = Math.random() * BONUS_DROP_SPREAD;
+        const dropX = this.x + Math.cos(angle) * distance;
+        const dropY = this.y + Math.sin(angle) * distance;
+        spawnObject(type, dropX, dropY, 1, 'minotaur');
+    }
+
+    spawnMinotaurHatDrop() {
+        const accessoryId = ACCESSORY_NAME_TO_ID['minotaur-hat'];
+        const itemType = accessoryItemTypeFromId(accessoryId);
+        if (!itemType) return;
+        this.spawnDropAtDeathPosition(itemType);
+    }
+
+    scatterDeathCoins() {
+        const coinType = getCoinObjectType();
+        if (!coinType) return;
+
+        let remaining = getRandomIntInclusive(MIN_DEATH_COIN_DROP, MAX_DEATH_COIN_DROP);
+        while (remaining > 0) {
+            const stackSize = Math.min(remaining, getRandomIntInclusive(MIN_DEATH_COIN_STACK, MAX_DEATH_COIN_STACK));
+            const angle = Math.random() * Math.PI * 2;
+            const distance = Math.random() * DEATH_COIN_SPREAD;
+            const dropX = this.x + Math.cos(angle) * distance;
+            const dropY = this.y + Math.sin(angle) * distance;
+            spawnObject(coinType, dropX, dropY, stackSize, 'minotaur');
+            remaining -= stackSize;
         }
     }
+}
+
+function normalizeAngle(angle) {
+    while (angle > Math.PI) angle -= Math.PI * 2;
+    while (angle < -Math.PI) angle += Math.PI * 2;
+    return angle;
+}
+
+function getRandomIntInclusive(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 function segmentIntersectsCircle(x1, y1, x2, y2, cx, cy, r) {

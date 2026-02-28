@@ -14,6 +14,12 @@ import {
     ACCESSORY_KEYS
 } from './shared/datamap.js';
 
+function getHealthBarColor(healthRatio) {
+    if (healthRatio >= 0.5) return '#22c55e';
+    if (healthRatio >= 0.25) return '#eab308';
+    return '#ef4444';
+}
+
 export class Player {
     constructor(id, x, y) {
         this.id = id;
@@ -54,11 +60,25 @@ export class Player {
         this.angle = 0;
 
         this.radius = dataMap.PLAYERS.baseRadius;
+        this._wasAliveState = this.isAlive;
+        this._deathFadeStart = 0;
+        this._deathFadeX = x;
+        this._deathFadeY = y;
+        this._deathFadeDuration = 750;
 
         ENTITIES.PLAYERS[id] = this;
     }
     update() {
         const lerpFactor = (TPS.clientCapped / TPS.server) / 10;
+
+        if (this._wasAliveState && !this.isAlive) {
+            this._deathFadeStart = performance.now();
+            this._deathFadeX = this.x;
+            this._deathFadeY = this.y;
+        } else if (!this._wasAliveState && this.isAlive) {
+            this._deathFadeStart = 0;
+        }
+        this._wasAliveState = this.isAlive;
 
         if (typeof this.newX === 'undefined' || typeof this.newY === 'undefined') return;
 
@@ -101,13 +121,24 @@ export class Player {
     draw() {
         if (typeof this.x === 'undefined' || typeof this.y === 'undefined') return;
 
-        const screenPosX = this.x - camera.x;
-        const screenPosY = this.y - camera.y;
+        let drawX = this.x;
+        let drawY = this.y;
+        let deathFadeAlpha = 1;
+        if (!this.isAlive) {
+            if (this.id === Vars.myId) return;
+            if (!this._deathFadeStart) return;
+            const t = (performance.now() - this._deathFadeStart) / this._deathFadeDuration;
+            if (t >= 1) return;
+            drawX = this._deathFadeX;
+            drawY = this._deathFadeY;
+            deathFadeAlpha = 1 - t;
+        }
 
-        if (!this.isAlive) return;
+        const screenPosX = drawX - camera.x;
+        const screenPosY = drawY - camera.y;
 
         const isSelfInvisible = this.id === Vars.myId && this.isInvisible;
-        const alpha = isSelfInvisible ? 0.5 : 1;
+        const alpha = (isSelfInvisible ? 0.5 : 1) * deathFadeAlpha;
 
         if (this.hasShield) {
             LC.drawImage({
@@ -192,16 +223,17 @@ export class Player {
         }
 
         // draw health as bar
-        if (this.health !== undefined && this.maxHealth !== undefined) {
+        if (this.isAlive && this.health !== undefined && this.maxHealth !== undefined) {
             const barWidth = this.radius * 2;
             const barHeight = 5;
-            const healthPercentage = Math.min(1, this.health / this.maxHealth);
+            const healthPercentage = Math.max(0, Math.min(1, this.health / Math.max(1, this.maxHealth)));
+            const healthColor = getHealthBarColor(healthPercentage);
 
             // Background of the health bar
             LC.drawRect({
                 pos: [screenPosX - barWidth / 2, screenPosY + this.radius + 5],
                 size: [barWidth, barHeight],
-                color: 'red',
+                color: 'rgba(128, 128, 128, 0.45)',
                 cornerRadius: 2,
                 transparency: alpha
             });
@@ -210,7 +242,7 @@ export class Player {
             LC.drawRect({
                 pos: [screenPosX - barWidth / 2, screenPosY + this.radius + 5],
                 size: [barWidth * healthPercentage, barHeight],
-                color: 'lime',
+                color: healthColor,
                 cornerRadius: 2,
                 transparency: alpha
             });

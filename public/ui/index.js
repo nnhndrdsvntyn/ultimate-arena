@@ -189,6 +189,7 @@ export function initializeUI() {
 }
 
 // --- Periodic Updates ---
+let lastShownVikingComboCount = 0;
 setInterval(() => {
     if (uiState.isSettingsOpen && uiState.activeTab === 'Stats') {
         updateSettingsBody();
@@ -199,9 +200,24 @@ setInterval(() => {
     if (uiRefs.comboText) {
         const myPlayer = ENTITIES.PLAYERS[Vars.myId];
         const accessoryKey = ACCESSORY_KEYS[myPlayer?.accessoryId || 0];
-        const showCombo = accessoryKey === 'viking-hat' && (Vars.vikingComboCount || 0) > 0;
-        uiRefs.comboText.textContent = `Combo: ${Vars.vikingComboCount || 0}/3`;
+        const comboCount = Vars.vikingComboCount || 0;
+        const showCombo = accessoryKey === 'viking-hat' && comboCount > 0;
+        uiRefs.comboText.textContent = `Combo: ${comboCount}/3`;
         uiRefs.comboText.style.display = showCombo ? 'block' : 'none';
+
+        if (showCombo && comboCount !== lastShownVikingComboCount) {
+            if (typeof uiRefs.comboText.animate === 'function') {
+                uiRefs.comboText.animate([
+                    { transform: 'translateX(-50%) scale(1)' },
+                    { transform: 'translateX(-50%) scale(1.18)' },
+                    { transform: 'translateX(-50%) scale(1)' }
+                ], {
+                    duration: 220,
+                    easing: 'ease-out'
+                });
+            }
+        }
+        lastShownVikingComboCount = comboCount;
     }
 }, 100);
 

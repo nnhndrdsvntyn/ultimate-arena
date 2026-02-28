@@ -5,7 +5,8 @@ import {
     GameObject
 } from './object.js';
 import {
-    playSfx
+    playSfx,
+    emitCoinPickupFx
 } from '../../helpers.js';
 import {
     dataMap
@@ -30,13 +31,14 @@ export class GoldCoin extends GameObject {
     }
 
     die(killer) {
+        const amount = this.amount || 1;
         if (killer && typeof killer.addGoldCoins === 'function') {
-            const amount = this.amount || 1;
             killer.addGoldCoins(amount);
             if (this.source === 'chest' && typeof killer.addScore === 'function') {
                 killer.addScore(amount * 10);
             }
             killer.sendStatsUpdate();
+            emitCoinPickupFx(this.x, this.y, killer.id, amount);
         }
 
         if (killer && performance.now() - (killer.lastPickUpCoinTime || 0) > 20) {

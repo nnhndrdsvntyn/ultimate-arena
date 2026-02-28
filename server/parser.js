@@ -42,7 +42,9 @@ const PACKET_TYPES = {
     SWAP_SLOTS: 17,
     BUY: 20,
     SELL: 21,
-    EQUIP_ACCESSORY: 23
+    EQUIP_ACCESSORY: 23,
+    USE_ABILITY: 24,
+    DROP_EQUIPPED_ACCESSORY: 25
 };
 
 export function parsePacket(buffer, ws) {
@@ -120,6 +122,12 @@ export function parsePacket(buffer, ws) {
             break;
         case PACKET_TYPES.EQUIP_ACCESSORY:
             handleEquipAccessoryPacket(reader, player);
+            break;
+        case PACKET_TYPES.USE_ABILITY:
+            handleUseAbilityPacket(reader, player);
+            break;
+        case PACKET_TYPES.DROP_EQUIPPED_ACCESSORY:
+            player.dropEquippedAccessory();
             break;
         default:
             // console.warn(`Unknown packet from client ${ws.id}: ${packetType}`);
@@ -440,7 +448,17 @@ function handleCommandPacket(reader, ws, buffer) {
         }
         case 20: { // Activate ability (admin self-cast)
             const abilityName = reader.readString();
-            cmdRun.activateAbility(ws.id, abilityName);
+            let targetX = null;
+            let targetY = null;
+            let durationSeconds = null;
+            const normalizedAbility = (abilityName || '').toLowerCase();
+            if (normalizedAbility === 'lightning_shot' && reader.offset + 4 <= buffer.length) {
+                targetX = reader.readU16();
+                targetY = reader.readU16();
+            } else if ((normalizedAbility === 'stamina_boost' || normalizedAbility === 'speed_boost') && reader.offset + 2 <= buffer.length) {
+                durationSeconds = reader.readU16();
+            }
+            cmdRun.activateAbility(ws.id, abilityName, targetX, targetY, durationSeconds);
             break;
         }
     }
@@ -507,10 +525,30 @@ function handleEquipAccessoryPacket(reader, player) {
     const fromSlot = reader.offset < reader.buffer.length ? reader.readU8() : 255;
     if (!player) return;
     if (itemType === 0) {
-        player.unequipAccessory();
+        player.unequipAccessory(fromSlot);
         return;
     }
     player.equipAccessoryFromItemType(itemType, fromSlot);
+}
+
+function handleUseAbilityPacket(reader, player) {
+    if (!player || !player.isAlive) return;
+    const ability = (player.activeAbility || '').toLowerCase();
+    if (!ability) return;
+
+    let targetX = null;
+    let targetY = null;
+    if (reader.offset + 4 <= reader.buffer.length) {
+        targetX = reader.readU16();
+        targetY = reader.readU16();
+    }
+
+    const cooldownMs = Math.max(0, player.abilityCooldownMs || 0);
+    const now = performance.now();
+    if (cooldownMs > 0 && now - (player.lastAbilityUseTime || 0) < cooldownMs) return;
+    player.lastAbilityUseTime = now;
+    cmdRun.activateAbility(player.id, ability, targetX, targetY);
+    player.sendStatsUpdate();
 }
 
 // --- Helper Classes ---

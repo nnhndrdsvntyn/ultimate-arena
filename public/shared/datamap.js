@@ -8,17 +8,182 @@ export const DEFAULT_VIEW_RANGE_MULT = 2 / 3;
 
 const createAsset = (name, src, type) => ({ name, src, type });
 
+// Add or edit drop/chest/coin types here.
+// - Use a unique `key`.
+// - `id` is optional; omit it to auto-assign the next free u8 type.
+// - Set `category` (`chest`, `coin`, `drop`) and behavior flags in this one place.
+const OBJECT_DEFINITIONS = [
+    {
+        key: 'chest1',
+        id: 10,
+        category: 'chest',
+        isChest: true,
+        radius: 50,
+        maxHealth: 50,
+        score: 10,
+        coinDropRange: [10, 15],
+        swordRankDrops: { 1: 0.5, 2: 0.25, 3: 0.1, 4: 0.05, 5: 0.04, 6: 0.03, 7: 0.03 },
+        worldSpawnCount: 75,
+        spawnSide: 'left',
+        riverBuffer: 200,
+        imgSrc: './images/objects/chest1.png',
+        imgName: 'chest1',
+        imgProportions: [3, 2]
+    },
+    {
+        key: 'chest2',
+        id: 11,
+        category: 'chest',
+        isChest: true,
+        radius: 60,
+        maxHealth: 125,
+        score: 25,
+        coinDropRange: [25, 75],
+        swordRankDrops: { 1: 0.2, 2: 0.3, 3: 0.25, 4: 0.1, 5: 0.05, 6: 0.05, 7: 0.05 },
+        worldSpawnCount: 50,
+        spawnSide: 'left',
+        riverBuffer: 200,
+        imgSrc: './images/objects/chest2.png',
+        imgName: 'chest2',
+        imgProportions: [3, 2]
+    },
+    {
+        key: 'chest3',
+        id: 12,
+        category: 'chest',
+        isChest: true,
+        radius: 75,
+        maxHealth: 250,
+        score: 75,
+        coinDropRange: [50, 150],
+        swordRankDrops: { 8: 0.1 },
+        worldSpawnCount: 25,
+        spawnSide: 'right',
+        riverBuffer: 200,
+        imgSrc: './images/objects/chest3.png',
+        imgName: 'chest3',
+        imgProportions: [3, 2]
+    },
+    {
+        key: 'chest4',
+        id: 13,
+        category: 'chest',
+        isChest: true,
+        radius: 100,
+        maxHealth: 500,
+        score: 100,
+        coinDropRange: [100, 300],
+        swordRankDrops: { 1: 0.02, 2: 0.03, 3: 0.05, 4: 0.1, 5: 0.2, 6: 0.35, 7: 0.25 },
+        worldSpawnCount: 10,
+        spawnSide: 'left',
+        riverBuffer: 200,
+        imgSrc: './images/objects/chest4.png',
+        imgName: 'chest4',
+        imgProportions: [3, 2]
+    },
+    {
+        key: 'gold-coin',
+        id: 99,
+        category: 'coin',
+        isEphemeral: true,
+        stackable: true,
+        radius: 15,
+        maxHealth: 1,
+        score: 5,
+        imgSrc: './images/objects/gold-coin.png',
+        imgName: 'gold-coin',
+        imgProportions: [2, 2]
+    },
+    { key: 'sword1-drop', id: 1, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword1.png', imgName: 'swords-sword1', imgProportions: [2, 1] },
+    { key: 'sword2-drop', id: 2, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword2.png', imgName: 'swords-sword2', imgProportions: [2, 1] },
+    { key: 'sword3-drop', id: 3, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword3.png', imgName: 'swords-sword3', imgProportions: [2, 1] },
+    { key: 'sword4-drop', id: 4, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword4.png', imgName: 'swords-sword4', imgProportions: [2, 1] },
+    { key: 'sword5-drop', id: 5, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword5.png', imgName: 'swords-sword5', imgProportions: [2, 1] },
+    { key: 'sword6-drop', id: 6, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword6.png', imgName: 'swords-sword6', imgProportions: [2, 1] },
+    { key: 'sword7-drop', id: 7, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword7.png', imgName: 'swords-sword7', imgProportions: [2, 1] },
+    { key: 'sword8-drop', id: 8, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword8.png', imgName: 'swords-sword8', imgProportions: [2, 1] },
+    { key: 'sword9-drop', id: 9, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword9.png', imgName: 'swords-sword9', imgProportions: [2, 1] },
+    { key: 'bush-cloak-drop', id: 101, category: 'drop', isEphemeral: true, radius: 60, maxHealth: 1, score: 0, imgSrc: './images/accessories/bush-cloak.png', imgName: 'objects-bush-cloak', imgProportions: [1, 1] },
+    { key: 'sunglasses-drop', id: 102, category: 'drop', isEphemeral: true, radius: 60, maxHealth: 1, score: 0, imgSrc: './images/accessories/sunglasses.png', imgName: 'objects-sunglasses', imgProportions: [1, 1] },
+    { key: 'pirate-hat-drop', id: 103, category: 'drop', isEphemeral: true, radius: 60, maxHealth: 1, score: 0, imgSrc: './images/accessories/pirate-hat.png', imgName: 'objects-pirate-hat', imgProportions: [1, 1] },
+    { key: 'viking-hat-drop', id: 104, category: 'drop', isEphemeral: true, radius: 60, maxHealth: 1, score: 0, imgSrc: './images/accessories/viking-hat.png', imgName: 'objects-viking-hat', imgProportions: [1, 1] },
+    { key: 'alien-antennas-drop', id: 105, category: 'drop', isEphemeral: true, radius: 60, maxHealth: 1, score: 0, imgSrc: './images/accessories/alien-antennas.png', imgName: 'objects-alien-antennas', imgProportions: [1, 1] },
+    { key: 'dark-cloak-drop', id: 106, category: 'drop', isEphemeral: true, radius: 60, maxHealth: 1, score: 0, imgSrc: './images/accessories/dark-cloak.png', imgName: 'objects-dark-cloak', imgProportions: [1, 1] },
+    { key: 'minotaur-hat-drop', id: 107, category: 'drop', isEphemeral: true, radius: 60, maxHealth: 1, score: 0, imgSrc: './images/accessories/minotaur-hat.png', imgName: 'objects-minotaur-hat', imgProportions: [1, 1] }
+];
+
+function buildObjectRegistry(definitions) {
+    const usedIds = new Set();
+    const objects = {};
+    const keyToType = {};
+    const categoryToTypes = {};
+    let nextAutoId = 1;
+
+    const claimNextType = () => {
+        while (usedIds.has(nextAutoId)) nextAutoId++;
+        if (nextAutoId > 255) {
+            throw new Error('Object type overflow: object types must stay within u8 range (1..255).');
+        }
+        const id = nextAutoId;
+        usedIds.add(id);
+        nextAutoId++;
+        return id;
+    };
+
+    for (const definition of definitions) {
+        if (!definition || typeof definition !== 'object') continue;
+        const { key, id: configuredId, category = 'drop', ...rest } = definition;
+
+        if (!key) {
+            throw new Error('Object definition is missing a "key".');
+        }
+        if (Object.prototype.hasOwnProperty.call(keyToType, key)) {
+            throw new Error(`Duplicate object key "${key}" in OBJECT_DEFINITIONS.`);
+        }
+
+        let id = configuredId;
+        if (!Number.isInteger(id)) {
+            id = claimNextType();
+        } else {
+            if (id < 1 || id > 255) {
+                throw new Error(`Invalid object type ${id} for "${key}". Must be 1..255.`);
+            }
+            if (usedIds.has(id)) {
+                throw new Error(`Duplicate object type ${id} for "${key}".`);
+            }
+            usedIds.add(id);
+            if (id >= nextAutoId) nextAutoId = id + 1;
+        }
+
+        objects[id] = { ...rest, category };
+        keyToType[key] = id;
+        if (!categoryToTypes[category]) categoryToTypes[category] = [];
+        categoryToTypes[category].push(id);
+    }
+
+    for (const category of Object.keys(categoryToTypes)) {
+        categoryToTypes[category].sort((a, b) => a - b);
+    }
+
+    return { objects, keyToType, categoryToTypes };
+}
+
+const objectRegistry = buildObjectRegistry(OBJECT_DEFINITIONS);
+
 export const dataMap = {
     otherImgs: {
         'spawn-zone-shield': { name: 'spawn-zone-shield', src: './images/spawn-zone-shield.png' },
         'water': { name: 'water', src: './images/water.png' },
+        'grass': { name: 'grass', src: './images/grass.png' },
+        'grass-snow': { name: 'grass-snow', src: './images/grass-snow.png' },
         'rock1-snow': { name: 'rock1-snow', src: './images/rock1-snow.png' },
         'ground-texture1': { name: 'ground-texture1', src: './images/ground-texture1.png' },
         'ground-texture2': { name: 'ground-texture2', src: './images/ground-texture2.png' },
         'ground-texture3': { name: 'ground-texture3', src: './images/ground-texture3.png' }
     },
-    CHEST_IDS: [10, 11, 12, 13],
-    COIN_ID: 99,
+    CHEST_IDS: objectRegistry.categoryToTypes.chest || [],
+    COIN_ID: (objectRegistry.categoryToTypes.coin || [])[0] || 0,
+    OBJECT_TYPE_BY_KEY: objectRegistry.keyToType,
     SHOP_ITEMS: [
         { id: 1, name: "Bone", price: 30, img: "sword1" },
         { id: 2, name: "Branch", price: 50, img: "sword2" },
@@ -29,7 +194,14 @@ export const dataMap = {
         { id: 7, name: "Boulder Blade", price: 340, img: "sword7" },
         { id: 8, name: "Icicle Blade", price: 400, img: "sword8" }
     ],
-    ACCESSORY_PRICE: 30,
+    ACCESSORY_PRICES: {
+        'bush-cloak': 100,
+        'sunglasses': 100,
+        'pirate-hat': 150,
+        'viking-hat': 225,
+        'alien-antennas': 175,
+        'dark-cloak': 125
+    },
     AUDIO: {
         'throw': { name: 'throw', src: './audios/throw.mp3', defaultTimestamp: 0.3, defaultVolume: 0.3 },
         'sword-slash': { name: 'sword-slash', src: './audios/sword-slash.mp3', defaultTimestamp: 0.6, defaultVolume: 0.2 },
@@ -59,11 +231,12 @@ export const dataMap = {
         'pirate-hat': { name: 'pirate-hat', src: './images/accessories/pirate-hat.png', hatOffset: { x: -18, y: -2 }, size: [40, 75], rotation: 0 },
         'viking-hat': { name: 'viking-hat', src: './images/accessories/viking-hat.png', hatOffset: { x: -18, y: -0.5 }, size: [90, 70], rotation: 0 },
         'alien-antennas': { name: 'alien-antennas', src: './images/accessories/alien-antennas.png', hatOffset: { x: -33, y: 0 }, size: [45, 96], rotation: 0, viewRangeMult: 1.5 },
-        'dark-cloak': { name: 'dark-cloak', src: './images/accessories/dark-cloak.png', hatOffset: { x: -11, y: 0 }, size: [85, 82], rotation: 0 }
+        'dark-cloak': { name: 'dark-cloak', src: './images/accessories/dark-cloak.png', hatOffset: { x: -11, y: 0 }, size: [85, 82], rotation: 0 },
+        'minotaur-hat': { name: 'minotaur-hat', src: './images/accessories/minotaur-hat.png', hatOffset: { x: -30, y: 0 }, size: [95, 115], rotation: 0, shopHidden: true }
     },
     PLAYERS: {
         baseRadius: 30,
-        baseMovementSpeed: 20,
+        baseMovementSpeed: 17,
         baseStrength: 10,
         baseAttackCooldown: 900,
         baseThrowSwordCooldown: 1500,
@@ -90,7 +263,7 @@ export const dataMap = {
         '3': { radius: 50, speed: 7, baseHealth: 150, score: 75, isNeutral: true, alarmDuration: Infinity, damage: 15, imgProportions: [3, 2.5], imgSrc: './images/mobs/cow.png', imgName: 'mobs-cow', deathAction: (killer) => { const maxScore = 75; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
         '4': { radius: 45, speed: 9, baseHealth: 50, score: 10, alarmDuration: 10000, imgProportions: [2, 2], imgSrc: './images/mobs/hearty.png', imgName: 'mobs-hearty', deathAction: (killer) => { const maxScore = 10; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1); killer.health = Math.min(killer.health + 50, killer.maxHealth) } },
         '5': { radius: 65, speed: 9, baseHealth: 250, score: 150, isNeutral: true, alarmDuration: Infinity, damage: 15, imgProportions: [3, 2.5], imgSrc: './images/mobs/polar-bear.png', imgName: 'mobs-polar-bear', deathAction: (killer) => { const maxScore = 75; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
-        '6': { radius: 75, speed: 7, baseHealth: 600, score: 200, alarmDuration: Infinity, damage: 20, imgProportions: [3, 3.5], imgSrc: './images/mobs/minotaur.png', imgName: 'mobs-minotaur', deathAction: (killer) => { const maxScore = 120; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } }
+        '6': { radius: 75, speed: 7, baseHealth: 600, score: 200, alarmDuration: Infinity, damage: 20, imgProportions: [3, 3.5], imgSrc: './images/mobs/minotaur.png', imgName: 'mobs-minotaur', deathAction: (killer) => { const maxScore = 1000; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } }
     },
     PROJECTILES: {
         '1': { radius: 10, speed: 30, damage: 3, maxDistance: 100, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash1.png', imgName: 'projectiles-airslash1' },
@@ -102,29 +275,15 @@ export const dataMap = {
         '7': { radius: 10, speed: 60, damage: 23, maxDistance: 170, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash7.png', imgName: 'projectiles-airslash7' },
         '8': { radius: 10, speed: 65, damage: 27, maxDistance: 180, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash8.png', imgName: 'projectiles-airslash8' },
         '9': { radius: 15, speed: 70, damage: 32, maxDistance: 200, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/airslash9.png', imgName: 'projectiles-airslash9' },
-        '10': { radius: 30, speed: 100, damage: 20, maxDistance: 500, knockbackStrength: 25, imgProportions: [10, 2.5], imgSrc: './images/projectiles/lightning-black-red.png', imgName: 'projectiles-lightning-black-red'}
+        '10': { radius: 30, speed: 100, damage: 20, maxDistance: 500, knockbackStrength: 25, imgProportions: [10, 2.5], imgSrc: './images/projectiles/lightning-black-red.png', imgName: 'projectiles-lightning-black-red'},
+        '11': { radius: 30, speed: 100, damage: 35, maxDistance: 500, knockbackStrength: 25, imgProportions: [10, 2.5], imgSrc: './images/projectiles/lightning.png', imgName: 'projectiles-lightning'}
     },
     STRUCTURES: {
         '1': { radius: 500, isSafeZone: true, imgSrc: './images/spawn-zone.png', imgName: 'structures-spawn-zone' },
-        '2': { radius: 150, imgSrc: './images/rock1.png', imgName: 'structures-rock1' },
-        '3': { radius: 120, noCollisions: true, imgSrc: './images/bush1.png', imgName: 'structures-bush1' }
+        '2': { radius: 200, imgSrc: './images/rock1.png', imgName: 'structures-rock1' },
+        '3': { radius: 200, noCollisions: true, imgSrc: './images/bush1.png', imgName: 'structures-bush1' }
     },
-    OBJECTS: {
-        '10': { isChest: true, radius: 50, maxHealth: 50, score: 10, coinDropRange: [10, 15], swordRankDrops: { 1: 0.5, 2: 0.25, 3: 0.1, 4: 0.05, 5: 0.04, 6: 0.03, 7: 0.03 }, imgSrc: './images/objects/chest1.png', imgName: 'chest1', imgProportions: [3, 2] },
-        '11': { isChest: true, radius: 60, maxHealth: 125, score: 25, coinDropRange: [25, 75], swordRankDrops: { 1: 0.2, 2: 0.3, 3: 0.25, 4: 0.1, 5: 0.05, 6: 0.05, 7: 0.05 }, imgSrc: './images/objects/chest2.png', imgName: 'chest2', imgProportions: [3, 2] },
-        '12': { isChest: true, radius: 75, maxHealth: 250, score: 75, coinDropRange: [50, 150], swordRankDrops: { 8: 0.1 }, imgSrc: './images/objects/chest3.png', imgName: 'chest3', imgProportions: [3, 2] },
-        '13': { isChest: true, radius: 100, maxHealth: 500, score: 100, coinDropRange: [100, 300], swordRankDrops: { 1: 0.02, 2: 0.03, 3: 0.05, 4: 0.1, 5: 0.2, 6: 0.35, 7: 0.25 }, imgSrc: './images/objects/chest4.png', imgName: 'chest4', imgProportions: [3, 2] },
-        '99': { isEphemeral: true, stackable: true, radius: 15, maxHealth: 1, score: 5, imgSrc: './images/objects/gold-coin.png', imgName: 'gold-coin', imgProportions: [2, 2] },
-        '1': { isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword1.png', imgName: 'swords-sword1', imgProportions: [2, 1] },
-        '2': { isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword2.png', imgName: 'swords-sword2', imgProportions: [2, 1] },
-        '3': { isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword3.png', imgName: 'swords-sword3', imgProportions: [2, 1] },
-        '4': { isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword4.png', imgName: 'swords-sword4', imgProportions: [2, 1] },
-        '5': { isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword5.png', imgName: 'swords-sword5', imgProportions: [2, 1] },
-        '6': { isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword6.png', imgName: 'swords-sword6', imgProportions: [2, 1] },
-        '7': { isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword7.png', imgName: 'swords-sword7', imgProportions: [2, 1] },
-        '8': { isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword8.png', imgName: 'swords-sword8', imgProportions: [2, 1] },
-        '9': { isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/sword9.png', imgName: 'swords-sword9', imgProportions: [2, 1] }
-    }
+    OBJECTS: objectRegistry.objects
 };
 
 export const ACCESSORY_KEYS = ['none', ...Object.keys(dataMap.ACCESSORIES)];
@@ -135,10 +294,11 @@ export const ACCESSORY_NAME_TO_ID = ACCESSORY_KEYS.reduce((acc, name, idx) => {
 export const ACCESSORY_DESCRIPTIONS = {
     'bush-cloak': 'Poisons melee attackers',
     'sunglasses': 'Coming Soon',
-    'pirate-hat': 'Swing cooldown is reduced by 30%',
+    'pirate-hat': 'Chest drops +20% coins and grants a stamina boost ability (F)',
     'viking-hat': 'Every 3 hits, you do 30% more damage.',
     'alien-antennas': 'Allows you to view more of the map',
-    'dark-cloak': 'Mobs have slightly more difficulty spotting you'
+    'dark-cloak': 'Mobs have slightly more difficulty spotting you',
+    'minotaur-hat': 'A trophy from the arena minotaur'
 };
 export const ACCESSORY_ITEM_OFFSET = 100;
 
@@ -167,9 +327,36 @@ export const SWORD_IDS = Object.keys(dataMap.SWORDS.imgs)
     .sort((a, b) => a - b);
 
 const SWORD_ID_SET = new Set(SWORD_IDS);
+const CHEST_ID_SET = new Set(dataMap.CHEST_IDS);
 
 export function isSwordRank(rank) {
     return SWORD_ID_SET.has(rank);
+}
+
+export function getObjectTypeByKey(key) {
+    return dataMap.OBJECT_TYPE_BY_KEY[key] || 0;
+}
+
+export function resolveObjectType(typeOrKey) {
+    if (Number.isInteger(typeOrKey)) return typeOrKey;
+    if (typeof typeOrKey === 'string') return getObjectTypeByKey(typeOrKey);
+    return 0;
+}
+
+export function getCoinObjectType() {
+    return dataMap.COIN_ID;
+}
+
+export function isCoinObjectType(type) {
+    return type === dataMap.COIN_ID;
+}
+
+export function getChestObjectTypes() {
+    return dataMap.CHEST_IDS.slice();
+}
+
+export function isChestObjectType(type) {
+    return CHEST_ID_SET.has(type);
 }
 
 export function isSellableItem(type) {

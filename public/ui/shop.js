@@ -287,9 +287,12 @@ function renderShopTab() {
     accessoryTitle.classList.add('no-select');
 
     const accessoryGrid = createEl('div', {}, uiRefs.shopBody, { className: 'shop-grid' });
-    const accessoryPrice = dataMap.ACCESSORY_PRICE || 30;
 
-    ACCESSORY_KEYS.filter(key => key !== 'none').forEach((key) => {
+    ACCESSORY_KEYS.filter(key => {
+        if (key === 'none') return false;
+        const accessory = dataMap.ACCESSORIES[key];
+        return accessory && !accessory.shopHidden;
+    }).forEach((key) => {
         const accessory = dataMap.ACCESSORIES[key];
         if (!accessory) return;
 
@@ -314,6 +317,7 @@ function renderShopTab() {
             className: 'shop-price-icon',
             src: './images/objects/gold-coin.png'
         });
+        const accessoryPrice = dataMap.ACCESSORY_PRICES?.[key] || dataMap.ACCESSORY_PRICE || 30;
         createEl('span', {}, priceContainer, { textContent: accessoryPrice.toLocaleString() });
 
         const canAfford = (Vars.myStats.goldCoins || 0) >= accessoryPrice;

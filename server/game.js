@@ -49,7 +49,11 @@ import {
 } from './helpers.js';
 const initWriter = new PacketWriter(1024 * 512);
 import {
-    dataMap
+    dataMap,
+    isChestObjectType,
+    isCoinObjectType,
+    getChestObjectTypes,
+    resolveObjectType
 } from '../public/shared/datamap.js';
 export const MAP_SIZE = [15000, 15000];
 export const ENTITIES = {
@@ -69,6 +73,7 @@ export const ENTITIES = {
         shooter,
         username,
         groupId,
+        projectileOptions = null,
         amount = 1,
         source = null
     }) => {
@@ -79,7 +84,7 @@ export const ENTITIES = {
             ENTITIES.playerIds.add(id)
         } else if (entityType === 'projectile') {
             entityType = 2;
-            new Projectile(id, x, y, angle, type, shooter, groupId)
+            new Projectile(id, x, y, angle, type, shooter, groupId, projectileOptions)
         } else if (entityType === 'mob') {
             entityType = 3;
             switch (type) {
@@ -117,9 +122,9 @@ export const ENTITIES = {
             }
         } else if (entityType === 'object') {
             entityType = 5;
-            if (dataMap.CHEST_IDS.includes(type)) {
+            if (isChestObjectType(type)) {
                 new Chest(id, x, y, type);
-            } else if (type === dataMap.COIN_ID) {
+            } else if (isCoinObjectType(type)) {
                 new GoldCoin(id, x, y, type, amount, source);
             } else {
                 new GameObject(id, x, y, type);
@@ -150,9 +155,6 @@ export const ENTITIES = {
         }
         if (type === 'projectile') {
             const proj = ENTITIES.PROJECTILES[id];
-            if (proj && proj.type === -1 && proj.shooter) {
-                proj.shooter.returnWeapon(proj.weaponRank);
-            }
             type = 2;
             delete ENTITIES.PROJECTILES[id]
         }
@@ -176,26 +178,68 @@ export const ENTITIES = {
 // create some structures
 new Base(1, MAP_SIZE[0] * 0.5, MAP_SIZE[1] * 0.5); // spawn zone
 // rock structures (make sure to not spawn within spawnzoneradius + 100 distance from a spawn zon)
-for (let i = 0; i < 100; i++) {
-    let x, y;
-    let validPosition = false;
-    while (!validPosition) {
-        x = Math.floor(Math.random() * MAP_SIZE[0]);
-        y = Math.floor(Math.random() * MAP_SIZE[1]);
-        const spawnZone = ENTITIES.STRUCTURES[1]; // Assuming spawn zone is structure with id 1
-        const dx = x - spawnZone.x;
-        const dy = y - spawnZone.y;
-        const distanceSq = dx * dx + dy * dy;
-        const radius = dataMap.STRUCTURES[2].radius;
-        const invalid = x >= (MAP_SIZE[0] * 0.47 - radius) && x <= (MAP_SIZE[0] * 0.53 + radius);
-        const minDistanceSq = (spawnZone.radius + 100) * (spawnZone.radius + 100);
+const ROCK_EXTRA_GAP = 100;
+const ROCK_SPAWN_PADDING = 500;
 
-        // Ensure not near spawn zone and not near map edges
-        if (distanceSq > minDistanceSq && x > 500 && x < 9500 && y > 500 && y < 9500 && !invalid) {
-            validPosition = true
+function getRandomRockPosition(radius) {
+    const leftMinX = ROCK_SPAWN_PADDING;
+    const leftMaxX = Math.floor((MAP_SIZE[0] * 0.47) - radius - ROCK_EXTRA_GAP);
+    const minY = ROCK_SPAWN_PADDING;
+    const maxY = MAP_SIZE[1] - ROCK_SPAWN_PADDING;
+    const safeMaxX = Math.max(leftMinX, leftMaxX);
+    const safeMaxY = Math.max(minY, maxY);
+
+    const x = Math.floor(leftMinX + Math.random() * (safeMaxX - leftMinX + 1));
+    const y = Math.floor(minY + Math.random() * (safeMaxY - minY + 1));
+    return { x, y };
+}
+
+function isValidRockPosition(x, y, radius, spawnZone) {
+    const dx = x - spawnZone.x;
+    const dy = y - spawnZone.y;
+    const distanceSq = dx * dx + dy * dy;
+    const leftMaxX = Math.floor((MAP_SIZE[0] * 0.47) - radius - ROCK_EXTRA_GAP);
+    const minSpawnZoneDistanceSq = (spawnZone.radius + 100) * (spawnZone.radius + 100);
+    if (!(distanceSq > minSpawnZoneDistanceSq &&
+        x >= ROCK_SPAWN_PADDING && x <= leftMaxX &&
+        y >= ROCK_SPAWN_PADDING && y <= (MAP_SIZE[1] - ROCK_SPAWN_PADDING))) {
+        return false;
+    }
+
+    // Ensure new rocks don't touch each other and keep an extra 100 units of spacing.
+    for (const existing of Object.values(ENTITIES.STRUCTURES)) {
+        if (existing.type !== 2) continue;
+        const existingRadius = dataMap.STRUCTURES[existing.type]?.radius || 0;
+        const minCenterDist = radius + existingRadius + ROCK_EXTRA_GAP;
+        const ex = x - existing.x;
+        const ey = y - existing.y;
+        if ((ex * ex + ey * ey) < (minCenterDist * minCenterDist)) {
+            return false;
         }
     }
-    new Rock(getId('STRUCTURES'), x, y)
+
+    return true;
+}
+
+for (let i = 0; i < 100; i++) {
+    let x = 0, y = 0;
+    let validPosition = false;
+    const spawnZone = ENTITIES.STRUCTURES[1]; // Assuming spawn zone is structure with id 1
+    const radius = dataMap.STRUCTURES[2].radius;
+    let attempts = 0;
+    while (!validPosition) {
+        attempts++;
+        const pos = getRandomRockPosition(radius);
+        x = pos.x;
+        y = pos.y;
+        validPosition = isValidRockPosition(x, y, radius, spawnZone);
+        if (!validPosition && attempts > 5000) break;
+    }
+
+    if (!validPosition) {
+        continue;
+    }
+    new Rock(getId('STRUCTURES'), x, y);
 }
 // bush structures (make sure to not spawn within spawnzoneradius + 100 distance from a spawn zone AND rock)
 for (let i = 101; i < 201; i++) {
@@ -270,14 +314,14 @@ export function getRandomMobPosition(type) {
         x = Math.floor(MAP_SIZE[0] * 0.53 + Math.random() * (MAP_SIZE[0] * 0.47));
         y = Math.floor(Math.random() * MAP_SIZE[1]);
     } else if (type === 6) { // Minotaur (Left side / Green)
-        x = Math.floor(Math.random() * 4700);
-        y = Math.floor(Math.random() * 10000);
+        x = Math.floor(Math.random() * MAP_SIZE[0] * 0.47);
+        y = Math.floor(Math.random() * MAP_SIZE[1]);
     } else if (type === 4) { // Hearty (Middle-ish)
         x = Math.floor(Math.random() * 10000);
         y = Math.floor(Math.random() * 10000);
     } else { // Chick (1), Pig (2), Cow (3) (Left side / Green)
-        x = Math.floor(Math.random() * 4700);
-        y = Math.floor(Math.random() * 10000);
+        x = Math.floor(Math.random() * MAP_SIZE[0] * 0.47);
+        y = Math.floor(Math.random() * MAP_SIZE[1]);
     }
     return { x, y };
 }
@@ -310,7 +354,10 @@ setTimeout(() => {
 
 
 export function spawnObject(type, x, y, amount = 1, source = null) {
-    const radius = dataMap.OBJECTS[type]?.radius || 50;
+    type = resolveObjectType(type);
+    const objectConfig = dataMap.OBJECTS[type];
+    if (!objectConfig) return null;
+    const radius = objectConfig.radius || 50;
 
     // If x or y is missing, find a valid random position
     if (x === undefined || y === undefined) {
@@ -325,10 +372,7 @@ export function spawnObject(type, x, y, amount = 1, source = null) {
             const riverLeft = MAP_SIZE[0] * 0.47;
             const riverRight = MAP_SIZE[0] * 0.53;
 
-            let riverBuffer = 0;
-            if (dataMap.CHEST_IDS.includes(type)) { // chests especially make sure they are at least 200 distance from the river
-                riverBuffer = 200;
-            }
+            const riverBuffer = objectConfig.riverBuffer || 0;
 
             const inRiver = x >= (riverLeft - radius - riverBuffer) && x <= (riverRight + radius + riverBuffer);
             const nearSpawn = spawnZone ? distanceToSpawnSq < (spawnZone.radius + 200) ** 2 : false;
@@ -347,9 +391,9 @@ export function spawnObject(type, x, y, amount = 1, source = null) {
             }
 
             let validSide = true;
-            if (type === 10 || type === 11 || type === 13) {
+            if (objectConfig.spawnSide === 'left') {
                 if (x > riverLeft - radius - riverBuffer) validSide = false;
-            } else if (type === 12) {
+            } else if (objectConfig.spawnSide === 'right') {
                 if (x < riverRight + radius + riverBuffer) validSide = false;
             }
 
@@ -374,29 +418,11 @@ export function spawnObject(type, x, y, amount = 1, source = null) {
     return ENTITIES.OBJECTS[id];
 }
 
-// spawn chests (types 1-4)
-for (const type of dataMap.CHEST_IDS) {
-    switch (type) {
-        case 10:
-            for (let i = 0; i < 75; i++) {
-                spawnObject(type);
-            }
-            break;
-        case 11:
-            for (let i = 0; i < 50; i++) {
-                spawnObject(type);
-            }
-            break;
-        case 12:
-            for (let i = 0; i < 25; i++) {
-                spawnObject(type);
-            }
-            break;
-        case 13:
-            for (let i = 0; i < 10; i++) {
-                spawnObject(type);
-            }
-            break;
+// spawn chests
+for (const type of getChestObjectTypes()) {
+    const count = dataMap.OBJECTS[type]?.worldSpawnCount || 0;
+    for (let i = 0; i < count; i++) {
+        spawnObject(type);
     }
 }
 

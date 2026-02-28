@@ -1,6 +1,6 @@
 import { ENTITIES } from '../game.js';
-import { ws, Vars, LC } from '../client.js';
-import { writer, sendPickupCommand, sendEquipAccessoryPacket } from '../helpers.js';
+import { ws, Vars, LC, camera } from '../client.js';
+import { writer, sendPickupCommand, sendEquipAccessoryPacket, sendUseAbilityPacket } from '../helpers.js';
 import { isMobile, HOTBAR_CONFIG, INVENTORY_CONFIG, ACCESSORY_SLOT_CONFIG, THROW_BTN_CONFIG, PICKUP_BTN_CONFIG, DROP_BTN_CONFIG, ATTACK_BTN_CONFIG } from './config.js';
 import { isSwordRank, isSellableItem, isAccessoryItemType, accessoryIdFromItemType } from '../shared/datamap.js';
 import { uiInput, uiRefs, uiRotation, uiState } from './context.js';
@@ -149,6 +149,14 @@ function handleGameplayKeyDown(key, player) {
         if (isSwordRank(item)) {
             sendThrowPacket();
         }
+    } else if (key === 'f') {
+        const screenX = Vars.mouseX * (LC.width / window.innerWidth);
+        const screenY = Vars.mouseY * (LC.height / window.innerHeight);
+        const centerX = LC.width / 2;
+        const centerY = LC.height / 2;
+        const worldX = camera.x + centerX + ((screenX - centerX) / Math.max(0.001, LC.zoom));
+        const worldY = camera.y + centerY + ((screenY - centerY) / Math.max(0.001, LC.zoom));
+        sendUseAbilityPacket(worldX, worldY);
     } else if (key === 'r') {
         sendPickupCommand();
     } else if (key === 'q') {
@@ -180,6 +188,12 @@ function sendThrowPacket() {
 function sendDropPacket() {
     writer.reset();
     writer.writeU8(14);
+    ws.send(writer.getBuffer());
+}
+
+function sendDropEquippedAccessoryPacket() {
+    writer.reset();
+    writer.writeU8(25);
     ws.send(writer.getBuffer());
 }
 
@@ -255,9 +269,24 @@ export function handleHotbarSelection(slot, allowDrag = true) {
 function handleHotbarSwap(clientX, clientY) {
     if (Vars.dragAccessory) {
         const overAccessorySlot = isClickingAccessorySlot(clientX, clientY);
-        if (!overAccessorySlot) {
-            sendEquipAccessoryPacket(0);
+        if (overAccessorySlot) {
+            Vars.dragAccessory = false;
+            Vars.dragAccessoryId = 0;
+            return;
         }
+
+        const slotUnderMouse = isClickingHotbar(clientX, clientY);
+        const invSlotUnderMouse = isClickingInventory(clientX, clientY);
+        const targetSlot = slotUnderMouse !== -1 ? slotUnderMouse : invSlotUnderMouse;
+        const targetIsBlocked = targetSlot !== -1 && (targetSlot === 5 || uiState.itemsInSellQueue.includes(targetSlot));
+        const targetCanReceive = targetSlot !== -1 && !targetIsBlocked && Vars.myInventory[targetSlot] === 0;
+
+        if (targetCanReceive) {
+            sendEquipAccessoryPacket(0, targetSlot);
+        } else if (targetSlot === -1) {
+            sendDropEquippedAccessoryPacket();
+        }
+
         Vars.dragAccessory = false;
         Vars.dragAccessoryId = 0;
         return;
@@ -335,11 +364,6 @@ function handleHotbarSwap(clientX, clientY) {
     if (finalSlot === -1 && Vars.dragSlot !== -1) {
         // Remove from sell queue if dropped
         uiState.itemsInSellQueue = uiState.itemsInSellQueue.filter(i => i !== Vars.dragSlot);
-        const type = Vars.myInventory[Vars.dragSlot] & 0x7F;
-        if (isAccessoryItemType(type)) {
-            Vars.dragSlot = -1;
-            return;
-        }
         dropSlot(Vars.dragSlot);
         Vars.dragSlot = -1;
         return;
@@ -487,10 +511,8 @@ export function setupMobileControls(container) {
 
     chatBtn.onclick = () => {
         if (uiState.isChatOpen) return;
-        uiState.isChatOpen = true;
-        uiRefs.chatInputWrapper.style.display = 'block';
-        uiRefs.chatInput.focus();
-        chatBtn.style.display = 'none';
+        const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+        handleChatToggle(myPlayer, null);
     };
 
     // Joystick elements
@@ -863,6 +885,14 @@ export function setupDesktopControls() {
                 }
                 return;
             }
+        }
+
+        if (isClickingAccessorySlot(e.clientX, e.clientY)) {
+            if (myPlayer?.accessoryId > 0) {
+                Vars.dragAccessory = true;
+                Vars.dragAccessoryId = myPlayer.accessoryId;
+            }
+            return;
         }
 
         if (slotClicked !== -1) {

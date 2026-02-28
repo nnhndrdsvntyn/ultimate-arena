@@ -11,6 +11,12 @@ import {
     dataMap
 } from './shared/datamap.js';
 
+function getHealthBarColor(healthRatio) {
+    if (healthRatio >= 0.5) return '#22c55e';
+    if (healthRatio >= 0.25) return '#eab308';
+    return '#ef4444';
+}
+
 export class Mob {
     constructor(id, x, y, type) {
         this.id = id;
@@ -105,17 +111,18 @@ export class Mob {
             if (this.health !== undefined && this.maxHealth !== undefined) {
                 const barWidth = this.radius * 2;
                 const barHeight = 5;
-                const healthPercentage = Math.min(1, this.health / this.maxHealth);
+                const healthPercentage = Math.max(0, Math.min(1, this.health / Math.max(1, this.maxHealth)));
+                const healthColor = getHealthBarColor(healthPercentage);
                 LC.drawRect({
                     pos: [screenPosX - barWidth / 2, screenPosY + this.radius + 8],
                     size: [barWidth, barHeight],
-                    color: 'red',
+                    color: 'rgba(128, 128, 128, 0.45)',
                     cornerRadius: 2
                 });
                 LC.drawRect({
                     pos: [screenPosX - barWidth / 2, screenPosY + this.radius + 8],
                     size: [barWidth * healthPercentage, barHeight],
-                    color: 'lime',
+                    color: healthColor,
                     cornerRadius: 2
                 });
             }
@@ -146,13 +153,14 @@ export class Mob {
         if (this.health !== undefined && this.maxHealth !== undefined) {
             const barWidth = this.radius * 2;
             const barHeight = 5;
-            const healthPercentage = Math.min(1, this.health / this.maxHealth);
+            const healthPercentage = Math.max(0, Math.min(1, this.health / Math.max(1, this.maxHealth)));
+            const healthColor = getHealthBarColor(healthPercentage);
 
             // Background of the health bar
             LC.drawRect({
                 pos: [screenPosX - barWidth / 2, screenPosY + this.radius * (proportions[1] / 2) + 5],
                 size: [barWidth, barHeight],
-                color: 'red',
+                color: 'rgba(128, 128, 128, 0.45)',
                 cornerRadius: 2
             });
 
@@ -160,7 +168,7 @@ export class Mob {
             LC.drawRect({
                 pos: [screenPosX - barWidth / 2, screenPosY + this.radius * (proportions[1] / 2) + 5],
                 size: [barWidth * healthPercentage, barHeight],
-                color: 'lime',
+                color: healthColor,
                 cornerRadius: 2
             });
         }

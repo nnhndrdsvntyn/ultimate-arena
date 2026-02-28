@@ -333,11 +333,30 @@ export function sendUninvisCommand(entityType, startId, endId) {
     ws.send(writer.getBuffer());
 }
 
-export function sendActivateAbilityCommand(abilityName) {
+export function sendActivateAbilityCommand(abilityName, options = {}) {
+    const targetX = options?.targetX ?? null;
+    const targetY = options?.targetY ?? null;
+    const durationSeconds = options?.durationSeconds ?? null;
     writer.reset();
     writer.writeU8(8); // Command packet
     writer.writeU8(20); // activate ability command type
     writer.writeStr(abilityName);
+    if (Number.isFinite(targetX) && Number.isFinite(targetY)) {
+        writer.writeU16(Math.max(0, Math.min(65535, Math.round(targetX))));
+        writer.writeU16(Math.max(0, Math.min(65535, Math.round(targetY))));
+    } else if (Number.isFinite(durationSeconds)) {
+        writer.writeU16(Math.max(1, Math.min(65535, Math.round(durationSeconds))));
+    }
+    ws.send(writer.getBuffer());
+}
+
+export function sendUseAbilityPacket(targetX = null, targetY = null) {
+    writer.reset();
+    writer.writeU8(24); // use equipped ability packet
+    if (Number.isFinite(targetX) && Number.isFinite(targetY)) {
+        writer.writeU16(Math.max(0, Math.min(65535, Math.round(targetX))));
+        writer.writeU16(Math.max(0, Math.min(65535, Math.round(targetY))));
+    }
     ws.send(writer.getBuffer());
 }
 

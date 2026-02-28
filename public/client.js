@@ -1,7 +1,7 @@
 import { parsePacket } from './parser.js';
 import { LibCanvas } from './libcanvas.js';
 import { ENTITIES, MAP_SIZE } from './game.js';
-import { dataMap, TPS, ACCESSORY_KEYS, isAccessoryItemType, accessoryIdFromItemType, DEFAULT_VIEW_RANGE_MULT } from './shared/datamap.js';
+import { dataMap, TPS, ACCESSORY_KEYS, isAccessoryItemType, accessoryIdFromItemType, DEFAULT_VIEW_RANGE_MULT, isCoinObjectType, getCoinObjectType, isChestObjectType } from './shared/datamap.js';
 import {
     initializeUI, updateShieldUI, updateHUDVisibility,
     THROW_BTN_CONFIG, PICKUP_BTN_CONFIG, DROP_BTN_CONFIG, ATTACK_BTN_CONFIG,
@@ -30,8 +30,11 @@ export const VIEW_RANGE_MOBILE_DEFAULT = 0.7;
 export const VIEW_RANGE_PC_DEFAULT = 1.0;
 export const VIEW_RANGE_RECOMMENDED_MOBILE = 0.7;
 export const VIEW_RANGE_RECOMMENDED_DESKTOP = 1.0;
+// Must match server join cooldown in server/parser.js (handleJoinPacket).
+export const JOIN_ACTION_COOLDOWN_MS = 1000;
 
 const VIEW_RANGE_STORAGE_KEY = 'ua_view_range_multiplier';
+const KEY_HINT_NEVER_SHOW_STORAGE_KEY = 'ua_never_show_key_hints';
 
 const clampViewRange = (value) => Math.min(VIEW_RANGE_MAX, Math.max(VIEW_RANGE_MIN, value));
 
@@ -43,6 +46,24 @@ const getStoredViewRange = () => {
         return Number.isFinite(parsed) ? clampViewRange(parsed) : null;
     } catch (e) {
         return null;
+    }
+};
+
+const getStoredBoolean = (key) => {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return false;
+    try {
+        return window.localStorage.getItem(key) === '1';
+    } catch (e) {
+        return false;
+    }
+};
+
+const setStoredBoolean = (key, value) => {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, value ? '1' : '0');
+    } catch (e) {
+        // Ignore storage failures
     }
 };
 
@@ -62,6 +83,7 @@ const getBackBufferOption = (value) => BACK_BUFFER_QUALITIES.find(opt => opt.val
 const defaultBackBufferOption = getBackBufferOption(BACK_BUFFER_DEFAULT) ?? BACK_BUFFER_QUALITIES[0];
 const initialBackBufferOption = getBackBufferOption(getStoredBackBufferQuality()) ?? defaultBackBufferOption;
 const initialBackBufferQuality = initialBackBufferOption?.value ?? defaultBackBufferOption?.value ?? (BACK_BUFFER_QUALITIES[0]?.value ?? BACK_BUFFER_DEFAULT);
+const initialNeverShowKeyHints = getStoredBoolean(KEY_HINT_NEVER_SHOW_STORAGE_KEY);
 
 export const Vars = {
     lastDiedTime: 0,
@@ -83,7 +105,11 @@ export const Vars = {
     inCombat: false,
     onlineCount: 0,
     vikingComboCount: 0,
-    backBufferQuality: initialBackBufferQuality
+    abilityCooldownMs: 0,
+    abilityCooldownRemainingMs: 0,
+    abilityCooldownEndsAt: 0,
+    backBufferQuality: initialBackBufferQuality,
+    joinActionLockedUntil: 0
 };
 
 const DAMAGE_INDICATOR_DURATION = 800;
@@ -93,6 +119,16 @@ const COIN_PICKUP_EFFECT_DURATION = 180;
 const COIN_PICKUP_EFFECT_MAX_DISTANCE = 140;
 const COIN_PICKUP_EFFECT_MAX_SPRITES = 5;
 const coinPickupEffects = [];
+const lightningShotEffects = [];
+const energyBurstEffects = [];
+const mobDeathFades = [];
+const keyHintUi = {
+    visible: false,
+    neverShowAgain: initialNeverShowKeyHints,
+    wasAliveLastFrame: false,
+    containerEl: null,
+    neverShowCheckboxEl: null
+};
 
 export function addDamageIndicator(worldX, worldY, amount) {
     if (!Number.isFinite(worldX) || !Number.isFinite(worldY)) return;
@@ -104,7 +140,24 @@ export function addDamageIndicator(worldX, worldY, amount) {
         x: worldX,
         y: worldY,
         start: performance.now(),
-        duration: DAMAGE_INDICATOR_DURATION
+        duration: DAMAGE_INDICATOR_DURATION,
+        font: 'bold 16px Inter',
+        color: '#ff0000',
+        rise: DAMAGE_INDICATOR_RISE
+    });
+}
+
+export function addCriticalHitIndicator(worldX, worldY) {
+    if (!Number.isFinite(worldX) || !Number.isFinite(worldY)) return;
+    damageIndicators.push({
+        text: 'CRITICAL HIT!',
+        x: worldX,
+        y: worldY - 18,
+        start: performance.now(),
+        duration: 900,
+        font: '900 18px Inter',
+        color: '#ffd166',
+        rise: DAMAGE_INDICATOR_RISE + 10
     });
 }
 
@@ -129,7 +182,7 @@ function getClosestCoinCollectorId(x, y) {
 }
 
 export function spawnCoinPickupVfx(coinObj) {
-    if (!coinObj || coinObj.type !== dataMap.COIN_ID) return;
+    if (!coinObj || !isCoinObjectType(coinObj.type)) return;
 
     const startX = coinObj.newX ?? coinObj.x;
     const startY = coinObj.newY ?? coinObj.y;
@@ -148,6 +201,71 @@ export function spawnCoinPickupVfx(coinObj) {
         startTime: performance.now(),
         spriteCount,
         seed: Math.random() * Math.PI * 2
+    });
+}
+
+export function spawnCoinPickupVfxToPlayer(startX, startY, targetId, amount = 1) {
+    if (!Number.isFinite(startX) || !Number.isFinite(startY)) return;
+    if (!Number.isInteger(targetId)) return;
+    if (!ENTITIES.PLAYERS[targetId]?.isAlive) return;
+
+    const spriteCount = Math.min(COIN_PICKUP_EFFECT_MAX_SPRITES, Math.max(1, amount >= 5 ? 5 : amount));
+    coinPickupEffects.push({
+        startX,
+        startY,
+        targetId,
+        startTime: performance.now(),
+        spriteCount,
+        seed: Math.random() * Math.PI * 2
+    });
+}
+
+export function spawnLightningShotFx(startX, startY, endX, endY, durationMs = 500) {
+    if (!Number.isFinite(startX) || !Number.isFinite(startY) || !Number.isFinite(endX) || !Number.isFinite(endY)) return;
+    const duration = Math.max(1, durationMs | 0);
+    const dx = endX - startX;
+    const dy = endY - startY;
+    const length = Math.sqrt(dx * dx + dy * dy);
+    if (length <= 0.001) return;
+
+    lightningShotEffects.push({
+        startX,
+        startY,
+        endX,
+        endY,
+        midX: (startX + endX) / 2,
+        midY: (startY + endY) / 2,
+        angle: Math.atan2(dy, dx),
+        length,
+        startTime: performance.now(),
+        duration,
+        seed: Math.random() * Math.PI * 2
+    });
+}
+
+export function spawnEnergyBurstFx(x, y, radius = 500, durationMs = 700, waves = 3) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const duration = Math.max(1, durationMs | 0);
+    energyBurstEffects.push({
+        x,
+        y,
+        radius: Math.max(1, radius),
+        duration,
+        waves: Math.max(1, Math.min(8, waves | 0)),
+        startTime: performance.now(),
+        seed: Math.random() * Math.PI * 2
+    });
+}
+
+export function spawnMobDeathFade(mob) {
+    if (!mob || mob.type !== 6) return; // Minotaur only
+    mobDeathFades.push({
+        x: mob.x,
+        y: mob.y,
+        angle: mob.angle || 0,
+        type: mob.type,
+        startTime: performance.now(),
+        duration: 750
     });
 }
 
@@ -194,6 +312,7 @@ setBackBufferQuality(initialBackBufferQuality, { persist: false });
 // --- State Variables ---
 let cantJoin = false;
 let waterOffset = 0;
+const STATIC_WORLD_CULL_MARGIN_BASE = 220;
 
 const groundTextures = [];
 
@@ -385,25 +504,28 @@ function updateZoom(localPlayer) {
 }
 
 function drawBackground() {
+    const staticViewRect = getCameraViewRect(getStaticWorldCullMargin());
+
+    const GRASS_TILE_SIZE = 250;
+
     // Ground and Biomes
-    LC.drawRect({ pos: [-MAP_SIZE[0] / 2 - camera.x, -MAP_SIZE[1] / 2 - camera.y], size: [MAP_SIZE[0] * 0.97, MAP_SIZE[1] * 2 + 2500], color: 'rgba(20, 80, 20, 1)' });
+    drawTiledImageInRect('grass', -MAP_SIZE[0] / 2, -MAP_SIZE[1] / 2, MAP_SIZE[0] * 0.97, MAP_SIZE[1] * 2 + 2500, GRASS_TILE_SIZE, staticViewRect, 0.95);
     LC.drawRect({ pos: [(MAP_SIZE[0] * 0.47) - camera.x, -(MAP_SIZE[1] * 0.5) - camera.y], size: [MAP_SIZE[0] * 0.06, MAP_SIZE[1] * 2 + 2500], color: 'rgba(20, 80, 150, 1)' });
-    LC.drawRect({ pos: [MAP_SIZE[0] * 0.53 - camera.x, -MAP_SIZE[1] / 2 - camera.y], size: [MAP_SIZE[0] * 0.97, MAP_SIZE[1] * 2 + 2500], color: 'rgba(120, 120, 120, 1)' });
+    drawTiledImageInRect('grass-snow', MAP_SIZE[0] * 0.53, -MAP_SIZE[1] / 2, MAP_SIZE[0] * 0.97, MAP_SIZE[1] * 2 + 2500, GRASS_TILE_SIZE, staticViewRect, 0.95);
 
     // Inner Map
-    LC.drawRect({ pos: [0 - camera.x, 0 - camera.y], size: [MAP_SIZE[0] * 0.47, MAP_SIZE[1]], color: 'rgba(34, 139, 34, 0.61)' });
-    LC.drawRect({ pos: [MAP_SIZE[0] * 0.53 - camera.x, 0 - camera.y], size: [MAP_SIZE[0] * 0.47, MAP_SIZE[1]], color: 'rgba(220, 220, 220, 1)' });
+    drawTiledImageInRect('grass', 0, 0, MAP_SIZE[0] * 0.47, MAP_SIZE[1], GRASS_TILE_SIZE, staticViewRect, 0.9);
+    drawTiledImageInRect('grass-snow', MAP_SIZE[0] * 0.53, 0, MAP_SIZE[0] * 0.47, MAP_SIZE[1], GRASS_TILE_SIZE, staticViewRect, 0.9);
 
     groundTextures.forEach(gt => {
-        if (gt.x - camera.x > -500 && gt.x - camera.x < LC.width + 500 && gt.y - camera.y > -500 && gt.y - camera.y < LC.height + 500) {
-            LC.drawImage({
-                name: gt.texture,
-                pos: [gt.x - camera.x, gt.y - camera.y],
-                size: [gt.size, gt.size],
-                rotation: gt.rotation,
-                transparency: 0.6
-            });
-        }
+        if (!isRectVisible(gt.x, gt.y, gt.size, gt.size, staticViewRect)) return;
+        LC.drawImage({
+            name: gt.texture,
+            pos: [gt.x - camera.x, gt.y - camera.y],
+            size: [gt.size, gt.size],
+            rotation: gt.rotation,
+            transparency: 0.6
+        });
     });
 
     // Animated Water
@@ -411,13 +533,100 @@ function drawBackground() {
     const segmentH = 400;
     waterOffset = (waterOffset + 2) % segmentH;
     for (let i = -1; i <= Math.ceil((MAP_SIZE[1] + 2000) / segmentH); i++) {
+        const worldX = MAP_SIZE[0] * 0.47;
+        const worldY = -1000 + (i * segmentH) + waterOffset;
+        if (!isRectVisible(worldX, worldY, waterWidth, segmentH, staticViewRect)) continue;
         LC.drawImage({
             name: 'water',
-            pos: [MAP_SIZE[0] * 0.47 - camera.x, -1000 + (i * segmentH) + waterOffset - camera.y],
+            pos: [worldX - camera.x, worldY - camera.y],
             size: [waterWidth, segmentH],
             transparency: 0.5
         });
     }
+
+    drawRiverShoreline(staticViewRect);
+    drawOutsideMapOverlay(staticViewRect);
+}
+
+function drawRiverShoreline(viewRect) {
+    const riverLeft = MAP_SIZE[0] * 0.47;
+    const riverRight = MAP_SIZE[0] * 0.53;
+    const shoreWidth = 16;
+    const dirtY = -MAP_SIZE[1] / 2;
+    const dirtHeight = MAP_SIZE[1] * 2 + 2500;
+    if (!isRectVisible(riverLeft - shoreWidth, dirtY, (riverRight - riverLeft) + (shoreWidth * 2), dirtHeight, viewRect)) return;
+
+    const visibleTop = Math.max(dirtY, viewRect.top);
+    const visibleBottom = Math.min(dirtY + dirtHeight, viewRect.bottom);
+    if (visibleBottom <= visibleTop) return;
+
+    const leftScreenX = riverLeft - camera.x;
+    const rightScreenX = riverRight - camera.x;
+    const screenTop = visibleTop - camera.y;
+    const visibleHeight = visibleBottom - visibleTop;
+
+    LC.ctx.save();
+
+    LC.ctx.fillStyle = 'rgba(118, 83, 46, 0.97)';
+    LC.ctx.fillRect(leftScreenX - shoreWidth, screenTop, shoreWidth, visibleHeight);
+    LC.ctx.fillRect(rightScreenX, screenTop, shoreWidth, visibleHeight);
+
+    LC.ctx.strokeStyle = 'rgba(84, 57, 30, 1)';
+    LC.ctx.lineWidth = 2;
+    LC.ctx.beginPath();
+    LC.ctx.moveTo(leftScreenX - 1, screenTop);
+    LC.ctx.lineTo(leftScreenX - 1, screenTop + visibleHeight);
+    LC.ctx.moveTo(rightScreenX + 1, screenTop);
+    LC.ctx.lineTo(rightScreenX + 1, screenTop + visibleHeight);
+    LC.ctx.stroke();
+
+    // Dotted soil texture. Deterministic jitter keeps it natural without per-frame randomness.
+    const dotStep = 18;
+    for (let y = Math.floor(visibleTop / dotStep) * dotStep; y <= visibleBottom; y += dotStep) {
+        const t = y * 0.055;
+        const leftDotX = leftScreenX - shoreWidth + 3 + ((Math.sin(t) + 1) * 0.5 * (shoreWidth - 7));
+        const rightDotX = rightScreenX + 3 + ((Math.cos(t * 1.11) + 1) * 0.5 * (shoreWidth - 7));
+        const dotY = y - camera.y;
+
+        LC.ctx.fillStyle = 'rgba(96, 66, 35, 0.95)';
+        LC.ctx.beginPath();
+        LC.ctx.arc(leftDotX, dotY, 1.7, 0, Math.PI * 2);
+        LC.ctx.fill();
+
+        LC.ctx.fillStyle = 'rgba(146, 106, 66, 0.88)';
+        LC.ctx.beginPath();
+        LC.ctx.arc(rightDotX, dotY + 2, 1.7, 0, Math.PI * 2);
+        LC.ctx.fill();
+    }
+
+    LC.ctx.restore();
+}
+
+function drawOutsideMapOverlay(viewRect) {
+    const mapLeft = 0;
+    const mapTop = 0;
+    const mapRight = MAP_SIZE[0];
+    const mapBottom = MAP_SIZE[1];
+    const viewWidth = viewRect.right - viewRect.left;
+    const viewHeight = viewRect.bottom - viewRect.top;
+    if (viewWidth <= 0 || viewHeight <= 0) return;
+
+    const topH = Math.max(0, Math.min(mapTop, viewRect.bottom) - viewRect.top);
+    const bottomH = Math.max(0, viewRect.bottom - Math.max(mapBottom, viewRect.top));
+    const leftW = Math.max(0, Math.min(mapLeft, viewRect.right) - viewRect.left);
+    const rightW = Math.max(0, viewRect.right - Math.max(mapRight, viewRect.left));
+
+    if (topH <= 0 && bottomH <= 0 && leftW <= 0 && rightW <= 0) return;
+
+    LC.ctx.save();
+    LC.ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
+
+    if (topH > 0) LC.ctx.fillRect(viewRect.left - camera.x, viewRect.top - camera.y, viewWidth, topH);
+    if (bottomH > 0) LC.ctx.fillRect(viewRect.left - camera.x, Math.max(mapBottom, viewRect.top) - camera.y, viewWidth, bottomH);
+    if (leftW > 0) LC.ctx.fillRect(viewRect.left - camera.x, viewRect.top - camera.y, leftW, viewHeight);
+    if (rightW > 0) LC.ctx.fillRect(Math.max(mapRight, viewRect.left) - camera.x, viewRect.top - camera.y, rightW, viewHeight);
+
+    LC.ctx.restore();
 }
 
 function render() {
@@ -440,6 +649,7 @@ function render() {
     });
     updateZoom(localPlayer);
     updateCamera(localPlayer);
+    const staticViewRect = getCameraViewRect(getStaticWorldCullMargin());
 
     // Drawing
     LC.clearCanvas();
@@ -452,9 +662,16 @@ function render() {
     if (Settings.renderGrid) drawGrid(localPlayer);
 
     // Entities (Z-ordering implied by draw order)
-    [ENTITIES.STRUCTURES, ENTITIES.OBJECTS, ENTITIES.MOBS, ENTITIES.PROJECTILES].forEach(group => {
+    Object.values(ENTITIES.STRUCTURES).forEach(structure => {
+        if (!isCircleVisible(structure.x, structure.y, structure.radius || 0, staticViewRect)) return;
+        structure.draw();
+    });
+    [ENTITIES.OBJECTS, ENTITIES.MOBS, ENTITIES.PROJECTILES].forEach(group => {
         Object.values(group).forEach(e => e.draw());
     });
+    drawMobDeathFades();
+    drawEnergyBurstEffects();
+    drawLightningShotEffects();
     drawCoinPickupEffects();
     Object.values(ENTITIES.PLAYERS).forEach(e => e.draw());
     drawDamageIndicators();
@@ -462,6 +679,7 @@ function render() {
     // Draw bushes with transparency layering (after players so they appear on top)
     const bushes = Object.values(ENTITIES.STRUCTURES).filter(s => s.type === 3);
     bushes.forEach(bush => {
+        if (!isCircleVisible(bush.x, bush.y, bush.radius || 0, staticViewRect)) return;
         const screenPosX = bush.x - camera.x;
         const screenPosY = bush.y - camera.y;
 
@@ -487,6 +705,64 @@ function render() {
     setTimeout(render, 1000 / TPS.clientCapped);
 }
 
+function drawTiledImageInRect(name, worldX, worldY, width, height, tileSize, viewRect, transparency = 1) {
+    if (tileSize <= 0 || width <= 0 || height <= 0) return;
+    if (!isRectVisible(worldX, worldY, width, height, viewRect)) return;
+
+    const startX = Math.max(worldX, Math.floor(viewRect.left / tileSize) * tileSize);
+    const startY = Math.max(worldY, Math.floor(viewRect.top / tileSize) * tileSize);
+    const endX = Math.min(worldX + width, viewRect.right + tileSize);
+    const endY = Math.min(worldY + height, viewRect.bottom + tileSize);
+
+    const screenX = worldX - camera.x;
+    const screenY = worldY - camera.y;
+    LC.ctx.save();
+    LC.ctx.beginPath();
+    LC.ctx.rect(screenX, screenY, width, height);
+    LC.ctx.clip();
+
+    for (let x = startX; x < endX; x += tileSize) {
+        for (let y = startY; y < endY; y += tileSize) {
+            LC.drawImage({
+                name,
+                pos: [x - camera.x, y - camera.y],
+                // Slight overlap hides texture seams from sub-pixel camera movement.
+                size: [tileSize + 1, tileSize + 1],
+                transparency
+            });
+        }
+    }
+    LC.ctx.restore();
+}
+
+function getCameraViewRect(margin = 0) {
+    const invZoom = 1 / Math.max(0.001, LC.zoom);
+    return {
+        left: camera.x - margin,
+        top: camera.y - margin,
+        right: camera.x + (LC.width * invZoom) + margin,
+        bottom: camera.y + (LC.height * invZoom) + margin
+    };
+}
+
+function getStaticWorldCullMargin() {
+    return Math.max(STATIC_WORLD_CULL_MARGIN_BASE, 700 / Math.max(0.001, LC.zoom));
+}
+
+function isRectVisible(x, y, width, height, viewRect) {
+    return x <= viewRect.right &&
+        (x + width) >= viewRect.left &&
+        y <= viewRect.bottom &&
+        (y + height) >= viewRect.top;
+}
+
+function isCircleVisible(x, y, radius, viewRect) {
+    return (x + radius) >= viewRect.left &&
+        (x - radius) <= viewRect.right &&
+        (y + radius) >= viewRect.top &&
+        (y - radius) <= viewRect.bottom;
+}
+
 function drawFPS() {
     LC.drawText({
         text: `${TPS.clientReal} FPS`,
@@ -508,14 +784,14 @@ function drawDamageIndicators() {
             continue;
         }
         const transparency = 1 - progress;
-        const rise = DAMAGE_INDICATOR_RISE * progress;
+        const rise = (indicator.rise || DAMAGE_INDICATOR_RISE) * progress;
         const screenX = indicator.x - camera.x;
         const screenY = indicator.y - camera.y - rise;
         LC.drawText({
             text: indicator.text,
             pos: [screenX, screenY],
-            font: 'bold 16px Inter',
-            color: '#ff0000',
+            font: indicator.font || 'bold 16px Inter',
+            color: indicator.color || '#ff0000',
             textAlign: 'center',
             transparency
         });
@@ -547,6 +823,7 @@ function drawGrid(lp) {
 
 function updateHUD(lp) {
     const isAlive = lp?.isAlive;
+    updateKeyHintVisibility(isAlive);
     updateHUDVisibility(isAlive);
     updateShieldUI(lp?.hasShield);
 
@@ -557,6 +834,7 @@ function updateHUD(lp) {
         if (homeScreen) homeScreen.style.display = 'flex';
         if (respawnScreen) respawnScreen.style.display = 'none';
         updateHomeOnlineCount(true);
+        updateJoinButton();
         return;
     }
 
@@ -588,9 +866,144 @@ function updateHUD(lp) {
     }
 }
 
+function updateKeyHintVisibility(isAlive) {
+    ensureKeyHintElement();
+
+    if (!isAlive) {
+        keyHintUi.wasAliveLastFrame = false;
+        keyHintUi.visible = false;
+        syncKeyHintElementVisibility();
+        return;
+    }
+
+    if (!keyHintUi.wasAliveLastFrame) {
+        keyHintUi.visible = !keyHintUi.neverShowAgain;
+    }
+    keyHintUi.wasAliveLastFrame = true;
+    syncKeyHintElementVisibility();
+}
+
+function ensureKeyHintElement() {
+    if (keyHintUi.containerEl || typeof document === 'undefined') return;
+
+    const container = document.createElement('div');
+    container.id = 'key-hint-overlay';
+    Object.assign(container.style, {
+        position: 'fixed',
+        inset: '0',
+        display: 'none',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: '100200',
+        pointerEvents: 'none'
+    });
+
+    const panel = document.createElement('div');
+    Object.assign(panel.style, {
+        width: '340px',
+        maxWidth: 'min(92vw, 340px)',
+        background: 'rgba(0, 0, 0, 0.76)',
+        border: '1px solid rgba(255,255,255,0.25)',
+        borderRadius: '12px',
+        boxSizing: 'border-box',
+        padding: '16px 16px 14px 16px',
+        color: 'white',
+        fontFamily: 'Inter, sans-serif',
+        pointerEvents: 'auto',
+        backdropFilter: 'blur(6px)'
+    });
+
+    const header = document.createElement('div');
+    Object.assign(header.style, {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: '12px'
+    });
+
+    const title = document.createElement('div');
+    title.textContent = 'Controls';
+    Object.assign(title.style, {
+        fontSize: '20px',
+        fontWeight: '700'
+    });
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = 'Close';
+    Object.assign(closeBtn.style, {
+        border: '1px solid rgba(255,255,255,0.28)',
+        borderRadius: '7px',
+        background: 'rgba(255,255,255,0.12)',
+        color: 'white',
+        font: '600 13px Inter, sans-serif',
+        padding: '6px 12px',
+        cursor: 'pointer'
+    });
+    closeBtn.onclick = () => {
+        keyHintUi.visible = false;
+        syncKeyHintElementVisibility();
+    };
+
+    const controlsList = document.createElement('div');
+    controlsList.innerHTML = `
+        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;">Left Click: Attack</div>
+        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;">E: Throw Weapon</div>
+        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;">Q: Drop Item</div>
+        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;">R: Pick Up Item</div>
+        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;">F: Activate Ability</div>
+        <div style="margin: 6px 0 10px 0; font: 600 15px Inter, sans-serif;">Enter: Chat</div>
+    `;
+
+    const checkboxWrap = document.createElement('label');
+    Object.assign(checkboxWrap.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        font: '600 13px Inter, sans-serif',
+        color: 'rgba(255,255,255,0.9)',
+        userSelect: 'none',
+        cursor: 'pointer'
+    });
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = !!keyHintUi.neverShowAgain;
+    checkbox.onchange = () => {
+        keyHintUi.neverShowAgain = !!checkbox.checked;
+        setStoredBoolean(KEY_HINT_NEVER_SHOW_STORAGE_KEY, keyHintUi.neverShowAgain);
+    };
+
+    const checkboxText = document.createElement('span');
+    checkboxText.textContent = 'Never show this again';
+
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    checkboxWrap.appendChild(checkbox);
+    checkboxWrap.appendChild(checkboxText);
+    panel.appendChild(header);
+    panel.appendChild(controlsList);
+    panel.appendChild(checkboxWrap);
+    container.appendChild(panel);
+    document.body.appendChild(container);
+
+    keyHintUi.containerEl = container;
+    keyHintUi.neverShowCheckboxEl = checkbox;
+}
+
+function syncKeyHintElementVisibility() {
+    if (!keyHintUi.containerEl) return;
+
+    const canShow = keyHintUi.visible && !isMobile && !Settings.forceMobileUI;
+    keyHintUi.containerEl.style.display = canShow ? 'flex' : 'none';
+    if (keyHintUi.neverShowCheckboxEl) {
+        keyHintUi.neverShowCheckboxEl.checked = !!keyHintUi.neverShowAgain;
+    }
+}
+
 function drawCoinPickupEffects() {
     const now = performance.now();
-    const radius = dataMap.OBJECTS[dataMap.COIN_ID]?.radius || 15;
+    const radius = dataMap.OBJECTS[getCoinObjectType()]?.radius || 15;
     const baseSize = radius * 2;
 
     for (let i = coinPickupEffects.length - 1; i >= 0; i--) {
@@ -629,6 +1042,316 @@ function drawCoinPickupEffects() {
             });
         }
     }
+}
+
+function drawLightningShotEffects() {
+    const now = performance.now();
+
+    for (let i = lightningShotEffects.length - 1; i >= 0; i--) {
+        const fx = lightningShotEffects[i];
+        const t = (now - fx.startTime) / fx.duration;
+        if (t >= 1) {
+            lightningShotEffects.splice(i, 1);
+            continue;
+        }
+
+        const phase = Math.floor((now - fx.startTime) / 100);
+        const mirrored = (phase % 2) === 1 ? -1 : 1;
+        const segCount = Math.max(8, Math.min(48, Math.floor(fx.length / 30)));
+        const jitter = Math.max(6, Math.min(26, fx.length * 0.035));
+        const waveCycles = Math.max(1.25, Math.min(8, 900 / Math.max(80, fx.length)));
+        const baseFreq = waveCycles * Math.PI * 2;
+        const branchChance = 0.22;
+        const baseX = fx.startX - camera.x;
+        const baseY = fx.startY - camera.y;
+
+        LC.ctx.save();
+        LC.ctx.translate(baseX, baseY);
+        LC.ctx.rotate(fx.angle);
+
+        // Outer glow stroke
+        LC.ctx.beginPath();
+        LC.ctx.moveTo(0, 0);
+        for (let s = 1; s <= segCount; s++) {
+            const x = (s / segCount) * fx.length;
+            const wave = Math.sin(((s / segCount) * baseFreq) + fx.seed + phase * 0.8);
+            const y = mirrored * wave * jitter;
+            LC.ctx.lineTo(x, y);
+        }
+        LC.ctx.strokeStyle = 'rgba(68, 0, 0, 0.8)';
+        LC.ctx.lineWidth = 12;
+        LC.ctx.lineCap = 'round';
+        LC.ctx.lineJoin = 'round';
+        LC.ctx.stroke();
+
+        // Main bolt
+        LC.ctx.beginPath();
+        LC.ctx.moveTo(0, 0);
+        for (let s = 1; s <= segCount; s++) {
+            const x = (s / segCount) * fx.length;
+            const wave = Math.sin(((s / segCount) * baseFreq * 1.08) + fx.seed + phase);
+            const y = mirrored * wave * jitter * 0.75;
+            LC.ctx.lineTo(x, y);
+
+            // Small side branches for a more natural lightning look
+            if (s < segCount && Math.random() < branchChance) {
+                const branchLen = 14 + Math.random() * 26;
+                const branchAng = (mirrored * 0.8) + ((Math.random() - 0.5) * 0.5);
+                LC.ctx.beginPath();
+                LC.ctx.moveTo(x, y);
+                LC.ctx.lineTo(x + Math.cos(branchAng) * branchLen, y + Math.sin(branchAng) * branchLen);
+                LC.ctx.strokeStyle = 'rgba(255, 210, 210, 0.9)';
+                LC.ctx.lineWidth = 2;
+                LC.ctx.stroke();
+            }
+        }
+        LC.ctx.strokeStyle = 'rgba(255, 80, 80, 1)';
+        LC.ctx.lineWidth = 6;
+        LC.ctx.lineCap = 'round';
+        LC.ctx.lineJoin = 'round';
+        LC.ctx.stroke();
+
+        // Core highlight
+        LC.ctx.beginPath();
+        LC.ctx.moveTo(0, 0);
+        for (let s = 1; s <= segCount; s++) {
+            const x = (s / segCount) * fx.length;
+            const wave = Math.sin(((s / segCount) * baseFreq * 1.08) + fx.seed + phase);
+            const y = mirrored * wave * jitter * 0.55;
+            LC.ctx.lineTo(x, y);
+        }
+        LC.ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+        LC.ctx.lineWidth = 2.5;
+        LC.ctx.lineCap = 'round';
+        LC.ctx.lineJoin = 'round';
+        LC.ctx.stroke();
+
+        LC.ctx.restore();
+    }
+}
+
+function drawEnergyBurstEffects() {
+    const now = performance.now();
+    const colliders = collectEnergyBurstColliders();
+
+    for (let i = energyBurstEffects.length - 1; i >= 0; i--) {
+        const fx = energyBurstEffects[i];
+        const t = (now - fx.startTime) / fx.duration;
+        if (t >= 1) {
+            energyBurstEffects.splice(i, 1);
+            continue;
+        }
+
+        const baseAlpha = 1 - t;
+        const centerX = fx.x - camera.x;
+        const centerY = fx.y - camera.y;
+        const waveDelay = 0.14; // stagger waves so they begin from center over time
+
+        LC.ctx.save();
+        for (let w = 0; w < fx.waves; w++) {
+            const waveStart = w * waveDelay;
+            if (t < waveStart) continue;
+            const localT = Math.min(1, (t - waveStart) / Math.max(0.001, 1 - waveStart));
+            const r = fx.radius * localT;
+            const alpha = baseAlpha * (1 - localT * 0.7);
+            if (r <= 0 || alpha <= 0.01) continue;
+
+            LC.ctx.beginPath();
+            LC.ctx.arc(centerX, centerY, r, 0, Math.PI * 2);
+            LC.ctx.strokeStyle = `rgba(255, 70, 70, ${Math.min(0.85, alpha)})`;
+            LC.ctx.lineWidth = 6;
+            LC.ctx.stroke();
+
+            LC.ctx.beginPath();
+            LC.ctx.arc(centerX, centerY, r, 0, Math.PI * 2);
+            LC.ctx.strokeStyle = `rgba(255, 255, 255, ${Math.min(0.55, alpha * 0.8)})`;
+            LC.ctx.lineWidth = 2;
+            LC.ctx.stroke();
+
+            const boltCount = 15;
+            const boltLen = Math.max(40, Math.min(180, 48 + fx.radius * 0.14));
+            if (localT < 0.04) continue; // avoid immediate outer-looking streaks at spawn
+            for (let b = 0; b < boltCount; b++) {
+                const angle = ((b / boltCount) * Math.PI * 2) + fx.seed;
+                drawBurstLightningBolt(
+                    centerX,
+                    centerY,
+                    fx.x,
+                    fx.y,
+                    angle,
+                    Math.max(0, r - 18),
+                    boltLen,
+                    fx.seed + b * 1.37,
+                    alpha,
+                    now,
+                    colliders
+                );
+            }
+        }
+        LC.ctx.restore();
+    }
+}
+
+function drawMobDeathFades() {
+    const now = performance.now();
+    for (let i = mobDeathFades.length - 1; i >= 0; i--) {
+        const fx = mobDeathFades[i];
+        const t = (now - fx.startTime) / fx.duration;
+        if (t >= 1) {
+            mobDeathFades.splice(i, 1);
+            continue;
+        }
+
+        const cfg = dataMap.MOBS[fx.type];
+        if (!cfg) continue;
+        const alpha = 1 - t;
+        const radius = cfg.radius;
+        const proportions = cfg.imgProportions || [2, 2];
+        const width = proportions[0] * radius;
+        const height = proportions[1] * radius;
+        const screenX = fx.x - camera.x;
+        const screenY = fx.y - camera.y;
+
+        LC.drawImage({
+            name: cfg.imgName,
+            pos: [screenX - width / 2, screenY - height / 2],
+            size: [width, height],
+            rotation: fx.angle || 0,
+            transparency: alpha
+        });
+    }
+}
+
+function collectEnergyBurstColliders() {
+    const colliders = [];
+
+    Object.values(ENTITIES.STRUCTURES).forEach(s => {
+        if (!s?.radius) return;
+        if (dataMap.STRUCTURES[s.type]?.noCollisions) return;
+        colliders.push({ x: s.x, y: s.y, r: s.radius });
+    });
+
+    Object.values(ENTITIES.OBJECTS).forEach(o => {
+        if (!o?.radius) return;
+        if (!isChestObjectType(o.type)) return;
+        colliders.push({ x: o.x, y: o.y, r: o.radius });
+    });
+
+    Object.values(ENTITIES.MOBS).forEach(m => {
+        if (!m?.radius) return;
+        colliders.push({ x: m.x, y: m.y, r: m.radius });
+    });
+
+    Object.values(ENTITIES.PLAYERS).forEach(p => {
+        if (!p?.isAlive || !p.radius) return;
+        colliders.push({ x: p.x, y: p.y, r: p.radius });
+    });
+
+    return colliders;
+}
+
+function rayCircleHitDistance(originX, originY, dirX, dirY, cx, cy, radius, minDist, maxDist) {
+    const ox = originX - cx;
+    const oy = originY - cy;
+    const b = 2 * (dirX * ox + dirY * oy);
+    const c = (ox * ox + oy * oy) - (radius * radius);
+    const disc = (b * b) - (4 * c);
+    if (disc < 0) return null;
+
+    const sqrtDisc = Math.sqrt(disc);
+    const t1 = (-b - sqrtDisc) * 0.5;
+    const t2 = (-b + sqrtDisc) * 0.5;
+
+    let hit = Infinity;
+    if (t1 >= minDist && t1 <= maxDist) hit = t1;
+    if (t2 >= minDist && t2 <= maxDist) hit = Math.min(hit, t2);
+    return Number.isFinite(hit) ? hit : null;
+}
+
+function getBurstBoltClampedLength(worldX, worldY, angle, startRadius, length, colliders) {
+    const dirX = Math.cos(angle);
+    const dirY = Math.sin(angle);
+    const minDist = Math.max(0, startRadius);
+    const maxDist = minDist + Math.max(0, length);
+    let nearestHit = Infinity;
+
+    for (let i = 0; i < colliders.length; i++) {
+        const c = colliders[i];
+        // If burst originates inside this collider, skip clipping to avoid zero-length bolts.
+        const dx = worldX - c.x;
+        const dy = worldY - c.y;
+        if ((dx * dx + dy * dy) <= (c.r * c.r)) continue;
+
+        const hit = rayCircleHitDistance(worldX, worldY, dirX, dirY, c.x, c.y, c.r, minDist, maxDist);
+        if (hit !== null && hit < nearestHit) nearestHit = hit;
+    }
+
+    if (!Number.isFinite(nearestHit)) return length;
+    return Math.max(0, (nearestHit - minDist) - 2);
+}
+
+function drawBurstLightningBolt(centerX, centerY, worldX, worldY, angle, startRadius, length, seed, alpha, now, colliders) {
+    const clampedLength = getBurstBoltClampedLength(worldX, worldY, angle, startRadius, length, colliders);
+    if (clampedLength <= 1) return;
+
+    const segCount = Math.max(6, Math.min(14, Math.floor(clampedLength / 7)));
+    const jitter = Math.max(1.8, Math.min(6.2, clampedLength * 0.09));
+    const phase = Math.floor(now / 90);
+    const mirrored = (phase % 2) === 1 ? -1 : 1;
+    const glowAlpha = Math.min(0.75, alpha * 0.95);
+    const mainAlpha = Math.min(0.95, alpha);
+    const coreAlpha = Math.min(0.9, alpha * 0.85);
+
+    LC.ctx.save();
+    LC.ctx.translate(centerX, centerY);
+    LC.ctx.rotate(angle);
+
+    LC.ctx.beginPath();
+    LC.ctx.moveTo(startRadius, 0);
+    for (let s = 1; s <= segCount; s++) {
+        const p = s / segCount;
+        const x = startRadius + p * clampedLength;
+        const wave = Math.sin((p * Math.PI * 2.4) + seed + phase * 0.55);
+        const y = mirrored * wave * jitter * (1 - p * 0.35);
+        LC.ctx.lineTo(x, y);
+    }
+    LC.ctx.strokeStyle = `rgba(68, 0, 0, ${glowAlpha})`;
+    LC.ctx.lineWidth = 8;
+    LC.ctx.lineCap = 'round';
+    LC.ctx.lineJoin = 'round';
+    LC.ctx.stroke();
+
+    LC.ctx.beginPath();
+    LC.ctx.moveTo(startRadius, 0);
+    for (let s = 1; s <= segCount; s++) {
+        const p = s / segCount;
+        const x = startRadius + p * clampedLength;
+        const wave = Math.sin((p * Math.PI * 2.4) + seed + phase * 0.65);
+        const y = mirrored * wave * jitter * (1 - p * 0.35);
+        LC.ctx.lineTo(x, y);
+    }
+    LC.ctx.strokeStyle = `rgba(255, 80, 80, ${mainAlpha})`;
+    LC.ctx.lineWidth = 4;
+    LC.ctx.lineCap = 'round';
+    LC.ctx.lineJoin = 'round';
+    LC.ctx.stroke();
+
+    LC.ctx.beginPath();
+    LC.ctx.moveTo(startRadius, 0);
+    for (let s = 1; s <= segCount; s++) {
+        const p = s / segCount;
+        const x = startRadius + p * clampedLength;
+        const wave = Math.sin((p * Math.PI * 2.4) + seed + phase * 0.65);
+        const y = mirrored * wave * jitter * 0.65 * (1 - p * 0.35);
+        LC.ctx.lineTo(x, y);
+    }
+    LC.ctx.strokeStyle = `rgba(255, 255, 255, ${coreAlpha})`;
+    LC.ctx.lineWidth = 1.8;
+    LC.ctx.lineCap = 'round';
+    LC.ctx.lineJoin = 'round';
+    LC.ctx.stroke();
+
+    LC.ctx.restore();
 }
 
 function drawInfoBox(lp) {
@@ -685,7 +1408,7 @@ function drawMinimap() {
     };
 
     if (Settings.showMobsOnMinimap) Object.values(ENTITIES.MOBS).forEach(m => drawDot(m, 'orange'));
-    if (Settings.showChestsOnMinimap) Object.values(ENTITIES.OBJECTS).filter(o => dataMap.CHEST_IDS.includes(o.type)).forEach(o => drawDot(o, '#b45309'));
+    if (Settings.showChestsOnMinimap) Object.values(ENTITIES.OBJECTS).filter(o => isChestObjectType(o.type)).forEach(o => drawDot(o, '#b45309'));
     if (Settings.showPlayersOnMinimap) Object.values(ENTITIES.PLAYERS).filter(p => p.id !== Vars.myId && p.isAlive).forEach(p => drawDot(p, 'red'));
     const lp = ENTITIES.PLAYERS[Vars.myId];
     if (lp) drawDot(lp, 'white');
@@ -804,6 +1527,46 @@ function drawHotbar() {
     LC.drawText({ text: '...', pos: [sx_more + hb.slotSize / 2, sy_more + hb.slotSize / 2 + 5], font: 'bold 24px Inter', color: 'white', textAlign: 'center' });
 
     drawAccessorySlot(x, y, totalW);
+    drawAbilityCooldownBar(x, y, totalW);
+}
+
+function drawAbilityCooldownBar(hotbarX, hotbarY, hotbarWidth) {
+    const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+    const accessoryKey = ACCESSORY_KEYS[myPlayer?.accessoryId || 0];
+    if (accessoryKey !== 'minotaur-hat' && accessoryKey !== 'pirate-hat') return;
+
+    const cooldownMs = Math.max(0, Vars.abilityCooldownMs || 0);
+    if (cooldownMs <= 0) return;
+    const remainingMs = Math.max(0, (Vars.abilityCooldownEndsAt || 0) - performance.now());
+    const fillRatio = Math.max(0, Math.min(1, 1 - (remainingMs / cooldownMs)));
+
+    const barWidth = Math.round(hotbarWidth * 0.42);
+    const barHeight = 10;
+    const x = hotbarX + (hotbarWidth - barWidth) / 2;
+    const y = hotbarY - 18;
+
+    LC.drawRect({
+        pos: [x, y],
+        size: [barWidth, barHeight],
+        color: 'rgba(130, 130, 130, 0.45)',
+        cornerRadius: 6
+    });
+    LC.drawRect({
+        pos: [x, y],
+        size: [barWidth * fillRatio, barHeight],
+        color: 'rgba(220, 38, 38, 0.95)',
+        cornerRadius: 6
+    });
+
+    if (fillRatio >= 0.999) {
+        LC.drawText({
+            text: 'Press F to activate your ability!',
+            pos: [x + (barWidth / 2), y - 8],
+            font: 'bold 14px Inter',
+            color: 'white',
+            textAlign: 'center'
+        });
+    }
 }
 
 function drawInventory() {
@@ -871,7 +1634,7 @@ function fitIconSize(maxSize, aspect) {
 }
 
 function getItemIconInfo(lookupType) {
-    if (lookupType === dataMap.COIN_ID) {
+    if (isCoinObjectType(lookupType)) {
         return { imgName: 'gold-coin', rotation: 0, aspect: 1 };
     }
     if (isAccessoryItemType(lookupType)) {
@@ -959,7 +1722,8 @@ function drawMobileButtons(lp) {
 function updateJoinButton() {
     const btn = document.getElementById('joinBtn');
     if (!btn) return;
-    const cooldown = performance.now() - Vars.lastDiedTime < 1700;
+    const cooldown = isJoinActionOnCooldown();
+    btn.disabled = cooldown;
     btn.style.opacity = cooldown ? '0.5' : '1';
     btn.style.pointerEvents = cooldown ? 'none' : 'auto';
 }
@@ -967,7 +1731,8 @@ function updateJoinButton() {
 function updateRespawnButton() {
     const btn = document.getElementById('respawnBtn');
     if (!btn) return;
-    const cooldown = performance.now() - Vars.lastDiedTime < 1700;
+    const cooldown = isJoinActionOnCooldown();
+    btn.disabled = cooldown;
     btn.style.opacity = cooldown ? '0.5' : '1';
     btn.style.pointerEvents = cooldown ? 'none' : 'auto';
 }
@@ -980,17 +1745,33 @@ if (usernameInput) usernameInput.value = localStorage.username || '';
 const respawnBtn = document.getElementById('respawnBtn');
 const respawnHomeBtn = document.getElementById('respawnHomeBtn');
 
+export function startJoinActionCooldown(ms = JOIN_ACTION_COOLDOWN_MS) {
+    const until = performance.now() + Math.max(0, ms);
+    Vars.joinActionLockedUntil = Math.max(Vars.joinActionLockedUntil || 0, until);
+}
+
+function isJoinActionOnCooldown() {
+    return performance.now() < (Vars.joinActionLockedUntil || 0);
+}
+
 const tryJoin = () => {
     if (uiState.isPaused) return;
-    if (performance.now() - Vars.lastDiedTime > 1700) {
-        const username = usernameInput?.value || localStorage.username || '';
-        ws.send(encodeUsername(username));
-        LC.zoomIn();
-    }
+    if (isJoinActionOnCooldown()) return;
+
+    startJoinActionCooldown();
+    const username = usernameInput?.value || localStorage.username || '';
+    ws.send(encodeUsername(username));
+    LC.zoomIn();
+    updateJoinButton();
+    updateRespawnButton();
 };
 
 if (joinBtn) {
     joinBtn.onclick = () => {
+        if (isJoinActionOnCooldown()) {
+            updateJoinButton();
+            return;
+        }
         localStorage.username = usernameInput.value;
         uiState.forceHomeScreen = false;
         uiState.isPaused = false;
@@ -1000,6 +1781,10 @@ if (joinBtn) {
 
 if (respawnBtn) {
     respawnBtn.onclick = () => {
+        if (isJoinActionOnCooldown()) {
+            updateRespawnButton();
+            return;
+        }
         if (usernameInput) {
             localStorage.username = usernameInput.value || localStorage.username || '';
         }
@@ -1018,8 +1803,10 @@ if (respawnHomeBtn) {
         uiState.forceHomeScreen = true;
     };
 }
+
 (async () => {
     initializeUI();
+    ensureKeyHintElement();
     requestAnimationFrame(render);
     await loadAssets();
 

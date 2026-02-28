@@ -30,12 +30,12 @@ export const INVENTORY_CONFIG = {
 };
 
 export const BACK_BUFFER_QUALITIES = [
-    { value: '480p', label: '480p (720×480)', width: 720, height: 480 },
-    { value: '720p', label: '720p (1280×720)', width: 1280, height: 720 },
-    { value: '1080p', label: '1080p (1920×1080) (recommended)', width: 1920, height: 1080 },
-    { value: '1440p', label: '2K: 1440p (2560×1440)', width: 2560, height: 1440 },
-    { value: '2160p', label: '4K (Ultra HD): 2160p (3840×2160)', width: 3840, height: 2160 },
-    { value: '4320p', label: '8K (Ultra HD): 4320p (7680×4320)', width: 7680, height: 4320 }
+    { value: '480p', label: '480p (720x480)', width: 720, height: 480 },
+    { value: '720p', label: '720p (1280x720)', width: 1280, height: 720 },
+    { value: '1080p', label: '1080p (1920x1080) (recommended)', width: 1920, height: 1080 },
+    { value: '1440p', label: '2K: 1440p (2560x1440)', width: 2560, height: 1440 },
+    { value: '2160p', label: '4K (Ultra HD): 2160p (3840x2160)', width: 3840, height: 2160 },
+    { value: '4320p', label: '8K (Ultra HD): 4320p (7680x4320)', width: 7680, height: 4320 }
 ];
 export const BACK_BUFFER_DEFAULT = '1080p';
 export const BACK_BUFFER_STORAGE_KEY = 'ua_back_buffer_quality';
@@ -101,6 +101,20 @@ export const UPDATES_LOG = [
             "Added rank 9 sword (two-sided axe)."
         ],
         date: '2026-02-22'
+    },
+    {
+        version: '1.4.0',
+        changes: [
+            "Revamped ground & obstacle textures.",
+            "Accessories are droppable.",
+            "Chest's do not drop weapons anymore, only coins.",
+            "Green, yellow, and red health-bars.",
+            "Slightly nerfed Minotaur miniboss, but it will grow more dangerous the closer it comes to death.",
+            "Minotaur drops: coins, rank 9 sword (25%), and the minotaur hat. (25%)",
+            "Less lag when the an entity uses the energy burst ability.",
+            "Some bug fixes",
+        ],
+        date: '2026-02-26'
     }
 ];
 

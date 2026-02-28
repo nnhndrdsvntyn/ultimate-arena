@@ -6,6 +6,8 @@ import {
     TPS
 } from '../public/shared/datamap.js';
 
+const UPDATE_SEND_BUFFER = 260;
+
 /**
  * Builds and sends updates for all connected clients.
  */
@@ -33,7 +35,8 @@ export function sendUpdates(wss, lbWriter) {
         if (wearingAlienHat) {
             renderDistance = Math.max(renderDistance, Math.min(alienHatRange, requestedRange * 1.2));
         }
-        const renderDistanceSq = renderDistance ** 2;
+        const effectiveRenderDistance = renderDistance + UPDATE_SEND_BUFFER;
+        const renderDistanceSq = effectiveRenderDistance ** 2;
         const lpX = localPlayer.x;
         const lpY = localPlayer.y;
 
@@ -223,7 +226,10 @@ function writeProjectiles(pw, lpX, lpY, rangeSq, isFullFn, entities) {
     let count = 0;
     for (const id in ENTITIES.PROJECTILES) {
         const p = ENTITIES.PROJECTILES[id];
-        const dx = p.x - lpX; const dy = p.y - lpY;
+        if (p.logicOnly) continue;
+        const sendX = p.staticRender ? (p.renderX ?? p.x) : p.x;
+        const sendY = p.staticRender ? (p.renderY ?? p.y) : p.y;
+        const dx = sendX - lpX; const dy = sendY - lpY;
         if (dx * dx + dy * dy > rangeSq) continue;
 
         entities.add('j' + p.id);
@@ -232,22 +238,25 @@ function writeProjectiles(pw, lpX, lpY, rangeSq, isFullFn, entities) {
         const prev = p.prev || {};
         let mask = full ? 0x80 : 0;
         if (!full) {
-            if (Math.abs(p.x - prev.x) > 1) mask |= 0x01;
-            if (Math.abs(p.y - prev.y) > 1) mask |= 0x02;
+            if (Math.abs(sendX - (prev.x ?? sendX)) > 1) mask |= 0x01;
+            if (Math.abs(sendY - (prev.y ?? sendY)) > 1) mask |= 0x02;
             if (Math.abs(p.angle - prev.angle) > 0.01) mask |= 0x04;
             if (p.type !== prev.type) mask |= 0x08;
             if (p.weaponRank !== prev.weaponRank) mask |= 0x10;
+            if ((p.renderLength || 0) !== (prev.renderLength || 0)) mask |= 0x20;
         }
         pw.writeU8(mask);
         if (mask & 0x80) {
-            pw.writeU16(p.x); pw.writeU16(p.y); pw.writeF32(p.angle);
+            pw.writeU16(sendX); pw.writeU16(sendY); pw.writeF32(p.angle);
             pw.writeI8(p.type); pw.writeU8(p.weaponRank);
+            if (p.type === 10) pw.writeU16(p.renderLength || 0);
         } else {
-            if (mask & 0x01) pw.writeU16(p.x);
-            if (mask & 0x02) pw.writeU16(p.y);
+            if (mask & 0x01) pw.writeU16(sendX);
+            if (mask & 0x02) pw.writeU16(sendY);
             if (mask & 0x04) pw.writeF32(p.angle);
             if (mask & 0x08) pw.writeI8(p.type);
             if (mask & 0x10) pw.writeU8(p.weaponRank);
+            if (mask & 0x20) pw.writeU16(p.renderLength || 0);
         }
         count++;
     }
@@ -305,7 +314,9 @@ export function saveHistory() {
         m.prev = { x: m.x, y: m.y, angle: m.angle, hp: m.hp, maxHp: m.maxHp, type: m.type, swingState: m.swingState || 0 };
     }
     for (const p of Object.values(ENTITIES.PROJECTILES)) {
-        p.prev = { x: p.x, y: p.y, angle: p.angle, type: p.type, weaponRank: p.weaponRank };
+        const sendX = p.staticRender ? (p.renderX ?? p.x) : p.x;
+        const sendY = p.staticRender ? (p.renderY ?? p.y) : p.y;
+        p.prev = { x: sendX, y: sendY, angle: p.angle, type: p.type, weaponRank: p.weaponRank, renderLength: p.renderLength || 0 };
     }
     for (const o of Object.values(ENTITIES.OBJECTS)) {
         o.prev = { x: o.x, y: o.y, health: o.health, type: o.type, amount: o.amount };
