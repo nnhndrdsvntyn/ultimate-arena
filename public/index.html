@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Ultimate Arena</title>
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;900&display=swap" rel="stylesheet">
+</head>
+
+<body>
+  <!-- Home / Login Screen -->
+  <section id="home-screen">
+    <div id="home-online-count">0 players online</div>
+    <h1>Ultimate Arena</h1>
+    <div id="input-container">
+      <input id="homeUsrnInput" maxlength="15" placeholder="Username" autocomplete="off">
+      <button id="joinBtn">PLAY</button>
+    </div>
+    <div id="credits">Made by Liberation</div>
+    <a
+      id="home-form-link"
+      href="https://tinyurl.com/dtrhz9f2"
+      target="_blank"
+      rel="noopener noreferrer"
+    >Game Suggestions / Bug Reports Form</a>
+  </section>
+
+  <!-- Respawn Screen -->
+  <section id="respawn-screen">
+    <h1>You died</h1>
+    <div id="respawn-actions">
+      <button id="respawnBtn">RESPAWN</button>
+      <button id="respawnHomeBtn">HOME</button>
+    </div>
+  </section>
+
+  <!-- Game UI / HUD -->
+  <main id="game-hud">
+    <!-- HUD elements will be dynamically injected here via ui.js -->
+  </main>
+
+  <script src="./client.js" type="module"></script>
+</body>
+
+</html>

@@ -1,0 +1,232 @@
+import {
+    ENTITIES,
+    deadMobs
+} from '../../game.js';
+import {
+    Player
+} from '../players/player.js';
+import {
+    dataMap
+} from '../../../public/shared/datamap.js';
+import {
+    playSfx,
+    colliding
+} from '../../helpers.js';
+import {
+    Entity
+} from '../entity.js';
+import {
+    MAP_SIZE
+} from '../../game.js';
+
+export class Mob extends Entity {
+    constructor(id, x, y, type) {
+        const mobData = dataMap.MOBS[type];
+        super(id, x, y, mobData.radius, mobData.speed, mobData.baseHealth, mobData.baseHealth);
+
+        this.score = mobData.score;
+        this.angle = Math.random() * Math.PI * 2 - Math.PI;
+
+        this.lastDiedTime = 0;
+        this.lastDamagedTime = 0;
+        this.lastEntToDmg = null;
+
+        this.isAlarmed = false;
+        this.startHuntingTime = 0;
+        this.lastTurnTime = 0
+        this.nextTurnDelay = Math.floor(Math.random() * 3001) + 3000;
+        this.target = null;
+        this.alarmDuration = mobData.alarmDuration;
+        this.alarmReason = null;
+        this.lastHitById = null;
+
+        this.inWater = false;
+        this.invincible = false;
+
+        this.type = type;
+
+        ENTITIES.MOBS[id] = this;
+    }
+    move() {
+        // move
+        this.lastX = this.x;
+        this.lastY = this.y;
+        this.x += Math.cos(this.angle) * this.speed;
+        this.y += Math.sin(this.angle) * this.speed;
+    }
+    turn() {
+        this.angle = Math.random() * Math.PI * 2 - Math.PI; // rand angle between -PI and PI
+        this.lastTurnTime = performance.now();
+
+        this.nextTurnDelay = Math.floor(Math.random() * 3001) + 3000;
+    }
+    getAlarmSpeedMultiplier() {
+        return 1.5;
+    }
+    damage(health, attacker) {
+        if (this.invincible) return false;
+        if (performance.now() - this.lastDamagedTime < 200) return false; // invincible for 10 ticks (200 / 20)
+
+        this.lastDamagedTime = performance.now();
+        if (!attacker?.noKillCredit) {
+            this.lastEntToDmg = attacker;
+        }
+        if (attacker && attacker instanceof Player) {
+            this.lastHitById = attacker.id;
+        }
+        this.hp = Math.max(0, this.hp - health);
+        if (this.hp <= 0) {
+            const killer = this.lastEntToDmg || null;
+            this.die(killer);
+            const sfx = dataMap.sfxMap.indexOf('bubble-pop');
+            playSfx(this.x, this.y, sfx, 1000);
+        } else {
+            const sfx = dataMap.sfxMap.indexOf('hurt');
+            playSfx(this.x, this.y, sfx, 1000);
+        }
+
+        if (attacker && attacker instanceof Player && ![1, 2, 4].includes(this.type)) {
+            attacker.lastCombatTime = performance.now();
+            attacker.sendStatsUpdate();
+        }
+        return true;
+    }
+    alarm(shooter, reason = 'proximity') {
+        if ((shooter?.world || 'main') !== (this.world || 'main')) return;
+        if (shooter?.isInvisible) return;
+        this.target = shooter;
+        this.alarmReason = reason;
+
+        if (this.isAlarmed) return; // already alarmed
+
+        this.isAlarmed = true;
+        this.startHuntingTime = performance.now();
+
+        // speed boost
+        this.speed = dataMap.MOBS[this.type].speed * 1.5;
+
+    }
+    resetAlarmState() {
+        this.isAlarmed = false;
+        this.target = null;
+        this.speed = dataMap.MOBS[this.type].speed;
+    }
+    getLiveTarget(requireSameReference = false) {
+        if (!this.target) return null;
+        const target = ENTITIES.PLAYERS[this.target.id];
+        if (!target || !target.isAlive) return null;
+        if ((target.world || 'main') !== (this.world || 'main')) return null;
+        if (requireSameReference && target !== this.target) return null;
+        return target;
+    }
+    shouldWanderTurn() {
+        return performance.now() - this.lastTurnTime > this.nextTurnDelay;
+    }
+    isTargetHidden(target, bushCollisionPadding = null) {
+        if (!target) return true;
+
+        let targetInBush = false;
+        if (typeof bushCollisionPadding === 'number') {
+            for (const structure of Object.values(ENTITIES.STRUCTURES)) {
+                if ((structure.world || 'main') !== (this.world || 'main')) continue;
+                if (structure.type === 3 && colliding(structure, target, bushCollisionPadding)) {
+                    targetInBush = true;
+                    break;
+                }
+            }
+        }
+
+        return targetInBush || target.isHidden || target.isInvisible;
+    }
+    die(killer) {
+        // activate the mobs death action
+        if (killer && typeof killer.addScore === 'function' && typeof dataMap.MOBS[this.type].deathAction === 'function') {
+            dataMap.MOBS[this.type].deathAction(killer);
+        }
+        this.lastDiedTime = performance.now();
+
+        deadMobs[this.id] = {
+            id: this.id,
+            type: this.type,
+            lastDiedTime: this.lastDiedTime,
+            world: this.world || 'main',
+            noRespawn: this.noRespawn === true
+        };
+
+        ENTITIES.deleteEntity('mob', this.id);
+    }
+    process() {
+        const currentTime = performance.now();
+        const inTutorialWorld = (this.world || '').startsWith('tutorial');
+
+        // check if inside center vertical river
+        const waterxr = [MAP_SIZE[0] * 0.47, MAP_SIZE[0] * 0.53];
+        const wateryr = [0, MAP_SIZE[1]];
+        let inBase = false;
+        for (const structure of Object.values(ENTITIES.STRUCTURES)) {
+            if ((structure.world || 'main') !== (this.world || 'main')) continue;
+            if (dataMap.STRUCTURES[structure.type].isSafeZone) {
+                if (colliding(structure, this)) {
+                    inBase = true;
+                    break;
+                }
+            }
+        }
+        this.inWater = !inTutorialWorld && this.x > waterxr[0] && this.x < waterxr[1] && this.y > wateryr[0] && this.y < wateryr[1] && !inBase;
+        if (this.inWater) {
+            if (this.type === 5) {
+                this.speed = dataMap.MOBS[this.type].speed * 1.5; // polar bears speed up in water
+            } else {
+                this.speed = dataMap.MOBS[this.type].speed * 0.5; // others slow down in water
+            }
+            const streamCenter = MAP_SIZE[0] / 2;
+            const dx = streamCenter - this.x;
+
+            // push to center and downstream
+            this.x += dx * 0.001;
+            this.y += 3;
+        } else {
+            const baseSpeed = dataMap.MOBS[this.type].speed;
+            this.speed = this.isAlarmed ? baseSpeed * this.getAlarmSpeedMultiplier() : baseSpeed;
+        }
+
+        // Keep left-side mobs on left biome edge.
+        // Minotaur is exempt while alarmed so it can chase/swim across the map.
+        let returningToSide = false;
+        const keepOnLeftSide = !inTutorialWorld && ([1, 2, 3].includes(this.type) || (this.type === 6 && !this.isAlarmed));
+        if (keepOnLeftSide && this.x > MAP_SIZE[0] * 0.47 - this.radius) {
+            returningToSide = true;
+            this.angle = Math.PI; // return straight left
+            this.target = null;
+        }
+
+        if (this.isAlarmed) {
+            if (currentTime - this.startHuntingTime > this.alarmDuration) {
+                this.resetAlarmState();
+            } else if (this.target) {
+                if (this.target.lastDiedTime > this.startHuntingTime) {
+                    this.resetAlarmState();
+                }
+            } else {
+                this.resetAlarmState();
+            }
+        }
+
+        // for polar bear (keep on right side)
+        if (!inTutorialWorld && this.type === 5) {
+            const boundary = this.isAlarmed ? MAP_SIZE[0] * 0.47 : MAP_SIZE[0] * 0.53;
+            if (this.x < boundary + this.radius) {
+                // TURN RIGHT
+                this.angle = 0;
+                this.target = null;
+                this.resetAlarmState();
+            }
+        }
+        // main stuff
+        if (!returningToSide && (performance.now() - this.lastTurnTime > this.nextTurnDelay || this.isAlarmed)) {
+            this.turn();
+        }
+        this.move();
+        this.clamp();
+    }
+}
