@@ -1,6 +1,6 @@
 import {
     ENTITIES,
-    brokenObjects
+    MAP_SIZE
 } from '../../game.js';
 import {
     dataMap,
@@ -61,15 +61,43 @@ export class Chest extends GameObject {
         const totalGold = killerAccessory === 'pirate-hat'
             ? Math.floor(baseGold * 1.2)
             : baseGold;
-        const dropSpread = 30;
+        const coinType = getCoinObjectType();
+        if (!coinType) return;
+        const coinRadius = dataMap.OBJECTS[coinType]?.radius || 50;
+        const dropSpread = this.radius + 45;
+
         for (let i = 0; i < totalGold; i++) {
-            const dropAngle = Math.random() * Math.PI * 2;
-            const dropDistance = this.radius + Math.random() * dropSpread;
-            const dropX = this.x + Math.cos(dropAngle) * dropDistance;
-            const dropY = this.y + Math.sin(dropAngle) * dropDistance;
-            const dropObj = spawnObject(getCoinObjectType(), dropX, dropY, 1, 'chest', this.world || 'main');
-            if (dropObj) {
+            let dropX = this.x;
+            let dropY = this.y;
+
+            // Scatter coins in a disk and retry a few times to avoid bad placements (rocks/map edge).
+            for (let attempt = 0; attempt < 6; attempt++) {
+                const dropAngle = Math.random() * Math.PI * 2;
+                const dropDistance = Math.sqrt(Math.random()) * dropSpread;
+                const candidateX = Math.max(coinRadius, Math.min(MAP_SIZE[0] - coinRadius, this.x + Math.cos(dropAngle) * dropDistance));
+                const candidateY = Math.max(coinRadius, Math.min(MAP_SIZE[1] - coinRadius, this.y + Math.sin(dropAngle) * dropDistance));
+
+                let blockedByRock = false;
+                for (const sid in ENTITIES.STRUCTURES) {
+                    const s = ENTITIES.STRUCTURES[sid];
+                    if (!s || s.type !== 2) continue;
+                    if ((s.world || 'main') !== (this.world || 'main')) continue;
+                    const dx = candidateX - s.x;
+                    const dy = candidateY - s.y;
+                    const minDist = (s.radius || 0) + coinRadius + 8;
+                    if ((dx * dx + dy * dy) < (minDist * minDist)) {
+                        blockedByRock = true;
+                        break;
+                    }
+                }
+                if (!blockedByRock) {
+                    dropX = candidateX;
+                    dropY = candidateY;
+                    break;
+                }
             }
+
+            spawnObject(coinType, dropX, dropY, 1, 'chest', this.world || 'main');
         }
 
     }

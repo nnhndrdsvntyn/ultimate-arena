@@ -946,7 +946,9 @@ export class Player extends Entity {
     }
 
     heal() {
-        if (performance.now() - this.lastHealedTime > 1000) {
+        const inCombat = performance.now() - this.lastCombatTime < 10000;
+        const regenIntervalMs = inCombat ? 1600 : 1000; // 60% slower in combat
+        if (performance.now() - this.lastHealedTime > regenIntervalMs) {
             this.hp = Math.min(this.hp + 5, this.maxHp);
             this.lastHealedTime = performance.now();
         }

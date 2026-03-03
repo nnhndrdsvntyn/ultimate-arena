@@ -9,6 +9,7 @@ import { TPS } from './public/shared/datamap.js';
 import { sendUpdates, saveHistory, sendPlayerCount } from './server/network.js';
 import { updateGame } from './server/loop.js';
 import { spawnBotPlayers, updateBotPlayers } from './server/bots.js';
+import { startHunterDebugInterval } from './server/debug.js';
 
 const app = express();
 const PORT = 3000;
@@ -134,6 +135,7 @@ const lbWriter = new PacketWriter();
 const countWriter = new PacketWriter(16);
 
 spawnBotPlayers(15);
+startHunterDebugInterval();
 
 setInterval(() => {
     updateGame();

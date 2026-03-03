@@ -120,7 +120,8 @@ export const UPDATES_LOG = [
     {
         version: '1.4.1',
         changes: [
-            "Added NPC players!"
+            "Regeneration is 60% slower when in combat!",
+            "Added NPC players!",
         ],
         date: '2026-03-01'
     }

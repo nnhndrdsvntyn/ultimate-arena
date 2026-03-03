@@ -7,7 +7,7 @@ import {
     getRandomMobPosition
 } from './game.js';
 import { dataMap, isCoinObjectType } from '../public/shared/datamap.js';
-import { isBotNearAnyRealPlayer, processOffscreenBot } from './bots.js';
+import { isBotNearAnyRealPlayer, processOffscreenBot, processOffscreenHunterBot } from './bots.js';
 
 /**
  * Main game logic update loop.
@@ -74,8 +74,14 @@ function processPlayers(now = performance.now()) {
     for (const id in ENTITIES.PLAYERS) {
         const p = ENTITIES.PLAYERS[id];
         if (!p) continue;
+        const isActiveHunterBot = !!(p.isBot && p._botRole === 'pro' && p._botHunterTargetId);
+        const isAssistTargetBot = !!(p.isBot && p._botAssistTargetId);
         if (p.isBot && !isBotNearAnyRealPlayer(p, realPlayers)) {
-            processOffscreenBot(p, now);
+            if (isActiveHunterBot || isAssistTargetBot) {
+                processOffscreenHunterBot(p, now);
+            } else {
+                processOffscreenBot(p, now);
+            }
             continue;
         }
         p.process();

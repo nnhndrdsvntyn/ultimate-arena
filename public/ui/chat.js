@@ -158,7 +158,7 @@ const MOB_TYPE_SUGGESTIONS = [
     '@m[type=minotaur]'
 ];
 const ACCESSORY_SUGGESTIONS = ACCESSORY_KEYS.filter(k => k !== 'none');
-const SETATTR_SUGGESTIONS = ['invincible', 'speed', 'damage', 'strength', 'maxhealth'];
+const SETATTR_SUGGESTIONS = ['invincible', 'speed', 'damage', 'strength', 'maxhealth', 'score'];
 const INVINCIBLE_VALUE_SUGGESTIONS = ['true', 'false'];
 const ITEM_SUGGESTIONS = [
     ...SWORD_IDS.map(id => `sword${id}`),
@@ -799,6 +799,7 @@ function handleSetAttribute(raw) {
         maxhealth: 6,
         strength: 5,
         damage: 5,
+        score: 2,
         invincible: 3
     };
     const mobAttrMap = {
