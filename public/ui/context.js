@@ -29,7 +29,6 @@ export const uiRefs = {
     shopOverlay: null,
     inventoryModal: null,
     inventoryOverlay: null,
-    combatText: null,
     comboText: null
 };
 

@@ -8,6 +8,7 @@ import {
 import {
     colliding
 } from '../../helpers.js';
+import { recordResolveCollisionCall } from '../../debug.js';
 import {
     Entity
 } from '../entity.js';
@@ -32,12 +33,20 @@ export class GameObject extends Entity {
 
     process() {
         if (this.teleportTicks > 0) {
+            if (this.targetX !== undefined && this.targetY !== undefined) {
+                const ticksLeft = Math.max(1, this.teleportTicks);
+                this.x += (this.targetX - this.x) / ticksLeft;
+                this.y += (this.targetY - this.y) / ticksLeft;
+            }
             this.teleportTicks--;
-            if (this.teleportTicks === 0 && this.targetX !== undefined && this.targetY !== undefined) {
-                this.x = this.targetX;
-                this.y = this.targetY;
+            if (this.teleportTicks <= 0) {
+                if (this.targetX !== undefined && this.targetY !== undefined) {
+                    this.x = this.targetX;
+                    this.y = this.targetY;
+                }
                 this.targetX = undefined;
                 this.targetY = undefined;
+                this.teleportTicks = 0;
             }
         }
 
@@ -45,6 +54,7 @@ export class GameObject extends Entity {
     }
 
     resolveCollisions() {
+        recordResolveCollisionCall();
         if (this.lastX === this.x && this.lastY === this.y) return;
 
         // Simple collision resolution with structures of type 2 (Rocks)

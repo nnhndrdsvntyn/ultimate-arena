@@ -11,6 +11,7 @@ import {
     colliding,
     playSfx
 } from '../../helpers.js';
+import { recordResolveCollisionCall } from '../../debug.js';
 
 export class Structure extends Entity {
     constructor(id, x, y, type) {
@@ -22,6 +23,7 @@ export class Structure extends Entity {
         ENTITIES.STRUCTURES[id] = this;
     }
     resolveCollisions() {
+        recordResolveCollisionCall();
         if (dataMap.STRUCTURES[this.type].noCollisions) return;
 
         // check collisions with players

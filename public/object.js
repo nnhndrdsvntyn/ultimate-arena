@@ -59,27 +59,21 @@ export class GameObject {
         }
     }
     update() {
-        const lerpFactor = (TPS.clientCapped / TPS.server) / 10;
-
         if (typeof this.newX === 'undefined' || typeof this.newY === 'undefined') return;
-
-        // Coins need authoritative positioning to avoid visual/server pickup mismatch.
-        if (isCoinObjectType(this.type)) {
+        const dx = this.newX - this.x;
+        const dy = this.newY - this.y;
+        const distSq = dx * dx + dy * dy;
+        // Snap on large server corrections; otherwise interpolate for smoothness.
+        if (distSq > (90 * 90)) {
             this.x = this.newX;
             this.y = this.newY;
             return;
         }
-
-        if (typeof this.x !== 'undefined') {
-            this.x = this.x + (this.newX - this.x) * lerpFactor;
-        } else {
-            this.x = this.newX
-        }
-        if (typeof this.y !== 'undefined') {
-            this.y = this.y + (this.newY - this.y) * lerpFactor;
-        } else {
-            this.y = this.newY
-        };
+        const lerpFactor = 0.45;
+        this.x += dx * lerpFactor;
+        this.y += dy * lerpFactor;
+        if (Math.abs(this.newX - this.x) < 0.4) this.x = this.newX;
+        if (Math.abs(this.newY - this.y) < 0.4) this.y = this.newY;
     }
     draw() {
 

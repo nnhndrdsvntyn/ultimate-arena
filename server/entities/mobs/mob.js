@@ -155,7 +155,20 @@ export class Mob extends Entity {
 
         ENTITIES.deleteEntity('mob', this.id);
     }
-    process() {
+    process(runDecisionLogic = true) {
+        if (!runDecisionLogic) {
+            // Keep movement full-rate; AI/turning runs on throttled ticks.
+            if (this.inWater) {
+                const streamCenter = MAP_SIZE[0] / 2;
+                const dx = streamCenter - this.x;
+                this.x += dx * 0.001;
+                this.y += 3;
+            }
+            this.move();
+            this.clamp();
+            return;
+        }
+
         const currentTime = performance.now();
         const inTutorialWorld = (this.world || '').startsWith('tutorial');
 

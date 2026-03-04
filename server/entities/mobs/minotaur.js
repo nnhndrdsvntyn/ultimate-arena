@@ -174,10 +174,22 @@ export class Minotaur extends Mob {
         super.turn();
     }
 
-    process() {
+    process(runDecisionLogic = true) {
+        if (!runDecisionLogic) {
+            const now = performance.now();
+            if (now < this.freezeUntil) {
+                this.lastX = this.x;
+                this.lastY = this.y;
+                this.clamp();
+                return;
+            }
+            super.process(false);
+            return;
+        }
+
         const preX = this.x;
         const preY = this.y;
-        super.process();
+        super.process(true);
         const now = performance.now();
         this.clampStageTimers(now);
         this.processShockwaveWaves(now);

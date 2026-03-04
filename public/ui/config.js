@@ -120,10 +120,12 @@ export const UPDATES_LOG = [
     {
         version: '1.4.1',
         changes: [
-            "Regeneration is 60% slower when in combat!",
+            "Added player kill counter in UI",
+            "Processing optimization (better performance)",
+            "Players regenerate 60% slower when in combat.",
             "Added NPC players!",
         ],
-        date: '2026-03-01'
+        date: '2026-03-03'
     }
 ];
 

@@ -1,6 +1,6 @@
 import { ENTITIES, MAP_SIZE } from './game.js';
 import { getId } from './helpers.js';
-import { dataMap, ACCESSORY_KEYS, accessoryItemTypeFromId, isAccessoryItemType, isChestObjectType, isCoinObjectType, isSwordRank } from '../public/shared/datamap.js';
+import { dataMap, TPS, ACCESSORY_KEYS, accessoryItemTypeFromId, isAccessoryItemType, isChestObjectType, isCoinObjectType, isSwordRank } from '../public/shared/datamap.js';
 
 const DEFAULT_BOT_COUNT = 5;
 const BOT_RESPAWN_DELAY_MS = 0;
@@ -24,6 +24,7 @@ const BOT_SHOP_CHECK_MIN_MS = 5 * 1000;
 const BOT_SHOP_CHECK_MAX_MS = 5 * 1000;
 const BOT_DEBUG_SHOP = false;
 const BOT_OFFSCREEN_ACTIVE_RANGE = 1700;
+const BOT_DECISION_INTERVAL_MS = Math.max(1, Math.floor((1000 / Math.max(1, TPS.server || 20)) * 3));
 const BOT_ROLE_PRO = 'pro';
 const BOT_ROLE_CASUAL = 'casual';
 const BOT_ROLE_NOOB = 'noob';
@@ -32,6 +33,7 @@ const BOT_RETALIATE_WINDOW_MS = 12000;
 const TEAMER_TARGET_COUNT = 4;
 const TEAM_GROUP_COUNT = 2;
 const TEAM_GROUP_SIZE = 2;
+const TEAM_SHUFFLE_INTERVAL_MS = 5 * 60 * 1000;
 const HUNTER_REASSIGN_MS = 1000;
 const PRO_HUNTER_MIN_SCORE = 3000;
 const HUNTER_TEAMUP_SCORE_MULT = 1.5;
@@ -40,8 +42,14 @@ const BOT_USERNAMES = [
     'xXVoidSlayerXx',
     'Ƭhunder⚡Boi',
     '꧁FrostByte꧂',
+    'sammy',
+    'salmon',
+    'b0i',
     'Aurora',
     '._.',
+    'buddy',
+    'rack',
+    'ℓ_Hero哦',
     'Σternal',
     '𝕹ight🩸Crawler',
     'xXPizzaGoblinXx',
@@ -55,7 +63,7 @@ const BOT_USERNAMES = [
     'real',
     'ez',
     'nnhn71',
-    'Br0ther...',
+    'Br0ther',
     'gaming',
     'indefinite',
     'T-T',
@@ -69,6 +77,7 @@ const BOT_USERNAMES = [
 ];
 let botTargetPopulation = DEFAULT_BOT_COUNT;
 const teamGroupByBotId = new Map();
+let lastTeamShuffleAt = 0;
 let lastHunterAssignmentAt = 0;
 
 const MOVE_PATTERNS = [
@@ -301,10 +310,19 @@ function getRetaliationTarget(bot, maxRange, now = performance.now()) {
     return { player: attacker, distSq };
 }
 
-function refreshTeamerAssignments() {
+function refreshTeamerAssignments(now = performance.now()) {
     const allBots = Object.values(ENTITIES.PLAYERS)
         .filter(p => p && p.isBot && (p.world || 'main') === 'main');
     const allBotIds = allBots.map(p => p.id);
+
+    const shouldShuffle =
+        teamGroupByBotId.size === 0 ||
+        (now - lastTeamShuffleAt >= TEAM_SHUFFLE_INTERVAL_MS);
+    if (shouldShuffle) {
+        teamGroupByBotId.clear();
+        lastTeamShuffleAt = now;
+    }
+
     const aliveBotSet = new Set(allBotIds);
     for (const botId of teamGroupByBotId.keys()) {
         if (!aliveBotSet.has(botId)) teamGroupByBotId.delete(botId);
@@ -687,6 +705,15 @@ function isInventoryFull(bot) {
     return bot.inventory.indexOf(0) === -1;
 }
 
+function canBotStoreMoreCoins(bot) {
+    for (let i = 0; i < bot.inventory.length; i++) {
+        const type = bot.inventory[i] & 0x7F;
+        if (type === 0) return true;
+        if (isCoinObjectType(type) && bot.inventoryCounts[i] < 256) return true;
+    }
+    return false;
+}
+
 function maybeEquipAccessoryFromInventory(bot) {
     if ((bot.accessoryId || 0) > 0 || (bot.equippedAccessoryItemType || 0) > 0) return false;
     for (let i = 0; i < bot.inventory.length; i++) {
@@ -852,15 +879,20 @@ function findNearestCombatPlayer(bot, maxRange, options = {}) {
 }
 
 function findNearestCoin(bot, maxRange) {
+    if (!canBotStoreMoreCoins(bot)) return null;
     const maxRangeSq = maxRange * maxRange;
     let nearest = null;
     let nearestDistSq = maxRangeSq + 1;
+    const now = performance.now();
 
     for (const id in ENTITIES.OBJECTS) {
         const obj = ENTITIES.OBJECTS[id];
         if (!obj || !isCoinObjectType(obj.type)) continue;
         if ((obj.world || 'main') !== (bot.world || 'main')) continue;
         if (obj.collectorId) continue;
+        if ((obj.teleportTicks || 0) > 0) continue;
+        if (bot.isBot && obj.dropSource === 'player' && now - (obj.spawnTime || 0) < 10000) continue;
+        if (now - (obj.spawnTime || 0) < 220) continue;
 
         const dx = obj.x - bot.x;
         const dy = obj.y - bot.y;
@@ -1251,6 +1283,7 @@ function configureBotPlayer(bot) {
     bot._botNextMoveAt = 0;
     bot._botNextLookAt = 0;
     bot._botNextThrowAt = 0;
+    bot._botNextDecisionAt = 0;
     bot._botHunterTargetId = role === BOT_ROLE_PRO ? (bot._botHunterTargetId || 0) : 0;
     bot._botAssistTargetId = 0;
     bot.lastX = bot.x;
@@ -1305,6 +1338,7 @@ function respawnBot(bot) {
     bot._botNextMoveAt = 0;
     bot._botNextLookAt = 0;
     bot._botNextThrowAt = 0;
+    bot._botNextDecisionAt = 0;
     bot._botHunterTargetId = role === BOT_ROLE_PRO ? prevHunterTargetId : 0;
     bot._botAssistTargetId = 0;
 
@@ -1447,7 +1481,7 @@ export function processOffscreenHunterBot(bot, now = performance.now()) {
 export function updateBotPlayers(now = performance.now()) {
     ensureBotPopulation();
     const realPlayers = Object.values(ENTITIES.PLAYERS).filter(p => p && !p.isBot);
-    refreshTeamerAssignments();
+    refreshTeamerAssignments(now);
     refreshHunterAssignments(realPlayers, now);
     for (const id in ENTITIES.PLAYERS) {
         const bot = ENTITIES.PLAYERS[id];
@@ -1462,6 +1496,11 @@ export function updateBotPlayers(now = performance.now()) {
             }
             continue;
         }
+
+        if (now < (bot._botNextDecisionAt || 0)) {
+            continue;
+        }
+        bot._botNextDecisionAt = now + BOT_DECISION_INTERVAL_MS;
 
         const hunterTargetId = bot._botHunterTargetId || 0;
         const hunterTarget = getHunterTarget(bot);

@@ -16,7 +16,6 @@ import {
 import { uiState, uiRefs } from './context.js';
 import {
     createShieldIcon,
-    createCombatText,
     createComboText,
     createHomeBlurButton,
     createFullscreenButton,
@@ -169,7 +168,6 @@ export function initializeUI() {
     const topLeftBar = createEl('div', {}, hudContainer, { id: 'top-left-bar' });
 
     createShieldIcon(topLeftBar);
-    createCombatText(hudContainer);
     createComboText(hudContainer);
     createSettingsButton(topLeftBar);
     createFullscreenButton(topLeftBar);
@@ -195,9 +193,6 @@ let lastShownVikingComboCount = 0;
 setInterval(() => {
     if (uiState.isSettingsOpen && uiState.activeTab === 'Stats') {
         updateSettingsBody();
-    }
-    if (uiRefs.combatText) {
-        uiRefs.combatText.style.display = Vars.inCombat ? 'block' : 'none';
     }
     if (uiRefs.comboText) {
         const myPlayer = ENTITIES.PLAYERS[Vars.myId];

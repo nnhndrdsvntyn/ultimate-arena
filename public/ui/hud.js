@@ -26,26 +26,6 @@ function requestPause() {
     setPauseState(true);
 }
 
-export function createCombatText(parent) {
-    const hb = HOTBAR_CONFIG;
-    const bottomLift = 40;
-    const bottom = hb.marginBottom + hb.slotSize + (hb.padding * 2) + 15 + bottomLift;
-
-    uiRefs.combatText = createEl('div', {
-        position: 'fixed',
-        bottom: bottom + 'px',
-        left: '50%',
-        transform: 'translateX(-50%)',
-        color: '#ff4444',
-        fontSize: '1.5rem',
-        fontWeight: 'bold',
-        textShadow: '0 2px 4px rgba(0,0,0,0.5)',
-        display: 'none',
-        pointerEvents: 'none',
-        zIndex: '90'
-    }, parent, { textContent: 'In Combat' });
-}
-
 export function createComboText(parent) {
     const hb = HOTBAR_CONFIG;
     const bottomLift = 40;
@@ -121,7 +101,6 @@ export function updateHUDVisibility(isAlive) {
     if (shopBtn) shopBtn.style.display = (!isHome && !isRespawn && isAlive) ? 'flex' : 'none';
     if (homeBlurBtn) homeBlurBtn.style.display = isAlive ? 'none' : 'flex';
     if (shieldIconEl) shieldIconEl.style.display = (isAlive && !isHome && !isRespawn) ? 'block' : 'none';
-
     updateMobileUIState();
 }
 

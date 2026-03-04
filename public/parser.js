@@ -407,6 +407,17 @@ function handleUpdatePacket(reader) {
             delete ENTITIES.OBJECTS[id];
         }
     }
+
+    const coinFxCount = reader.readU16();
+    for (let i = 0; i < coinFxCount; i++) {
+        const startX = reader.readU16();
+        const startY = reader.readU16();
+        const angle = reader.readF32();
+        const targetX = reader.readU16();
+        const targetY = reader.readU16();
+        const amount = reader.readU16();
+        spawnCoinPickupVfxToPlayer(startX, startY, angle, targetX, targetY, amount);
+    }
 }
 
 function handleLeaderboardPacket(reader) {
@@ -530,6 +541,7 @@ function handleStatsPacket(reader) {
     Vars.myStats.hp = reader.readU16();
     Vars.myStats.maxHp = reader.readU16();
     Vars.myStats.goldCoins = reader.readU32();
+    Vars.myStats.kills = reader.readU16();
     Vars.inCombat = reader.readU8();
     Vars.vikingComboCount = reader.readU8();
     Vars.abilityCooldownMs = reader.readU16();
@@ -567,9 +579,11 @@ function handleLightningShotFxPacket(reader) {
 function handleCoinPickupFxPacket(reader) {
     const startX = reader.readU16();
     const startY = reader.readU16();
-    const targetPlayerId = reader.readU8();
+    const angle = reader.readF32();
+    const targetX = reader.readU16();
+    const targetY = reader.readU16();
     const amount = reader.readU16();
-    spawnCoinPickupVfxToPlayer(startX, startY, targetPlayerId, amount);
+    spawnCoinPickupVfxToPlayer(startX, startY, angle, targetX, targetY, amount);
 }
 
 function handleEnergyBurstFxPacket(reader) {

@@ -140,6 +140,23 @@ export function validateUsername(username) {
 }
 
 const helperWriter = new PacketWriter();
+const queuedCoinPickupFx = [];
+
+export function drainQueuedCoinPickupFxByWorld() {
+    if (!queuedCoinPickupFx.length) return new Map();
+    const byWorld = new Map();
+    for (let i = 0; i < queuedCoinPickupFx.length; i++) {
+        const evt = queuedCoinPickupFx[i];
+        let arr = byWorld.get(evt.world);
+        if (!arr) {
+            arr = [];
+            byWorld.set(evt.world, arr);
+        }
+        arr.push(evt);
+    }
+    queuedCoinPickupFx.length = 0;
+    return byWorld;
+}
 
 export function playSfx(xorigin, yorigin, type, range) {
     const rangeSqrd = range * range;
@@ -186,21 +203,20 @@ export function emitLightningShotFx(startX, startY, endX, endY, durationMs = 100
 }
 
 export function emitCoinPickupFx(startX, startY, targetPlayerId, amount = 1) {
-    const targetWorld = ENTITIES.PLAYERS[targetPlayerId]?.world || 'main';
-    const fxWriter = new PacketWriter(16);
-    fxWriter.reset();
-    fxWriter.writeU8(22); // Coin pickup effect
-    fxWriter.writeU16(Math.max(0, Math.min(65535, Math.round(startX))));
-    fxWriter.writeU16(Math.max(0, Math.min(65535, Math.round(startY))));
-    fxWriter.writeU8(Math.max(0, Math.min(255, Math.round(targetPlayerId))));
-    fxWriter.writeU16(Math.max(1, Math.min(65535, Math.round(amount))));
-    const packet = fxWriter.getBuffer();
-    wss.clients.forEach(client => {
-        if (client.readyState !== 1) return;
-        const player = ENTITIES.PLAYERS[client.id];
-        if (!player) return;
-        if ((player.world || 'main') !== targetWorld) return;
-        client.send(packet);
+    const target = ENTITIES.PLAYERS[targetPlayerId];
+    const targetWorld = target?.world || 'main';
+    const sx = Math.max(0, Math.min(65535, Math.round(startX)));
+    const sy = Math.max(0, Math.min(65535, Math.round(startY)));
+    const tx = Math.max(0, Math.min(65535, Math.round(target?.x ?? startX)));
+    const ty = Math.max(0, Math.min(65535, Math.round(target?.y ?? startY)));
+    queuedCoinPickupFx.push({
+        world: targetWorld,
+        x: sx,
+        y: sy,
+        angle: Math.atan2(ty - sy, tx - sx),
+        targetX: tx,
+        targetY: ty,
+        amount: Math.max(1, Math.min(65535, Math.round(amount)))
     });
 }
 

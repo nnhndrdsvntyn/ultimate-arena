@@ -12,6 +12,7 @@ import {
     poison,
     emitCriticalHitFxToPlayer
 } from '../helpers.js';
+import { recordResolveCollisionCall } from '../debug.js';
 import {
     Entity
 } from './entity.js';
@@ -206,6 +207,7 @@ export class Projectile extends Entity {
     }
 
     resolveCollisions() {
+        recordResolveCollisionCall();
         const shooterIsMob = typeof this.shooter?.type !== 'undefined';
 
         // check structures

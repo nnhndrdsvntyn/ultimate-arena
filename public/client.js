@@ -130,7 +130,7 @@ export const Vars = {
     lastSelectionTime: 0,
     mouseX: 0,
     mouseY: 0,
-    myStats: { dmgHit: 0, dmgThrow: 0, speed: 0, hp: 100, maxHp: 100, goldCoins: 0 },
+    myStats: { dmgHit: 0, dmgThrow: 0, speed: 0, hp: 100, maxHp: 100, goldCoins: 0, kills: 0 },
     inCombat: false,
     onlineCount: 0,
     vikingComboCount: 0,
@@ -252,16 +252,18 @@ export function spawnCoinPickupVfx(coinObj) {
     });
 }
 
-export function spawnCoinPickupVfxToPlayer(startX, startY, targetId, amount = 1) {
+export function spawnCoinPickupVfxToPlayer(startX, startY, angle, targetX, targetY, amount = 1) {
     if (!Number.isFinite(startX) || !Number.isFinite(startY)) return;
-    if (!Number.isInteger(targetId)) return;
-    if (!ENTITIES.PLAYERS[targetId]?.isAlive) return;
+    if (!Number.isFinite(angle)) return;
+    if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) return;
 
     const spriteCount = Math.min(COIN_PICKUP_EFFECT_MAX_SPRITES, Math.max(1, amount >= 5 ? 5 : amount));
     coinPickupEffects.push({
         startX,
         startY,
-        targetId,
+        angle,
+        targetX,
+        targetY,
         startTime: performance.now(),
         spriteCount,
         seed: Math.random() * Math.PI * 2
@@ -451,6 +453,7 @@ async function loadAssets() {
             src: cat.rename ? item.imgSrc : item.src
         }))
     );
+    assets.push({ type: 'image', name: 'ui-skull', src: './images/ui/skull.png' });
 
     loadingState.totalAssets = assets.length;
     loadingState.header = 'Loading Assets';
@@ -946,7 +949,11 @@ function updateHUD(lp) {
         updateHomeOnlineCount(false);
         drawInfoBox(lp);
         drawLeaderboard();
-        if (Settings.showMinimap) drawMinimap();
+        if (Settings.showMinimap) {
+            drawMinimap();
+            drawKillCounter();
+        }
+        drawInCombatLabel();
         drawTutorialObjective();
         drawTutorialTargetIndicator();
         drawHotbar();
@@ -1446,12 +1453,6 @@ function drawCoinPickupEffects() {
 
     for (let i = coinPickupEffects.length - 1; i >= 0; i--) {
         const effect = coinPickupEffects[i];
-        const target = ENTITIES.PLAYERS[effect.targetId];
-
-        if (!target?.isAlive) {
-            coinPickupEffects.splice(i, 1);
-            continue;
-        }
 
         const elapsed = now - effect.startTime;
         const t = Math.min(1, elapsed / COIN_PICKUP_EFFECT_DURATION);
@@ -1461,20 +1462,25 @@ function drawCoinPickupEffects() {
         }
 
         const eased = 1 - Math.pow(1 - t, 3);
-        const x = effect.startX + (target.x - effect.startX) * eased;
-        const y = effect.startY + (target.y - effect.startY) * eased;
+        const x = effect.startX + (effect.targetX - effect.startX) * eased;
+        const y = effect.startY + (effect.targetY - effect.startY) * eased;
         const spread = (1 - t) * 7;
         const alpha = 1 - t * 0.8;
+        const perpAngle = effect.angle + (Math.PI / 2);
+        const px = Math.cos(perpAngle);
+        const py = Math.sin(perpAngle);
 
         for (let j = 0; j < effect.spriteCount; j++) {
             const angle = effect.seed + ((j / effect.spriteCount) * Math.PI * 2);
             const ox = Math.cos(angle) * spread;
             const oy = Math.sin(angle) * spread;
             const size = baseSize * (1 - t * 0.2);
+            const sx = x - camera.x + (ox * px) - size / 2;
+            const sy = y - camera.y + (oy * py) - size / 2;
 
             LC.drawImage({
                 name: 'gold-coin',
-                pos: [x - camera.x + ox - size / 2, y - camera.y + oy - size / 2],
+                pos: [sx, sy],
                 size: [size, size],
                 transparency: alpha
             });
@@ -1818,7 +1824,9 @@ function drawLeaderboard() {
 
     lb.forEach((p, i) => {
         const color = p.id === Vars.myId ? 'white' : 'lightgray';
-        LC.drawText({ text: `${i + 1}. ${p.username.slice(0, 12)}`, pos: [LC.width - 250, 65 + i * 25], font: '14px Inter', color });
+        const rawName = String(p.username || '');
+        const shortName = rawName.length > 12 ? `${rawName.slice(0, 12)}...` : rawName;
+        LC.drawText({ text: `${i + 1}. ${shortName}`, pos: [LC.width - 250, 65 + i * 25], font: '14px Inter', color });
         LC.drawText({ text: formatScore(p.score), pos: [LC.width - 20, 65 + i * 25], font: '14px Inter', color, textAlign: 'right' });
     });
 }
@@ -1854,6 +1862,48 @@ function drawMinimap() {
     if (Settings.showPlayersOnMinimap) Object.values(ENTITIES.PLAYERS).filter(p => p.id !== Vars.myId && p.isAlive).forEach(p => drawDot(p, 'red'));
     const lp = ENTITIES.PLAYERS[Vars.myId];
     if (lp) drawDot(lp, 'white');
+}
+
+function drawKillCounter() {
+    const x = 20;
+    const y = 208;
+    const width = 84;
+    const height = 30;
+    const kills = Math.max(0, Vars.myStats.kills || 0);
+
+    LC.drawRect({
+        pos: [x - 2, y - 2],
+        size: [width, height],
+        color: 'rgba(0,0,0,0.45)',
+        cornerRadius: 6
+    });
+
+    if (LC.images?.['ui-skull']) {
+        LC.drawImage({
+            name: 'ui-skull',
+            pos: [x + 6, y + 5],
+            size: [20, 20]
+        });
+    }
+
+    LC.drawText({
+        text: String(kills),
+        pos: [x + 34, y + 21],
+        font: 'bold 16px Inter',
+        color: 'white',
+        textAlign: 'left'
+    });
+}
+
+function drawInCombatLabel() {
+    if (!Vars.inCombat) return;
+    LC.drawText({
+        text: 'In Combat',
+        pos: [LC.width / 2, LC.height - 170],
+        font: 'bold 24px Inter',
+        color: '#ff4d4d',
+        textAlign: 'center'
+    });
 }
 
 function drawDraggedItem() {

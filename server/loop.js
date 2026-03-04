@@ -8,11 +8,16 @@ import {
 } from './game.js';
 import { dataMap, isCoinObjectType } from '../public/shared/datamap.js';
 import { isBotNearAnyRealPlayer, processOffscreenBot, processOffscreenHunterBot } from './bots.js';
+import { recordCollisionFrame } from './debug.js';
+let npcLogicTick = 0;
 
 /**
  * Main game logic update loop.
  */
 export function updateGame() {
+    recordCollisionFrame();
+    npcLogicTick = (npcLogicTick + 1) % 3;
+    const runNpcLogicThisFrame = npcLogicTick === 0;
 
     const now = performance.now();
     const activeWorlds = new Set();
@@ -40,7 +45,7 @@ export function updateGame() {
 
     // 1. Process active entities
     processPlayers(now);
-    processProximityProcessables(ENTITIES.MOBS, 1500);
+    processProximityProcessables(ENTITIES.MOBS, 1500, (mob) => mob.process(runNpcLogicThisFrame));
     processProcessables(ENTITIES.PROJECTILES);
     processProximityProcessables(ENTITIES.OBJECTS, 1000);
 
@@ -103,6 +108,9 @@ function processProximityProcessables(entities, range, customFn = (e) => e.proce
             return Math.abs(p.x - ent.x) < scaledRange && Math.abs(p.y - ent.y) < scaledRange;
         });
         if (isNear) {
+            if (entities === ENTITIES.OBJECTS && isCoinObjectType(ent.type) && (ent.teleportTicks || 0) <= 0) {
+                continue; // idle coins do not need per-frame processing
+            }
             customFn(ent);
         }
     }

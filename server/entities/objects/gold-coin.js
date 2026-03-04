@@ -5,13 +5,8 @@ import {
     GameObject
 } from './object.js';
 import {
-    playSfx,
     emitCoinPickupFx
 } from '../../helpers.js';
-import {
-    dataMap
-} from '../../../public/shared/datamap.js';
-
 export class GoldCoin extends GameObject {
     constructor(id, x, y, type, amount = 1, source = null) {
         super(id, x, y, type);
@@ -21,7 +16,17 @@ export class GoldCoin extends GameObject {
     }
 
     process() {
-        super.process();
+        // Coins do not need structure collision resolution.
+        // Keep only teleport completion behavior used by dropped-item animation.
+        if (this.teleportTicks > 0) {
+            this.teleportTicks--;
+            if (this.teleportTicks === 0 && this.targetX !== undefined && this.targetY !== undefined) {
+                this.x = this.targetX;
+                this.y = this.targetY;
+                this.targetX = undefined;
+                this.targetY = undefined;
+            }
+        }
     }
 
     startCollection(player) {
@@ -37,14 +42,12 @@ export class GoldCoin extends GameObject {
             if (this.source === 'chest' && typeof killer.addScore === 'function') {
                 killer.addScore(amount * 10);
             }
-            killer.sendStatsUpdate();
             emitCoinPickupFx(this.x, this.y, killer.id, amount);
+            killer.sendStatsUpdate();
         }
 
         if (killer && performance.now() - (killer.lastPickUpCoinTime || 0) > 20) {
             killer.lastPickUpCoinTime = performance.now();
-            const sfx = dataMap.sfxMap.indexOf('coin-collect');
-            playSfx(this.x, this.y, sfx, this.radius + killer.radius);
         }
 
         ENTITIES.deleteEntity('object', this.id);

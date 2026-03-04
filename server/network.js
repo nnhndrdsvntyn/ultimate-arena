@@ -5,6 +5,7 @@ import {
     ACCESSORY_KEYS,
     TPS
 } from '../public/shared/datamap.js';
+import { drainQueuedCoinPickupFxByWorld } from './helpers.js';
 
 const UPDATE_SEND_BUFFER = 260;
 
@@ -12,6 +13,7 @@ const UPDATE_SEND_BUFFER = 260;
  * Builds and sends updates for all connected clients.
  */
 export function sendUpdates(wss, lbWriter) {
+    const queuedCoinFxByWorld = drainQueuedCoinPickupFxByWorld();
     wss.clients.forEach(ws => {
         if (ws.readyState !== 1) return; // WebSocket.OPEN
 
@@ -51,6 +53,7 @@ export function sendUpdates(wss, lbWriter) {
         writeMobs(pw, lpX, lpY, renderDistanceSq, isFull, entitiesInUpdate, world, forceTutorialWorldSync);
         writeProjectiles(pw, lpX, lpY, renderDistanceSq, isFull, entitiesInUpdate, world, forceTutorialWorldSync);
         writeObjects(pw, lpX, lpY, renderDistanceSq, isFull, entitiesInUpdate, world, forceTutorialWorldSync);
+        writeCoinPickupFxBatch(pw, queuedCoinFxByWorld.get(world) || []);
 
         ws.seenEntities = entitiesInUpdate;
 
@@ -64,6 +67,23 @@ export function sendUpdates(wss, lbWriter) {
             ws.send(buildLeaderboardPacket(lbWriter, leaderboard));
         }
     });
+}
+
+function writeCoinPickupFxBatch(pw, events) {
+    const countPos = pw.reserveU16();
+    let count = 0;
+    const limit = Math.min(65535, events.length);
+    for (let i = 0; i < limit; i++) {
+        const evt = events[i];
+        pw.writeU16(evt.x);
+        pw.writeU16(evt.y);
+        pw.writeF32(evt.angle || 0);
+        pw.writeU16(evt.targetX);
+        pw.writeU16(evt.targetY);
+        pw.writeU16(evt.amount);
+        count++;
+    }
+    pw.writeU16At(countPos, count);
 }
 
 export function sendPlayerCount(wss, writer) {

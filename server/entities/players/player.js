@@ -24,6 +24,7 @@ import {
     getId,
     poison
 } from '../../helpers.js';
+import { recordResolveCollisionCall } from '../../debug.js';
 import {
     Entity
 } from '../entity.js';
@@ -34,6 +35,10 @@ import {
 
 const TUTORIAL_PACKET_OBJECTIVE = 26;
 const TUTORIAL_PACKET_COMPLETE = 27;
+const DROP_OWNER_PICKUP_LOCK_MS = 700;
+const DROP_INITIAL_PUSH = 18;
+const DROP_FINAL_PUSH = 90;
+const DROP_TRAVEL_TICKS = 4;
 const TUTORIAL_STEP_TEXT = [
     'Move around using the AWSD Keys.',
     'Attack using your left mouse button.',
@@ -89,6 +94,7 @@ export class Player extends Entity {
         this.speed = this.defaultSpeed;
         this.strength = dataMap.PLAYERS.baseStrength;
         this.score = 0;
+        this.killCount = 0;
         this.goldCoins = 0;
         this.attributeBuffs = { speed: 0, maxHp: 0, damage: 0 };
         this.lastStatsSpeed = Math.round(this.speed);
@@ -596,11 +602,40 @@ export class Player extends Entity {
         for (const id in ENTITIES.OBJECTS) {
             const obj = ENTITIES.OBJECTS[id];
             if ((obj.world || 'main') !== (this.world || 'main')) continue;
+            if (!this.canPickupDroppedObject(obj, now)) continue;
             if (!obj || !isCoinObjectType(obj.type) || obj.collectorId || !colliding(this, obj)) continue;
             if (this.isBot && obj.dropSource === 'player' && now - (obj.spawnTime || 0) < 10000) continue;
             if (now - (obj.spawnTime || 0) <= 200) continue;
             obj.startCollection(this);
         }
+    }
+
+    canPickupDroppedObject(obj, now = performance.now()) {
+        if (!obj) return false;
+        return !(obj.dropOwnerId === this.id && now < (obj.dropOwnerPickupLockUntil || 0));
+    }
+
+    applyDropLaunch(dropObj, itemType, angle = this.angle, now = performance.now()) {
+        if (!dropObj) return;
+        const a = Number.isFinite(angle) ? angle : 0;
+        const cos = Math.cos(a);
+        const sin = Math.sin(a);
+        const itemRadius = dataMap.OBJECTS[itemType]?.radius || 25;
+        const clampPos = (x, y) => ({
+            x: Math.max(itemRadius, Math.min(MAP_SIZE[0] - itemRadius, Math.round(x))),
+            y: Math.max(itemRadius, Math.min(MAP_SIZE[1] - itemRadius, Math.round(y)))
+        });
+        const start = clampPos(this.x + cos * DROP_INITIAL_PUSH, this.y + sin * DROP_INITIAL_PUSH);
+        const end = clampPos(this.x + cos * DROP_FINAL_PUSH, this.y + sin * DROP_FINAL_PUSH);
+        dropObj.x = start.x;
+        dropObj.y = start.y;
+        dropObj.lastX = start.x;
+        dropObj.lastY = start.y;
+        dropObj.targetX = end.x;
+        dropObj.targetY = end.y;
+        dropObj.teleportTicks = DROP_TRAVEL_TICKS;
+        dropObj.dropOwnerId = this.id;
+        dropObj.dropOwnerPickupLockUntil = now + DROP_OWNER_PICKUP_LOCK_MS;
     }
 
     dropItem() {
@@ -616,11 +651,7 @@ export class Player extends Entity {
         const baseType = rank & 0x7F;
 
         const dropObj = spawnObject(baseType, this.x, this.y, count, 'player', this.world || 'main');
-        if (dropObj) {
-            dropObj.targetX = this.x + Math.cos(this.angle) * 100;
-            dropObj.targetY = this.y + Math.sin(this.angle) * 100;
-            dropObj.teleportTicks = 2;
-        }
+        this.applyDropLaunch(dropObj, baseType);
 
         this.inventory[slot] = 0;
         this.inventoryCounts[slot] = 0;
@@ -633,17 +664,19 @@ export class Player extends Entity {
 
     tryPickup() {
         if (!this.isAlive) return;
+        const now = performance.now();
 
         for (const id in ENTITIES.OBJECTS) {
             const obj = ENTITIES.OBJECTS[id];
             if ((obj.world || 'main') !== (this.world || 'main')) continue;
+            if (!this.canPickupDroppedObject(obj, now)) continue;
             if (obj && colliding(this, obj)) {
                 // Ensure the object is pickable (isEphemeral)
                 if (!dataMap.OBJECTS[obj.type]?.isEphemeral) continue;
-                if (this.isBot && obj.dropSource === 'player' && performance.now() - (obj.spawnTime || 0) < 10000) continue;
+                if (this.isBot && obj.dropSource === 'player' && now - (obj.spawnTime || 0) < 10000) continue;
 
                 // Respect 200ms pickup delay for everything manually picked up too
-                if (performance.now() - (obj.spawnTime || 0) < 200) continue;
+                if (now - (obj.spawnTime || 0) < 200) continue;
 
                 const isCoin = isCoinObjectType(obj.type);
                 if (isCoin) {
@@ -662,7 +695,6 @@ export class Player extends Entity {
                     if (existingSlot !== -1) {
                         this.inventoryCounts[existingSlot] += (obj.amount || 1);
                         ENTITIES.deleteEntity('object', obj.id);
-                        playSfx(this.x, this.y, dataMap.sfxMap.indexOf('coin-collect'), 1000);
                         this.sendInventoryUpdate();
                         this.sendStatsUpdate();
                         return;
@@ -675,7 +707,6 @@ export class Player extends Entity {
                     this.inventory[emptySlot] = obj.type;
                     this.inventoryCounts[emptySlot] = (obj.amount || 1);
                     ENTITIES.deleteEntity('object', obj.id);
-                    playSfx(this.x, this.y, dataMap.sfxMap.indexOf('coin-collect'), 1000);
                     this.sendInventoryUpdate();
                     this.sendStatsUpdate();
                     return;
@@ -711,7 +742,6 @@ export class Player extends Entity {
                 this.deductCoins(cost);
                 this.inventory[emptySlot] = rank;
                 this.inventoryCounts[emptySlot] = 1;
-                playSfx(this.x, this.y, dataMap.sfxMap.indexOf('coin-collect'), 1000);
                 this.sendInventoryUpdate();
                 this.sendStatsUpdate();
             }
@@ -731,7 +761,6 @@ export class Player extends Entity {
         this.deductCoins(cost);
         this.inventory[emptySlot] = accessoryItemTypeFromId(accessoryId);
         this.inventoryCounts[emptySlot] = 1;
-        playSfx(this.x, this.y, dataMap.sfxMap.indexOf('coin-collect'), 1000);
         this.sendInventoryUpdate();
         this.sendStatsUpdate();
     }
@@ -764,7 +793,6 @@ export class Player extends Entity {
 
         if (soldAny) {
             this.addGoldCoins(totalSellPrice);
-            playSfx(this.x, this.y, dataMap.sfxMap.indexOf('coin-collect'), 1000);
             this.sendInventoryUpdate();
             this.sendStatsUpdate();
         }
@@ -799,9 +827,8 @@ export class Player extends Entity {
             const toDrop = Math.min(256, remaining);
             const dropObj = spawnObject(getCoinObjectType(), this.x, this.y, toDrop, 'player', this.world || 'main');
             if (dropObj) {
-                dropObj.targetX = this.x + (Math.random() - 0.5) * 100;
-                dropObj.targetY = this.y + (Math.random() - 0.5) * 100;
-                dropObj.teleportTicks = 2;
+                const scatterAngle = Math.random() * Math.PI * 2;
+                this.applyDropLaunch(dropObj, getCoinObjectType(), scatterAngle);
             }
             remaining -= toDrop;
         }
@@ -880,7 +907,11 @@ export class Player extends Entity {
         this.isAlive = false;
 
         const lost = Math.max(1, Math.floor(this.score * 0.3));
-        if (killer instanceof Player) killer.addScore(lost);
+        if (killer instanceof Player && killer.id !== this.id) {
+            killer.addScore(lost);
+            killer.killCount = (killer.killCount || 0) + 1;
+            killer.sendStatsUpdate();
+        }
 
         // Send death notification — handle cases where killer may be null (admin kill)
         const killerTypeMap = { player: 1, mob: 2 };
@@ -922,6 +953,7 @@ export class Player extends Entity {
         this.hp = 100;
         this.maxHp = 100;
         this.score = Math.max(0, this.score - lost);
+        this.killCount = 0;
         this.attributeBuffs = { speed: 0, maxHp: 0, damage: 0 };
         this.attacking = false;
         this.keys = { w: 0, a: 0, s: 0, d: 0 };
@@ -959,6 +991,7 @@ export class Player extends Entity {
     }
 
     resolveCollisions() {
+        recordResolveCollisionCall();
         if (!this.isAlive) return;
 
         // Player vs Player
@@ -1038,6 +1071,7 @@ export class Player extends Entity {
         ws.packetWriter.writeU16(Math.floor(this.hp));
         ws.packetWriter.writeU16(Math.floor(this.maxHp));
         ws.packetWriter.writeU32(this.getTotalCoins());
+        ws.packetWriter.writeU16(Math.max(0, this.killCount || 0));
         ws.packetWriter.writeU8(inCombat ? 1 : 0);
         ws.packetWriter.writeU8(this.vikingHitCount || 0);
         ws.packetWriter.writeU16(Math.min(65535, Math.floor(abilityCooldownMs)));
@@ -1130,12 +1164,9 @@ export class Player extends Entity {
             return;
         }
 
-        const dropObj = spawnObject(this.equippedAccessoryItemType, this.x, this.y, 1, 'player', this.world || 'main');
-        if (dropObj) {
-            dropObj.targetX = this.x + Math.cos(this.angle) * 100;
-            dropObj.targetY = this.y + Math.sin(this.angle) * 100;
-            dropObj.teleportTicks = 2;
-        }
+        const itemType = this.equippedAccessoryItemType;
+        const dropObj = spawnObject(itemType, this.x, this.y, 1, 'player', this.world || 'main');
+        this.applyDropLaunch(dropObj, itemType);
 
         this.equippedAccessoryItemType = 0;
         this.accessoryId = 0;
