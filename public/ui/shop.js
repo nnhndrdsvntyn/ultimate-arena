@@ -1,4 +1,4 @@
-import { Vars } from '../client.js';
+import { Vars, CURRENT_WORLD } from '../client.js';
 import { sendBuyPacket, sendSellAllPacket } from '../helpers.js';
 import { dataMap, isSellableItem, ACCESSORY_KEYS, ACCESSORY_DESCRIPTIONS, accessoryItemTypeFromId } from '../shared/datamap.js';
 import { createEl, makeDraggable } from './dom.js';
@@ -74,12 +74,18 @@ export function updateShopBody() {
 
     // Tabs for Buy / Sell
     const tabsContainer = createEl('div', {}, uiRefs.shopBody, { className: 'settings-tabs' });
+    const tutorialBranchSwordOnly = isTutorialBranchSwordOnlyStep();
     ['Buy', 'Sell'].forEach((tab) => {
         const tabEl = createEl('div', {}, tabsContainer, {
             className: `settings-tab ${tab === uiState.activeShopTab ? 'active' : ''}`,
             textContent: tab
         });
+        if (tutorialBranchSwordOnly && tab !== 'Buy') {
+            tabEl.style.opacity = '0.45';
+            tabEl.style.pointerEvents = 'none';
+        }
         tabEl.onclick = () => {
+            if (tutorialBranchSwordOnly && tab !== 'Buy') return;
             uiState.activeShopTab = tab;
             updateShopBody();
         };
@@ -249,6 +255,8 @@ function renderSellTab() {
 }
 
 function renderShopTab() {
+    const tutorialBranchSwordOnly = isTutorialBranchSwordOnlyStep();
+
     const weaponTitle = createEl('div', {}, uiRefs.shopBody, { className: 'shop-section-title', textContent: 'Weapons' });
     weaponTitle.classList.add('no-select');
 
@@ -273,15 +281,17 @@ function renderShopTab() {
         createEl('span', {}, priceContainer, { textContent: itemConfig.price.toLocaleString() });
 
         const canAfford = (Vars.myStats.goldCoins || 0) >= itemConfig.price;
+        const tutorialAllowed = !tutorialBranchSwordOnly || itemConfig.id === 2;
+        const canBuy = canAfford && tutorialAllowed;
         const buyBtn = createEl('button', {}, item, {
-            className: `buy-button ${!canAfford ? 'disabled' : ''}`,
-            textContent: canAfford ? 'Buy' : 'Too Poor',
-            disabled: !canAfford
+            className: `buy-button ${!canBuy ? 'disabled' : ''}`,
+            textContent: tutorialAllowed ? (canAfford ? 'Buy' : 'Too Poor') : 'Locked',
+            disabled: !canBuy
         });
         buyBtn.dataset.shopItemType = String(itemConfig.id);
 
         buyBtn.onclick = () => {
-            if (canAfford) sendBuyPacket(itemConfig.id);
+            if (canBuy) sendBuyPacket(itemConfig.id);
         };
     });
 
@@ -323,16 +333,72 @@ function renderShopTab() {
         createEl('span', {}, priceContainer, { textContent: accessoryPrice.toLocaleString() });
 
         const canAfford = (Vars.myStats.goldCoins || 0) >= accessoryPrice;
+        const canBuy = canAfford && !tutorialBranchSwordOnly;
         const buyBtn = createEl('button', {}, item, {
-            className: `buy-button ${!canAfford ? 'disabled' : ''}`,
-            textContent: canAfford ? 'Buy' : 'Too Poor',
-            disabled: !canAfford
+            className: `buy-button ${!canBuy ? 'disabled' : ''}`,
+            textContent: tutorialBranchSwordOnly ? 'Locked' : (canAfford ? 'Buy' : 'Too Poor'),
+            disabled: !canBuy
         });
 
         buyBtn.onclick = () => {
-            if (canAfford) sendBuyPacket(accessoryItemTypeFromId(ACCESSORY_KEYS.indexOf(key)));
+            if (canBuy) sendBuyPacket(accessoryItemTypeFromId(ACCESSORY_KEYS.indexOf(key)));
         };
     });
+
+    const miscTitle = createEl('div', {}, uiRefs.shopBody, { className: 'shop-section-title', textContent: 'Misc' });
+    miscTitle.classList.add('no-select');
+
+    const miscGrid = createEl('div', {}, uiRefs.shopBody, { className: 'shop-grid' });
+    const xpItems = dataMap.XP_SHOP_ITEMS || [];
+    xpItems.forEach((itemConfig) => {
+        const item = createEl('div', {}, miscGrid, { className: 'shop-item' });
+
+        createEl('div', {
+            width: '100%',
+            height: '75px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '1.2rem',
+            fontWeight: '900',
+            color: '#fbbf24',
+            letterSpacing: '0.08em',
+            background: 'rgba(251, 191, 36, 0.08)',
+            borderRadius: '8px',
+            border: '1px solid rgba(251, 191, 36, 0.28)'
+        }, item, {
+            textContent: 'XP'
+        });
+
+        createEl('div', {}, item, { className: 'shop-item-name', textContent: itemConfig.name });
+
+        const priceContainer = createEl('div', {}, item, { className: 'shop-item-price' });
+        createEl('img', {}, priceContainer, {
+            className: 'shop-price-icon',
+            src: './images/objects/gold-coin.png'
+        });
+        createEl('span', {}, priceContainer, { textContent: (itemConfig.price || 0).toLocaleString() });
+
+        const canAfford = (Vars.myStats.goldCoins || 0) >= (itemConfig.price || 0);
+        const canBuy = canAfford && !tutorialBranchSwordOnly;
+        const buyBtn = createEl('button', {}, item, {
+            className: `buy-button ${!canBuy ? 'disabled' : ''}`,
+            textContent: tutorialBranchSwordOnly ? 'Locked' : (canAfford ? 'Buy' : 'Too Poor'),
+            disabled: !canBuy
+        });
+        buyBtn.dataset.shopItemType = String(itemConfig.id);
+
+        buyBtn.onclick = () => {
+            if (canBuy) sendBuyPacket(itemConfig.id);
+        };
+    });
+}
+
+function isTutorialBranchSwordOnlyStep() {
+    if (CURRENT_WORLD !== 'tutorial') return false;
+    if ((Vars.tutorialObjectiveStep || -1) !== 5) return false;
+    const hasRank2 = Vars.myInventory.some((type, idx) => ((type & 0x7F) === 2) && (Vars.myInventoryCounts[idx] || 0) > 0);
+    return !hasRank2;
 }
 
 function formatAccessoryName(key) {

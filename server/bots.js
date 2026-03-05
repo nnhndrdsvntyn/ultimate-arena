@@ -18,6 +18,8 @@ const BOT_COIN_RANGE = 1400;
 const BOT_MOB_ATTACK_RANGE = 180;
 const BOT_CHEST_ATTACK_RANGE = 190;
 const MINOTAUR_MOB_TYPE = 6;
+const POLAR_BEAR_MOB_TYPE = 5;
+const BOT_POLAR_BEAR_AVOID_RANGE = 380;
 const BOT_LIFETIME_MIN_MS = 60 * 1000;
 const BOT_LIFETIME_MAX_MS = 3 * 60 * 1000;
 const BOT_SHOP_CHECK_MIN_MS = 5 * 1000;
@@ -36,6 +38,9 @@ const TEAM_GROUP_SIZE = 2;
 const TEAM_SHUFFLE_INTERVAL_MS = 5 * 60 * 1000;
 const HUNTER_REASSIGN_MS = 1000;
 const PRO_HUNTER_MIN_SCORE = 3000;
+const PRO_HUNTER_MIN_SWORD_RANK = 3;
+const PRO_HUNTER_TARGET_MIN_SCORE = 3000;
+const PRO_TARGET_SWORD_MAX_GAP = 2;
 const HUNTER_TEAMUP_SCORE_MULT = 1.5;
 const BOT_USERNAMES = [
     '𝓩ombie🥀',
@@ -44,6 +49,7 @@ const BOT_USERNAMES = [
     '꧁FrostByte꧂',
     'sammy',
     'salmon',
+    'el',
     'b0i',
     'Aurora',
     '._.',
@@ -220,6 +226,15 @@ const PRO_ACCESSORY_IDS = new Set(['bush-cloak', 'viking-hat', 'pirate-hat']
 const CASUAL_BIASED_ACCESSORY_IDS = new Set(['sunglasses', 'bush-cloak', 'pirate-hat', 'viking-hat', 'alien-antennas', 'dark-cloak']
     .map(key => ACCESSORY_ID_BY_KEY[key])
     .filter(id => Number.isInteger(id) && id > 0));
+const XP_SHOP_ITEMS = Array.isArray(dataMap.XP_SHOP_ITEMS)
+    ? dataMap.XP_SHOP_ITEMS
+        .map(item => ({
+            id: item?.id | 0,
+            price: Math.max(0, Math.floor(item?.price || 0)),
+            xp: Math.max(0, Math.floor(item?.xp || 0))
+        }))
+        .filter(item => item.id > 0 && item.price > 0 && item.xp > 0)
+    : [];
 
 function getBotRole(bot) {
     if (bot._botRole === BOT_ROLE_PRO || bot._botRole === BOT_ROLE_CASUAL || bot._botRole === BOT_ROLE_NOOB) {
@@ -235,6 +250,19 @@ function getBotSwordCap(bot) {
     if (role === BOT_ROLE_NOOB) return 5;
     if (role === BOT_ROLE_CASUAL) return 7;
     return 8;
+}
+
+function hasEquippedAccessory(bot) {
+    return (bot.accessoryId || 0) > 0 || (bot.equippedAccessoryItemType || 0) > 0;
+}
+
+function isInventoryFillingUp(bot) {
+    let emptySlots = 0;
+    for (let i = 0; i < bot.inventory.length; i++) {
+        if ((bot.inventory[i] & 0x7F) === 0 || bot.inventoryCounts[i] <= 0) emptySlots++;
+    }
+    if (emptySlots <= 4) return true;
+    return !canBotStoreMoreCoins(bot);
 }
 
 function chooseAccessoryForRole(bot, affordableAccessoryIds) {
@@ -276,9 +304,12 @@ function getTargetSwordRankForHunt(target) {
 function canHunterEngageTarget(bot, target) {
     if (!bot || !target) return false;
     const hunterRank = getBestSwordRank(bot);
+    if (hunterRank < PRO_HUNTER_MIN_SWORD_RANK) return false;
+    if ((target.score || 0) < PRO_HUNTER_TARGET_MIN_SCORE) return false;
     const targetRank = getTargetSwordRankForHunt(target);
     const requiredHunterRank = Math.max(1, targetRank - 2);
-    return hunterRank >= requiredHunterRank;
+    const minTargetRank = Math.max(1, hunterRank - PRO_TARGET_SWORD_MAX_GAP);
+    return hunterRank >= requiredHunterRank && targetRank >= minTargetRank;
 }
 
 function getAliveTeammate(bot) {
@@ -660,6 +691,58 @@ function tryBotShopUpgrade(bot, now = performance.now()) {
     } else if (BOT_DEBUG_SHOP) {
         console.log(`[BOT ${bot.id}] shop-no-purchase coins=${coins} best=${getBestSwordRank(bot)} canBuyAccessory=${canBuyAccessory}`);
     }
+
+    const role = getBotRole(bot);
+    const canBuyXp = role !== BOT_ROLE_CASUAL && XP_SHOP_ITEMS.length > 0;
+    if (!canBuyXp) return;
+
+    const bestSword = getBestSwordRank(bot);
+    const hasAccessoryEquipped = hasEquippedAccessory(bot);
+    if (!hasAccessoryEquipped) return;
+    if (role === BOT_ROLE_PRO && bestSword < 8) return;
+    if (role === BOT_ROLE_NOOB && bestSword < getBotSwordCap(bot)) return;
+
+    const latestCoins = bot.getTotalCoins();
+    const affordableXp = XP_SHOP_ITEMS.filter(item => latestCoins >= item.price);
+    if (!affordableXp.length) return;
+
+    // Prefer higher XP packs once geared.
+    const chosen = affordableXp[affordableXp.length - 1];
+    if (!chosen) return;
+    bot.buyXp(chosen.id);
+}
+
+function findNearestPolarBear(bot, maxRange) {
+    const maxRangeSq = maxRange * maxRange;
+    let nearest = null;
+    let nearestDistSq = maxRangeSq + 1;
+    for (const id in ENTITIES.MOBS) {
+        const mob = ENTITIES.MOBS[id];
+        if (!mob || mob.hp <= 0 || mob.type !== POLAR_BEAR_MOB_TYPE) continue;
+        if ((mob.world || 'main') !== (bot.world || 'main')) continue;
+        const dx = mob.x - bot.x;
+        const dy = mob.y - bot.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq <= maxRangeSq && distSq < nearestDistSq) {
+            nearest = mob;
+            nearestDistSq = distSq;
+        }
+    }
+    return nearest ? { target: nearest, distSq: nearestDistSq } : null;
+}
+
+function moveAwayFrom(bot, fromX, fromY) {
+    const dx = bot.x - fromX;
+    const dy = bot.y - fromY;
+    const angle = Math.atan2(dy, dx);
+    bot.angle = angle;
+    const ux = Math.cos(angle);
+    const uy = Math.sin(angle);
+    const axisDeadzone = 0.12;
+    bot.keys.a = ux < -axisDeadzone ? 1 : 0;
+    bot.keys.d = ux > axisDeadzone ? 1 : 0;
+    bot.keys.w = uy < -axisDeadzone ? 1 : 0;
+    bot.keys.s = uy > axisDeadzone ? 1 : 0;
 }
 
 function ensureBotAlwaysArmed(bot, now = performance.now()) {
@@ -735,7 +818,7 @@ function maintainBotInventory(bot, now = performance.now()) {
     const role = getBotRole(bot);
     const full = isInventoryFull(bot);
     const bestSword = getBestSwordRank(bot);
-    const hasAccessoryEquipped = (bot.accessoryId || 0) > 0 || (bot.equippedAccessoryItemType || 0) > 0;
+    const hasAccessoryEquipped = hasEquippedAccessory(bot);
 
     const dropSlots = [];
     const sellSlots = [];
@@ -778,6 +861,24 @@ function maintainBotInventory(bot, now = performance.now()) {
         dropSlots.push(i);
     }
 
+    // Noob only: once geared for its cap, free up room by dropping coin stacks if inventory is filling up.
+    if (
+        role === BOT_ROLE_NOOB &&
+        bestSword >= getBotSwordCap(bot) &&
+        hasAccessoryEquipped &&
+        isInventoryFillingUp(bot)
+    ) {
+        for (let i = bot.inventory.length - 1; i >= 0; i--) {
+            if (bot.inventoryCounts[i] <= 0) continue;
+            const type = bot.inventory[i] & 0x7F;
+            if (!isCoinObjectType(type)) continue;
+            if (dropSlots.includes(i)) continue;
+            dropSlots.push(i);
+            // Drop one or two stacks per maintenance tick to avoid over-dumping.
+            if (dropSlots.length >= 2) break;
+        }
+    }
+
     if (sellSlots.length) {
         bot.sellItems(sellSlots);
     }
@@ -790,6 +891,29 @@ function maintainBotInventory(bot, now = performance.now()) {
             }
         }
     }
+}
+
+function tryBotSpendBuffPoints(bot, now = performance.now()) {
+    if (!bot || !bot.isBot || !bot.isAlive) return;
+    if (now < (bot._botNextBuffUpgradeAt || 0)) return;
+    bot._botNextBuffUpgradeAt = now + 700 + Math.floor(Math.random() * 1700);
+
+    const available = typeof bot.getAvailableBuffPoints === 'function'
+        ? bot.getAvailableBuffPoints()
+        : 0;
+    if (available <= 0) return;
+
+    const levelStrength = bot.buffLevels?.strength || 0;
+    const levelMaxHealth = bot.buffLevels?.maxHealth || 0;
+    const levelRegen = bot.buffLevels?.regenSpeed || 0;
+    const choices = [];
+    if (levelStrength < 10) choices.push(1);
+    if (levelMaxHealth < 10) choices.push(2);
+    if (levelRegen < 10) choices.push(3);
+    if (!choices.length) return;
+
+    const attr = choices[Math.floor(Math.random() * choices.length)];
+    bot.tryUpgradeBuff(attr);
 }
 
 function findNearestDesiredLoot(bot, maxRange) {
@@ -855,6 +979,7 @@ function findNearestHumanPlayer(bot, maxRange) {
 
 function findNearestCombatPlayer(bot, maxRange, options = {}) {
     const realOnly = !!options.realOnly;
+    const targetFilter = typeof options.targetFilter === 'function' ? options.targetFilter : null;
     const maxRangeSq = maxRange * maxRange;
     let nearest = null;
     let nearestDistSq = maxRangeSq + 1;
@@ -865,6 +990,7 @@ function findNearestCombatPlayer(bot, maxRange, options = {}) {
         if (realOnly && p.isBot) continue;
         if ((p.world || 'main') !== (bot.world || 'main')) continue;
         if (shouldIgnoreCombatBetween(bot, p)) continue;
+        if (targetFilter && !targetFilter(p)) continue;
 
         const dx = p.x - bot.x;
         const dy = p.y - bot.y;
@@ -878,7 +1004,7 @@ function findNearestCombatPlayer(bot, maxRange, options = {}) {
     return nearest ? { player: nearest, distSq: nearestDistSq } : null;
 }
 
-function findNearestCoin(bot, maxRange) {
+function findNearestCoin(bot, maxRange, excludedIds = null) {
     if (!canBotStoreMoreCoins(bot)) return null;
     const maxRangeSq = maxRange * maxRange;
     let nearest = null;
@@ -888,6 +1014,7 @@ function findNearestCoin(bot, maxRange) {
     for (const id in ENTITIES.OBJECTS) {
         const obj = ENTITIES.OBJECTS[id];
         if (!obj || !isCoinObjectType(obj.type)) continue;
+        if (excludedIds && excludedIds.has(obj.id)) continue;
         if ((obj.world || 'main') !== (bot.world || 'main')) continue;
         if (obj.collectorId) continue;
         if ((obj.teleportTicks || 0) > 0) continue;
@@ -931,7 +1058,7 @@ function findNearestBetterSwordLoot(bot, maxRange) {
     return nearest ? { target: nearest, distSq: nearestDistSq } : null;
 }
 
-function findNearestChest(bot, maxRange) {
+function findNearestChest(bot, maxRange, excludedIds = null) {
     const maxRangeSq = maxRange * maxRange;
     let nearest = null;
     let nearestDistSq = maxRangeSq + 1;
@@ -939,6 +1066,7 @@ function findNearestChest(bot, maxRange) {
     for (const id in ENTITIES.OBJECTS) {
         const obj = ENTITIES.OBJECTS[id];
         if (!obj || !isChestObjectType(obj.type)) continue;
+        if (excludedIds && excludedIds.has(obj.id)) continue;
         if ((obj.world || 'main') !== (bot.world || 'main')) continue;
 
         const dx = obj.x - bot.x;
@@ -1284,6 +1412,7 @@ function configureBotPlayer(bot) {
     bot._botNextLookAt = 0;
     bot._botNextThrowAt = 0;
     bot._botNextDecisionAt = 0;
+    bot._botNextBuffUpgradeAt = 0;
     bot._botHunterTargetId = role === BOT_ROLE_PRO ? (bot._botHunterTargetId || 0) : 0;
     bot._botAssistTargetId = 0;
     bot.lastX = bot.x;
@@ -1339,6 +1468,7 @@ function respawnBot(bot) {
     bot._botNextLookAt = 0;
     bot._botNextThrowAt = 0;
     bot._botNextDecisionAt = 0;
+    bot._botNextBuffUpgradeAt = 0;
     bot._botHunterTargetId = role === BOT_ROLE_PRO ? prevHunterTargetId : 0;
     bot._botAssistTargetId = 0;
 
@@ -1483,11 +1613,20 @@ export function updateBotPlayers(now = performance.now()) {
     const realPlayers = Object.values(ENTITIES.PLAYERS).filter(p => p && !p.isBot);
     refreshTeamerAssignments(now);
     refreshHunterAssignments(realPlayers, now);
+    const teamCoinReservations = new Map();
+    const teamChestReservations = new Map();
+    const getTeamReservationSet = (store, group) => {
+        if (!store.has(group)) store.set(group, new Set());
+        return store.get(group);
+    };
     for (const id in ENTITIES.PLAYERS) {
         const bot = ENTITIES.PLAYERS[id];
         if (!bot || !bot.isBot) continue;
         if ((bot.world || 'main') !== 'main') continue;
         const role = getBotRole(bot);
+        const teamGroup = getBotTeamGroup(bot);
+        const reservedCoins = teamGroup > 0 ? getTeamReservationSet(teamCoinReservations, teamGroup) : null;
+        const reservedChests = teamGroup > 0 ? getTeamReservationSet(teamChestReservations, teamGroup) : null;
         bot._botHasLockedTarget = false;
 
         if (!bot.isAlive) {
@@ -1501,6 +1640,7 @@ export function updateBotPlayers(now = performance.now()) {
             continue;
         }
         bot._botNextDecisionAt = now + BOT_DECISION_INTERVAL_MS;
+        tryBotSpendBuffPoints(bot, now);
 
         const hunterTargetId = bot._botHunterTargetId || 0;
         const hunterTarget = getHunterTarget(bot);
@@ -1525,6 +1665,17 @@ export function updateBotPlayers(now = performance.now()) {
             bot.attacking = 0;
             bot._botHasLockedTarget = true;
         } else {
+            if (role === BOT_ROLE_PRO || role === BOT_ROLE_CASUAL) {
+                const polarThreat = findNearestPolarBear(bot, BOT_POLAR_BEAR_AVOID_RANGE);
+                if (polarThreat) {
+                    bot._botHasLockedTarget = true;
+                    bot.attacking = 0;
+                    moveAwayFrom(bot, polarThreat.target.x, polarThreat.target.y);
+                    bot._botNextMoveAt = now + 80 + Math.floor(Math.random() * 120);
+                    continue;
+                }
+            }
+
             // If this bot is assigned as a hunter, it may only target its assigned real player.
             // No fallback to other players, mobs, chests, or coins while assignment exists.
             if (hunterTargetId && !hunterTarget) {
@@ -1539,7 +1690,9 @@ export function updateBotPlayers(now = performance.now()) {
             } else if (assistTarget) {
                 playerTarget = assistTarget;
             } else if (role === BOT_ROLE_PRO) {
-                playerTarget = findNearestCombatPlayer(bot, BOT_AGGRO_RANGE);
+                playerTarget = findNearestCombatPlayer(bot, BOT_AGGRO_RANGE, {
+                    targetFilter: (target) => canHunterEngageTarget(bot, target)
+                });
             } else {
                 playerTarget = getRetaliationTarget(bot, BOT_AGGRO_RANGE, now);
             }
@@ -1564,17 +1717,19 @@ export function updateBotPlayers(now = performance.now()) {
                 }
 
                 // Priority 2: Chest & Coins
-                const coinTarget = findNearestCoin(bot, BOT_COIN_RANGE);
-                const chestTarget = findNearestChest(bot, BOT_PVE_RANGE);
+                const coinTarget = findNearestCoin(bot, BOT_COIN_RANGE, reservedCoins);
+                const chestTarget = findNearestChest(bot, BOT_PVE_RANGE, reservedChests);
                 const pickCoin = coinTarget && (!chestTarget || coinTarget.distSq <= chestTarget.distSq);
 
                 if (pickCoin) {
+                    if (reservedCoins) reservedCoins.add(coinTarget.target.id);
                     bot._botHasLockedTarget = true;
                     bot.attacking = 0;
                     moveToward(bot, coinTarget.target.x, coinTarget.target.y);
                     bot.tryPickup();
                     bot._botNextMoveAt = now + 80 + Math.floor(Math.random() * 140);
                 } else if (chestTarget) {
+                    if (reservedChests) reservedChests.add(chestTarget.target.id);
                     bot._botHasLockedTarget = true;
                     moveAroundCombatTarget(bot, chestTarget.target.x, chestTarget.target.y, chestTarget.distSq, now);
                     bot.attacking = chestTarget.distSq <= (BOT_CHEST_ATTACK_RANGE * BOT_CHEST_ATTACK_RANGE) ? 1 : 0;

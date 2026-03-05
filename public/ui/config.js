@@ -1,21 +1,24 @@
 // --- Configuration & Constants ---
 export const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-export const THROW_BTN_CONFIG = { xOffset: 70, yOffset: 140, radius: 45, touchPadding: 15 };
-export const PICKUP_BTN_CONFIG = { xOffset: 180, yOffset: 140, radius: 45, touchPadding: 20 };
-export const DROP_BTN_CONFIG = { xOffset: 70, yOffset: 260, radius: 40, touchPadding: 15 };
-export const ATTACK_BTN_CONFIG = { xOffset: 160, yOffset: 260, radius: 55, touchPadding: 20 };
+const MOBILE_SHORT_EDGE = Math.min(window.innerWidth || 0, window.innerHeight || 0);
+const IS_COMPACT_MOBILE = isMobile && MOBILE_SHORT_EDGE > 0 && MOBILE_SHORT_EDGE <= 430;
+
+export const THROW_BTN_CONFIG = { xOffset: IS_COMPACT_MOBILE ? 58 : 66, yOffset: IS_COMPACT_MOBILE ? 124 : 136, radius: IS_COMPACT_MOBILE ? 40 : 44, touchPadding: 15 };
+export const PICKUP_BTN_CONFIG = { xOffset: IS_COMPACT_MOBILE ? 156 : 176, yOffset: IS_COMPACT_MOBILE ? 124 : 136, radius: IS_COMPACT_MOBILE ? 40 : 44, touchPadding: 20 };
+export const DROP_BTN_CONFIG = { xOffset: IS_COMPACT_MOBILE ? 58 : 66, yOffset: IS_COMPACT_MOBILE ? 226 : 248, radius: IS_COMPACT_MOBILE ? 36 : 40, touchPadding: 15 };
+export const ATTACK_BTN_CONFIG = { xOffset: IS_COMPACT_MOBILE ? 146 : 158, yOffset: IS_COMPACT_MOBILE ? 226 : 248, radius: IS_COMPACT_MOBILE ? 50 : 54, touchPadding: 20 };
 
 export const HOTBAR_CONFIG = {
-    slotSize: isMobile ? 75 : 60,
-    gap: isMobile ? 12 : 10,
-    padding: isMobile ? 12 : 10,
-    marginBottom: isMobile ? 25 : 20,
+    slotSize: isMobile ? (IS_COMPACT_MOBILE ? 62 : 68) : 60,
+    gap: isMobile ? (IS_COMPACT_MOBILE ? 8 : 10) : 10,
+    padding: isMobile ? (IS_COMPACT_MOBILE ? 10 : 11) : 10,
+    marginBottom: isMobile ? (IS_COMPACT_MOBILE ? 18 : 22) : 20,
     touchPadding: isMobile ? 30 : 20
 };
 
 export const ACCESSORY_SLOT_CONFIG = {
-    size: Math.round(HOTBAR_CONFIG.slotSize * (isMobile ? 1.15 : 1.05)),
-    gap: isMobile ? 14 : 12,
+    size: Math.round(HOTBAR_CONFIG.slotSize * (isMobile ? 1.1 : 1.05)),
+    gap: isMobile ? (IS_COMPACT_MOBILE ? 10 : 12) : 12,
     touchPadding: isMobile ? 20 : 10
 };
 
@@ -126,6 +129,16 @@ export const UPDATES_LOG = [
             "Added NPC players!",
         ],
         date: '2026-03-03'
+    },
+    {
+        version: '1.4.2',
+        changes: [
+            "Fixed coin hitbox bug",
+            "Added Level system + attribute buffs. Level up, get upgrade points and get better stats!",
+            "Mobile UI Fixes.",
+            "Fixed extreme lag when energy burst ability is used.",
+        ],
+        date: '2026-03-05'
     }
 ];
 

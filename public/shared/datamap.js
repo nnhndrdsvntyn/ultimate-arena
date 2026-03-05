@@ -5,6 +5,14 @@ export const TPS = {
 };
 
 export const DEFAULT_VIEW_RANGE_MULT = 2 / 3;
+export const MAX_LEVEL = 30;
+export const xpForLevel = (level) => Math.floor(100 * 1.3 ** (Math.max(1, level | 0) - 1));
+export const XP_SHOP_ITEMS = [
+    { id: 201, name: '1,000 XP', xp: 1000, price: 100 },
+    { id: 202, name: '2,500 XP', xp: 2500, price: 250 },
+    { id: 203, name: '5,000 XP', xp: 5000, price: 500 },
+    { id: 204, name: '10,000 XP', xp: 10000, price: 1000 }
+];
 
 const createAsset = (name, src, type) => ({ name, src, type });
 
@@ -194,6 +202,7 @@ export const dataMap = {
         { id: 7, name: "Boulder Blade", price: 340, img: "sword7" },
         { id: 8, name: "Icicle Blade", price: 400, img: "sword8" }
     ],
+    XP_SHOP_ITEMS,
     ACCESSORY_PRICES: {
         'bush-cloak': 100,
         'sunglasses': 100,
@@ -321,6 +330,17 @@ export function isAccessoryItemType(type) {
         type < ACCESSORY_ITEM_OFFSET + ACCESSORY_KEYS.length;
 }
 
+const XP_SHOP_ID_SET = new Set(XP_SHOP_ITEMS.map(item => item.id));
+const XP_SHOP_BY_ID = new Map(XP_SHOP_ITEMS.map(item => [item.id, item]));
+
+export function isXpShopItemType(type) {
+    return XP_SHOP_ID_SET.has(type);
+}
+
+export function getXpShopItemConfig(type) {
+    return XP_SHOP_BY_ID.get(type) || null;
+}
+
 export const SWORD_IDS = Object.keys(dataMap.SWORDS.imgs)
     .map(k => parseInt(k))
     .filter(id => Number.isFinite(id) && id > 0)
@@ -361,6 +381,16 @@ export function isChestObjectType(type) {
 
 export function isSellableItem(type) {
     return isSwordRank(type);
+}
+
+export function getLevelFromXp(xp) {
+    let remaining = Math.max(0, Math.floor(Number.isFinite(xp) ? xp : 0));
+    let level = 1;
+    while (level < MAX_LEVEL && remaining > xpForLevel(level)) {
+        remaining -= xpForLevel(level);
+        level++;
+    }
+    return level;
 }
 
 if (typeof window !== 'undefined') {

@@ -27,9 +27,9 @@ import {
     updateShieldUI
 } from './hud.js';
 import { ACCESSORY_KEYS } from '../shared/datamap.js';
-import { createSettingsButton, createSettingsModal, updateSettingsBody } from './settings.js';
-import { createShopButton, createShopModal, updateShopBody } from './shop.js';
-import { createChatUI } from './chat.js';
+import { createSettingsButton, createSettingsModal, updateSettingsBody, toggleSettingsModal } from './settings.js';
+import { createShopButton, createShopModal, updateShopBody, toggleShopModal } from './shop.js';
+import { createChatUI, closeChatInput } from './chat.js';
 import {
     setupKeyboardControls,
     setupDesktopControls,
@@ -186,6 +186,13 @@ export function initializeUI() {
 
     updateHUDVisibility(false);
     updateMobileUIState();
+}
+
+export function closeHomeScreenBlockingUI() {
+    if (uiState.isSettingsOpen) toggleSettingsModal(false);
+    if (uiState.isShopOpen) toggleShopModal(false);
+    if (uiState.isInventoryOpen) toggleInventoryModal(false);
+    if (uiState.isChatOpen) closeChatInput();
 }
 
 // --- Periodic Updates ---

@@ -1,14 +1,14 @@
 import { parsePacket } from './parser.js';
 import { LibCanvas } from './libcanvas.js';
 import { ENTITIES, MAP_SIZE } from './game.js';
-import { dataMap, TPS, ACCESSORY_KEYS, isAccessoryItemType, accessoryIdFromItemType, DEFAULT_VIEW_RANGE_MULT, isCoinObjectType, getCoinObjectType, isChestObjectType } from './shared/datamap.js';
+import { dataMap, TPS, ACCESSORY_KEYS, isAccessoryItemType, accessoryIdFromItemType, DEFAULT_VIEW_RANGE_MULT, isCoinObjectType, getCoinObjectType, isChestObjectType, xpForLevel, MAX_LEVEL } from './shared/datamap.js';
 import {
     initializeUI, updateShieldUI, updateHUDVisibility,
     THROW_BTN_CONFIG, PICKUP_BTN_CONFIG, DROP_BTN_CONFIG, ATTACK_BTN_CONFIG,
-    isMobile, HOTBAR_CONFIG, INVENTORY_CONFIG, ACCESSORY_SLOT_CONFIG, uiState
+    isMobile, HOTBAR_CONFIG, INVENTORY_CONFIG, ACCESSORY_SLOT_CONFIG, uiState, closeHomeScreenBlockingUI
 } from './ui.js';
 import { BACK_BUFFER_QUALITIES, BACK_BUFFER_DEFAULT, BACK_BUFFER_STORAGE_KEY } from './ui/config.js';
-import { encodeUsername, sendTutorialEvent } from './helpers.js';
+import { encodeUsername, sendTutorialEvent, sendUpgradePacket } from './helpers.js';
 
 // --- Configuration & Settings ---
 export const Settings = {
@@ -130,7 +130,21 @@ export const Vars = {
     lastSelectionTime: 0,
     mouseX: 0,
     mouseY: 0,
-    myStats: { dmgHit: 0, dmgThrow: 0, speed: 0, hp: 100, maxHp: 100, goldCoins: 0, kills: 0 },
+    myStats: {
+        dmgHit: 0,
+        dmgThrow: 0,
+        speed: 0,
+        hp: 100,
+        maxHp: 100,
+        goldCoins: 0,
+        kills: 0,
+        level: 1,
+        availablePoints: 0,
+        buffStrength: 0,
+        buffMaxHealth: 0,
+        buffRegenSpeed: 0,
+        regenPerTick: 5
+    },
     inCombat: false,
     onlineCount: 0,
     vikingComboCount: 0,
@@ -143,7 +157,13 @@ export const Vars = {
     tutorialObjectiveStatus: 0,
     tutorialObjectiveStep: -1,
     tutorialObjectiveText: '',
-    tutorialObjectiveUpdatedAt: 0
+    tutorialObjectiveUpdatedAt: 0,
+    topLeader: {
+        id: 0,
+        x: 0,
+        y: 0,
+        score: 0
+    }
 };
 
 const DAMAGE_INDICATOR_DURATION = 800;
@@ -167,6 +187,7 @@ const tutorialFocusUi = {
     rootEl: null,
     blocks: [],
     ringEl: null,
+    hintEl: null,
     closeAckSent: false
 };
 const tutorialIndicatorUi = {
@@ -177,6 +198,23 @@ const tutorialIndicatorUi = {
     height: 0
 };
 let worldChoiceInProgress = false;
+let lastUpgradeRequestAt = 0;
+const hudUpgradeHitboxes = [];
+let hudUpgradeHeaderHitbox = null;
+let hudUpgradesExpanded = true;
+let hudUpgradeSlideOffset = 0;
+const HUD_UPGRADE_LAYOUT = {
+    x: 20,
+    topY: 296,
+    rowHeight: 30,
+    rowGap: 10,
+    totalWidth: 330,
+    rightPad: 12,
+    segments: 10,
+    segmentGap: 2
+};
+const HUD_UPGRADE_SLIDE_LERP = 0.22;
+let hudLevelBarProgress = 0;
 
 export function addDamageIndicator(worldX, worldY, amount) {
     if (!Number.isFinite(worldX) || !Number.isFinite(worldY)) return;
@@ -454,6 +492,7 @@ async function loadAssets() {
         }))
     );
     assets.push({ type: 'image', name: 'ui-skull', src: './images/ui/skull.png' });
+    assets.push({ type: 'image', name: 'ui-crown', src: './images/ui/crown.png' });
 
     loadingState.totalAssets = assets.length;
     loadingState.header = 'Loading Assets';
@@ -920,6 +959,9 @@ function updateHUD(lp) {
     const respawnScreen = document.getElementById('respawn-screen');
 
     if (uiState.forceHomeScreen) {
+        hudUpgradeHitboxes.length = 0;
+        hudUpgradeHeaderHitbox = null;
+        closeHomeScreenBlockingUI();
         updateTutorialGuidedShopFocus();
         if (homeScreen) homeScreen.style.display = 'flex';
         if (respawnScreen) respawnScreen.style.display = 'none';
@@ -929,6 +971,8 @@ function updateHUD(lp) {
     }
 
     if (!isAlive) {
+        hudUpgradeHitboxes.length = 0;
+        hudUpgradeHeaderHitbox = null;
         updateTutorialGuidedShopFocus();
         const shouldShowRespawn = !uiState.forceHomeScreen && (Vars.lastDiedTime > 0);
         if (shouldShowRespawn) {
@@ -937,6 +981,7 @@ function updateHUD(lp) {
             updateHomeOnlineCount(false);
             updateRespawnButton();
         } else {
+            closeHomeScreenBlockingUI();
             if (homeScreen) homeScreen.style.display = 'flex';
             if (respawnScreen) respawnScreen.style.display = 'none';
             updateHomeOnlineCount(true);
@@ -949,10 +994,9 @@ function updateHUD(lp) {
         updateHomeOnlineCount(false);
         drawInfoBox(lp);
         drawLeaderboard();
-        if (Settings.showMinimap) {
-            drawMinimap();
-            drawKillCounter();
-        }
+        if (Settings.showMinimap) drawMinimap();
+        drawKillCounter();
+        drawUpgradeBars();
         drawInCombatLabel();
         drawTutorialObjective();
         drawTutorialTargetIndicator();
@@ -968,10 +1012,31 @@ function drawTutorialObjective() {
     if (CURRENT_WORLD !== WORLD_TUTORIAL) return;
     if (!Vars.tutorialObjectiveVisible || !Vars.tutorialObjectiveText) return;
 
-    const panelWidth = Math.min(620, Math.max(360, LC.width * 0.6));
-    const panelHeight = 56;
+    const topBar = document.getElementById('top-left-bar');
+    const topBarBottom = topBar ? (topBar.getBoundingClientRect().bottom * (LC.height / Math.max(1, window.innerHeight))) : 0;
+    const panelHeight = isMobile ? 64 : 56;
+    let panelY = Math.max(18, Math.floor(topBarBottom + 10));
+    const mobileTextByStep = {
+        0: 'Use the joystick to move.',
+        1: 'Tap ATTACK.',
+        2: 'Tap THROW.',
+        3: 'Break this chest.',
+        4: 'Walk over the coins to collect them.',
+        5: 'Open shop and buy Branch Sword.',
+        6: 'Tap the slot with the new sword to equip it.',
+        7: 'Eliminate the pig.',
+        8: 'Tutorial complete.'
+    };
+    const objectiveText = (isMobile && CURRENT_WORLD === WORLD_TUTORIAL)
+        ? (mobileTextByStep[Vars.tutorialObjectiveStep] || Vars.tutorialObjectiveText)
+        : Vars.tutorialObjectiveText;
+    const font = isMobile ? '700 20px Inter' : '700 22px Inter';
+    const textMetrics = LC.measureText({ text: objectiveText, font });
+    const horizontalPadding = isMobile ? 36 : 42;
+    const minPanelWidth = isMobile ? 280 : 320;
+    const maxPanelWidth = Math.max(minPanelWidth, LC.width - 40);
+    const panelWidth = Math.min(maxPanelWidth, Math.max(minPanelWidth, Math.ceil(textMetrics.width + horizontalPadding)));
     const panelX = (LC.width - panelWidth) * 0.5;
-    const panelY = 18;
 
     const isComplete = Vars.tutorialObjectiveStatus === 1;
     const borderColor = isComplete ? 'rgba(34, 197, 94, 0.95)' : 'rgba(255, 255, 255, 0.92)';
@@ -987,9 +1052,9 @@ function drawTutorialObjective() {
         cornerRadius: 10
     });
     LC.drawText({
-        text: Vars.tutorialObjectiveText,
+        text: objectiveText,
         pos: [LC.width / 2, panelY + (panelHeight / 2) + 6],
-        font: '700 22px Inter',
+        font,
         color: textColor,
         textAlign: 'center'
     });
@@ -1103,6 +1168,26 @@ function getTutorialWorldTarget(step) {
         return { worldX: best.x, worldY: best.y };
     }
 
+    if (step === 4) {
+        let best = null;
+        let bestDistSq = Infinity;
+        for (const o of Object.values(ENTITIES.OBJECTS)) {
+            if (!o || !isCoinObjectType(o.type)) continue;
+            const dx = o.x - localPlayer.x;
+            const dy = o.y - localPlayer.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestDistSq) {
+                bestDistSq = d2;
+                best = o;
+            }
+        }
+        if (!best) return null;
+        const dx = best.x - localPlayer.x;
+        const dy = best.y - localPlayer.y;
+        if ((dx * dx + dy * dy) <= (300 * 300)) return null;
+        return { worldX: best.x, worldY: best.y };
+    }
+
     if (step === 7) {
         let best = null;
         let bestDistSq = Infinity;
@@ -1128,6 +1213,20 @@ function getTutorialWorldTarget(step) {
 
 function getTutorialUiTarget(step) {
     if (CURRENT_WORLD !== WORLD_TUTORIAL) return null;
+    if (isMobile) {
+        const toScreen = (lx, ly) => ({
+            x: lx * (window.innerWidth / Math.max(1, LC.width)),
+            y: ly * (window.innerHeight / Math.max(1, LC.height))
+        });
+        if (step === 1) {
+            const p = toScreen(LC.width - ATTACK_BTN_CONFIG.xOffset, LC.height - ATTACK_BTN_CONFIG.yOffset);
+            return { screenX: p.x, screenY: p.y, rectWidth: ATTACK_BTN_CONFIG.radius * 2, rectHeight: ATTACK_BTN_CONFIG.radius * 2 };
+        }
+        if (step === 2) {
+            const p = toScreen(LC.width - THROW_BTN_CONFIG.xOffset, LC.height - THROW_BTN_CONFIG.yOffset);
+            return { screenX: p.x, screenY: p.y, rectWidth: THROW_BTN_CONFIG.radius * 2, rectHeight: THROW_BTN_CONFIG.radius * 2 };
+        }
+    }
     if (step !== 5) return null;
 
     const hasRank2 = hasRank2SwordInInventory();
@@ -1142,6 +1241,12 @@ function getTutorialUiTarget(step) {
     if (!targetEl) return null;
     const rect = targetEl.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
+    if (isMobile) {
+        const viewportHeight = (window.visualViewport?.height || window.innerHeight || 0);
+        const margin = 12;
+        const isVerticallyVisible = rect.top >= margin && rect.bottom <= (viewportHeight - margin);
+        if (!isVerticallyVisible) return null;
+    }
     return {
         screenX: rect.left + rect.width / 2,
         screenY: rect.top + rect.height / 2,
@@ -1211,7 +1316,7 @@ function ensureTutorialFocusUi() {
         Object.assign(block.style, {
             position: 'fixed',
             background: 'rgba(0, 0, 0, 0.72)',
-            pointerEvents: 'auto'
+            pointerEvents: 'none'
         });
         root.appendChild(block);
         return block;
@@ -1227,7 +1332,29 @@ function ensureTutorialFocusUi() {
         pointerEvents: 'none'
     });
     root.appendChild(ring);
+
+    const hint = document.createElement('div');
+    Object.assign(hint.style, {
+        position: 'fixed',
+        left: '50%',
+        top: 'calc(env(safe-area-inset-top) + 56px)',
+        transform: 'translateX(-50%)',
+        maxWidth: 'min(92vw, 420px)',
+        padding: '10px 14px',
+        borderRadius: '10px',
+        border: '1px solid rgba(255,255,255,0.3)',
+        background: 'rgba(8, 15, 35, 0.82)',
+        color: 'white',
+        font: '700 13px Inter, sans-serif',
+        textAlign: 'center',
+        letterSpacing: '0.01rem',
+        pointerEvents: 'none',
+        display: 'none'
+    });
+    root.appendChild(hint);
+
     tutorialFocusUi.ringEl = ring;
+    tutorialFocusUi.hintEl = hint;
     tutorialFocusUi.rootEl = root;
     document.body.appendChild(root);
 }
@@ -1236,6 +1363,17 @@ function hideTutorialFocus() {
     ensureTutorialFocusUi();
     if (!tutorialFocusUi.rootEl) return;
     tutorialFocusUi.rootEl.style.display = 'none';
+    if (tutorialFocusUi.hintEl) tutorialFocusUi.hintEl.style.display = 'none';
+}
+
+function showTutorialScrollHint(message) {
+    ensureTutorialFocusUi();
+    if (!tutorialFocusUi.rootEl || !tutorialFocusUi.hintEl) return;
+    for (const b of tutorialFocusUi.blocks) b.style.display = 'none';
+    if (tutorialFocusUi.ringEl) tutorialFocusUi.ringEl.style.display = 'none';
+    tutorialFocusUi.hintEl.textContent = message || '';
+    tutorialFocusUi.hintEl.style.display = message ? 'block' : 'none';
+    tutorialFocusUi.rootEl.style.display = 'block';
 }
 
 function setTutorialFocusTarget(targetEl) {
@@ -1259,6 +1397,8 @@ function setTutorialFocusTarget(targetEl) {
     const bottom = Math.min(vh, rect.bottom + pad);
 
     const [bTop, bLeft, bRight, bBottom] = tutorialFocusUi.blocks;
+    for (const b of tutorialFocusUi.blocks) b.style.display = 'block';
+    if (tutorialFocusUi.ringEl) tutorialFocusUi.ringEl.style.display = 'block';
     Object.assign(bTop.style, { left: '0px', top: '0px', width: `${vw}px`, height: `${Math.max(0, top)}px` });
     Object.assign(bLeft.style, { left: '0px', top: `${top}px`, width: `${Math.max(0, left)}px`, height: `${Math.max(0, bottom - top)}px` });
     Object.assign(bRight.style, { left: `${right}px`, top: `${top}px`, width: `${Math.max(0, vw - right)}px`, height: `${Math.max(0, bottom - top)}px` });
@@ -1286,6 +1426,8 @@ function updateTutorialGuidedShopFocus() {
     }
     if (!Vars.tutorialObjectiveVisible || Vars.tutorialObjectiveStep !== 5) {
         tutorialFocusUi.closeAckSent = false;
+        const shopModalEl = document.querySelector('.shop-modal');
+        if (shopModalEl) shopModalEl.classList.remove('drag-disabled');
         hideTutorialFocus();
         return;
     }
@@ -1307,6 +1449,26 @@ function updateTutorialGuidedShopFocus() {
         targetEl = document.getElementById('shopCloseBtn') || document.querySelector('.shop-modal .close-settings');
     }
 
+    const shopModalEl = document.querySelector('.shop-modal');
+    if (shopModalEl) {
+        // During guided buy step, keep modal fixed for better mobile UX.
+        if (uiState.isShopOpen && !hasRank2) shopModalEl.classList.add('drag-disabled');
+        else shopModalEl.classList.remove('drag-disabled');
+    }
+
+    if (isMobile && uiState.isShopOpen && !hasRank2) {
+        const rect = targetEl?.getBoundingClientRect();
+        const viewportHeight = (window.visualViewport?.height || window.innerHeight || 0);
+        const margin = 12;
+        const targetVisible = !!rect && rect.width > 0 && rect.height > 0 && rect.top >= margin && rect.bottom <= (viewportHeight - margin);
+        if (!targetVisible) {
+            hideTutorialFocus(); // Do not block touches while user scrolls the shop.
+            showTutorialScrollHint('Scroll to find the Branch Sword, then tap Buy.');
+            return;
+        }
+    }
+
+    showTutorialScrollHint('');
     if (targetEl) setTutorialFocusTarget(targetEl);
     else hideTutorialFocus();
 }
@@ -1862,6 +2024,17 @@ function drawMinimap() {
     if (Settings.showPlayersOnMinimap) Object.values(ENTITIES.PLAYERS).filter(p => p.id !== Vars.myId && p.isAlive).forEach(p => drawDot(p, 'red'));
     const lp = ENTITIES.PLAYERS[Vars.myId];
     if (lp) drawDot(lp, 'white');
+
+    const top = Vars.topLeader;
+    if (top?.id > 0 && Number.isFinite(top.x) && Number.isFinite(top.y) && LC.images?.['ui-crown']) {
+        const dx = (top.x / MAP_SIZE[0]) * size;
+        const dy = (top.y / MAP_SIZE[1]) * size;
+        LC.drawImage({
+            name: 'ui-crown',
+            pos: [x + dx - 10, y + dy - 10],
+            size: [20, 20]
+        });
+    }
 }
 
 function drawKillCounter() {
@@ -1893,6 +2066,187 @@ function drawKillCounter() {
         color: 'white',
         textAlign: 'left'
     });
+}
+
+function drawUpgradeBars() {
+    hudUpgradeHitboxes.length = 0;
+    const points = Math.max(0, Vars.myStats.availablePoints || 0);
+    const rows = [
+        { name: 'Strength', level: Math.max(0, Math.min(10, Vars.myStats.buffStrength || 0)), color: '#ef6b6b', attrType: 1 },
+        { name: 'Max Health', level: Math.max(0, Math.min(10, Vars.myStats.buffMaxHealth || 0)), color: '#f0b27a', attrType: 2 },
+        { name: 'Regeneration', level: Math.max(0, Math.min(10, Vars.myStats.buffRegenSpeed || 0)), color: '#d06de6', attrType: 3 }
+    ];
+
+    const x = HUD_UPGRADE_LAYOUT.x;
+    const y = HUD_UPGRADE_LAYOUT.topY;
+    const rowH = HUD_UPGRADE_LAYOUT.rowHeight;
+    const rowGap = HUD_UPGRADE_LAYOUT.rowGap;
+    const width = HUD_UPGRADE_LAYOUT.totalWidth;
+    const barW = width - HUD_UPGRADE_LAYOUT.rightPad;
+    const rowCornerRadius = 14;
+    const segmentInset = 4;
+    const segmentTrackW = barW - (segmentInset * 2);
+    const segmentW = (segmentTrackW - (HUD_UPGRADE_LAYOUT.segmentGap * (HUD_UPGRADE_LAYOUT.segments - 1))) / HUD_UPGRADE_LAYOUT.segments;
+    const edgeSegmentRadius = Math.max(2, rowCornerRadius - segmentInset);
+    const drawUpgradeSegment = ({ x, y, width, height, color, roundLeft = false, roundRight = false, radius = 0 }) => {
+        const r = Math.max(0, Math.min(radius, width * 0.5, height * 0.5));
+        const ctx = LC.ctx;
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(x + (roundLeft ? r : 0), y);
+        ctx.lineTo(x + width - (roundRight ? r : 0), y);
+        if (roundRight) {
+            ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+        }
+        ctx.lineTo(x + width, y + height - (roundRight ? r : 0));
+        if (roundRight) {
+            ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+        }
+        ctx.lineTo(x + (roundLeft ? r : 0), y + height);
+        if (roundLeft) {
+            ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+        }
+        ctx.lineTo(x, y + (roundLeft ? r : 0));
+        if (roundLeft) {
+            ctx.quadraticCurveTo(x, y, x + r, y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    };
+    const hiddenOffset = -(barW + 24);
+    const targetOffset = hudUpgradesExpanded ? 0 : hiddenOffset;
+    hudUpgradeSlideOffset += (targetOffset - hudUpgradeSlideOffset) * HUD_UPGRADE_SLIDE_LERP;
+    if (Math.abs(targetOffset - hudUpgradeSlideOffset) < 0.25) {
+        hudUpgradeSlideOffset = targetOffset;
+    }
+    const headerText = `UPGRADES (${points}) ${hudUpgradesExpanded ? '◀' : '▶'}`;
+
+    hudUpgradeHeaderHitbox = {
+        x: x,
+        y: y - 24,
+        width: 175,
+        height: 24
+    };
+
+    LC.drawText({
+        text: headerText,
+        pos: [x + 6, y - 8],
+        font: '900 16px Inter',
+        color: 'white',
+        textAlign: 'left'
+    });
+
+    rows.forEach((row, idx) => {
+        const rowY = y + (idx * (rowH + rowGap));
+        const rowX = x + hudUpgradeSlideOffset;
+        const canUpgrade = points > 0 && row.level < 10;
+
+        LC.drawRect({
+            pos: [rowX, rowY],
+            size: [barW, rowH],
+            color: 'rgba(0,0,0,0.52)',
+            stroke: canUpgrade ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.2)',
+            strokeWidth: 2,
+            cornerRadius: rowCornerRadius
+        });
+
+        const segStartX = rowX + segmentInset;
+        for (let i = 0; i < HUD_UPGRADE_LAYOUT.segments; i++) {
+            const segX = segStartX + i * (segmentW + HUD_UPGRADE_LAYOUT.segmentGap);
+            drawUpgradeSegment({
+                x: segX,
+                y: rowY + 4,
+                width: segmentW,
+                height: rowH - 8,
+                color: i < row.level ? row.color : 'rgba(150, 170, 170, 0.38)',
+                roundLeft: i === 0,
+                roundRight: i === HUD_UPGRADE_LAYOUT.segments - 1,
+                radius: edgeSegmentRadius
+            });
+        }
+
+        LC.drawText({
+            text: row.name,
+            pos: [rowX + 10, rowY + 20],
+            font: 'bold 14px Inter',
+            color: 'white',
+            textAlign: 'left',
+            stroke: 'rgba(0,0,0,0.75)',
+            strokeWidth: 2
+        });
+
+        hudUpgradeHitboxes.push({
+            x: rowX,
+            y: rowY,
+            width: barW,
+            height: rowH,
+            attrType: row.attrType
+        });
+    });
+}
+
+function clientToHud(clientX, clientY) {
+    return {
+        x: clientX * (LC.width / window.innerWidth),
+        y: clientY * (LC.height / window.innerHeight)
+    };
+}
+
+export function getHudUpgradeTypeAtClientPos(clientX, clientY) {
+    const pos = clientToHud(clientX, clientY);
+    const hit = hudUpgradeHitboxes.find(h =>
+        pos.x >= h.x &&
+        pos.x <= h.x + h.width &&
+        pos.y >= h.y &&
+        pos.y <= h.y + h.height
+    );
+    return hit?.attrType || 0;
+}
+
+export function isHudUpgradeHeaderAtClientPos(clientX, clientY) {
+    if (!hudUpgradeHeaderHitbox) return false;
+    const pos = clientToHud(clientX, clientY);
+    return pos.x >= hudUpgradeHeaderHitbox.x &&
+        pos.x <= hudUpgradeHeaderHitbox.x + hudUpgradeHeaderHitbox.width &&
+        pos.y >= hudUpgradeHeaderHitbox.y &&
+        pos.y <= hudUpgradeHeaderHitbox.y + hudUpgradeHeaderHitbox.height;
+}
+
+export function toggleHudUpgradeBars() {
+    hudUpgradesExpanded = !hudUpgradesExpanded;
+}
+
+export function onHudUpgradePointsChanged(prevPoints, nextPoints) {
+    const prev = Math.max(0, Math.floor(Number.isFinite(prevPoints) ? prevPoints : 0));
+    const next = Math.max(0, Math.floor(Number.isFinite(nextPoints) ? nextPoints : 0));
+
+    // Auto-open when points increase (e.g. level-up grant).
+    if (next > prev) {
+        hudUpgradesExpanded = true;
+        return;
+    }
+
+    // Auto-close when everything is spent.
+    if (next === 0 && prev > 0) {
+        hudUpgradesExpanded = false;
+    }
+}
+
+export function tryUseHudUpgradeAtClientPos(clientX, clientY) {
+    if (isHudUpgradeHeaderAtClientPos(clientX, clientY)) {
+        toggleHudUpgradeBars();
+        return true;
+    }
+    const attrType = getHudUpgradeTypeAtClientPos(clientX, clientY);
+    if (!attrType) return false;
+    if ((Vars.myStats.availablePoints || 0) <= 0) return true;
+    const now = performance.now();
+    if (now - lastUpgradeRequestAt < 80) return true;
+    lastUpgradeRequestAt = now;
+    sendUpgradePacket(attrType);
+    return true;
 }
 
 function drawInCombatLabel() {
@@ -2019,7 +2373,58 @@ function drawHotbar() {
     LC.drawText({ text: '...', pos: [sx_more + hb.slotSize / 2, sy_more + hb.slotSize / 2 + 5], font: 'bold 24px Inter', color: 'white', textAlign: 'center' });
 
     drawAccessorySlot(x, y, totalW);
+    drawLevelProgressBar(x, y, totalW);
     drawAbilityCooldownBar(x, y, totalW);
+}
+
+function drawLevelProgressBar(hotbarX, hotbarY, hotbarWidth) {
+    const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+    if (!myPlayer) return;
+    const score = Math.max(0, Math.floor(myPlayer.score || 0));
+    const level = Math.max(1, Math.min(MAX_LEVEL, Math.floor(Vars.myStats.level || 1)));
+    let levelXp = score;
+    for (let l = 1; l < level; l++) {
+        levelXp -= xpForLevel(l);
+        if (levelXp <= 0) {
+            levelXp = 0;
+            break;
+        }
+    }
+    const atLevelCap = level >= MAX_LEVEL;
+    const xpNeeded = Math.max(1, xpForLevel(Math.min(level, MAX_LEVEL)));
+    const targetProgress = atLevelCap ? 1 : Math.max(0, Math.min(1, levelXp / xpNeeded));
+    hudLevelBarProgress += (targetProgress - hudLevelBarProgress) * 0.15;
+    if (Math.abs(targetProgress - hudLevelBarProgress) < 0.002) {
+        hudLevelBarProgress = targetProgress;
+    }
+    const progress = Math.max(0, Math.min(1, hudLevelBarProgress));
+
+    const barWidth = Math.round(hotbarWidth * 0.42);
+    const barHeight = 8;
+    const x = hotbarX + (hotbarWidth - barWidth) / 2;
+    const y = hotbarY - 56;
+
+    LC.drawRect({
+        pos: [x, y],
+        size: [barWidth, barHeight],
+        color: 'rgba(130, 130, 130, 0.45)',
+        cornerRadius: 6
+    });
+    if (progress > 0.001) {
+        LC.drawRect({
+            pos: [x, y],
+            size: [barWidth * progress, barHeight],
+            color: 'rgba(59, 130, 246, 0.95)',
+            cornerRadius: 6
+        });
+    }
+    LC.drawText({
+        text: `LVL ${level}  (${Math.round(progress * 100)}%)`,
+        pos: [x + (barWidth / 2), y - 6],
+        font: 'bold 12px Inter',
+        color: 'white',
+        textAlign: 'center'
+    });
 }
 
 function drawAbilityCooldownBar(hotbarX, hotbarY, hotbarWidth) {
@@ -2052,7 +2457,7 @@ function drawAbilityCooldownBar(hotbarX, hotbarY, hotbarWidth) {
 
     if (fillRatio >= 0.999) {
         LC.drawText({
-            text: 'Press F to activate your ability!',
+            text: (isMobile || Settings.forceMobileUI) ? 'Tap ability to activate!' : 'Press F to activate your ability!',
             pos: [x + (barWidth / 2), y - 8],
             font: 'bold 14px Inter',
             color: 'white',
@@ -2205,10 +2610,20 @@ function drawMobileButtons(lp) {
         });
     };
 
-    drawBtn(THROW_BTN_CONFIG, 'THROW', lp.hasWeapon);
-    drawBtn(ATTACK_BTN_CONFIG, 'ATTACK', lp.hasWeapon);
-    drawBtn(PICKUP_BTN_CONFIG, 'PICKUP', true);
-    drawBtn(DROP_BTN_CONFIG, 'DROP', true);
+    drawBtn(THROW_BTN_CONFIG, 'THROW', lp.hasWeapon && isTutorialMobileActionEnabled('throw'));
+    drawBtn(ATTACK_BTN_CONFIG, 'ATTACK', lp.hasWeapon && isTutorialMobileActionEnabled('attack'));
+    drawBtn(PICKUP_BTN_CONFIG, 'PICKUP', isTutorialMobileActionEnabled('pickup'));
+    drawBtn(DROP_BTN_CONFIG, 'DROP', isTutorialMobileActionEnabled('drop'));
+}
+
+export function isTutorialMobileActionEnabled(action) {
+    if (!isMobile || CURRENT_WORLD !== WORLD_TUTORIAL || !Vars.tutorialObjectiveVisible) return true;
+    const step = Vars.tutorialObjectiveStep;
+    if (action === 'attack') return step >= 1;
+    if (action === 'throw') return step >= 2;
+    if (action === 'pickup') return step >= 4;
+    if (action === 'drop') return step >= 6;
+    return true;
 }
 
 function updateJoinButton() {
@@ -2274,7 +2689,7 @@ function showTutorialChoicePrompt() {
             position: 'fixed',
             inset: '0',
             width: '100vw',
-            height: '100vh',
+            height: '100dvh',
             zIndex: '100500',
             pointerEvents: 'auto',
             backdropFilter: 'blur(8px)',
@@ -2284,27 +2699,30 @@ function showTutorialChoicePrompt() {
 
         const ctx = canvas.getContext('2d');
         const state = { hover: '' };
-        let uiW = window.innerWidth;
-        let uiH = window.innerHeight;
+        let uiW = window.visualViewport?.width || window.innerWidth;
+        let uiH = window.visualViewport?.height || window.innerHeight;
 
         const getRects = () => {
             const w = uiW;
             const h = uiH;
-            const panelW = Math.min(720, Math.max(420, Math.floor(w * 0.5)));
-            const panelH = 260;
+            const isCompact = w <= 520;
+            const panelW = Math.min(700, Math.max(isCompact ? 250 : 340, Math.floor(w * (isCompact ? 0.9 : 0.6))));
+            const panelH = isCompact ? 210 : 250;
             const panelX = Math.floor((w - panelW) / 2);
             const panelY = Math.floor((h - panelH) / 2);
-            const btnW = Math.floor((panelW - 60) / 2);
-            const btnH = 70;
-            const yes = { x: panelX + 20, y: panelY + panelH - btnH - 20, w: btnW, h: btnH };
-            const no = { x: panelX + panelW - btnW - 20, y: panelY + panelH - btnH - 20, w: btnW, h: btnH };
-            return { panelX, panelY, panelW, panelH, yes, no };
+            const btnGap = isCompact ? 12 : 20;
+            const btnPad = isCompact ? 14 : 20;
+            const btnW = Math.floor((panelW - (btnPad * 2) - btnGap) / 2);
+            const btnH = isCompact ? 54 : 70;
+            const yes = { x: panelX + btnPad, y: panelY + panelH - btnH - btnPad, w: btnW, h: btnH };
+            const no = { x: panelX + panelW - btnW - btnPad, y: panelY + panelH - btnH - btnPad, w: btnW, h: btnH };
+            return { panelX, panelY, panelW, panelH, yes, no, isCompact };
         };
 
         const draw = () => {
             const w = uiW;
             const h = uiH;
-            const { panelX, panelY, panelW, panelH, yes, no } = getRects();
+            const { panelX, panelY, panelW, panelH, yes, no, isCompact } = getRects();
 
             ctx.clearRect(0, 0, w, h);
             ctx.fillStyle = 'rgba(5, 7, 12, 0.4)';
@@ -2318,9 +2736,14 @@ function showTutorialChoicePrompt() {
             ctx.stroke();
 
             ctx.fillStyle = '#ffffff';
-            ctx.font = '900 38px Inter';
+            ctx.font = isCompact ? '900 20px Inter' : '900 34px Inter';
             ctx.textAlign = 'center';
-            ctx.fillText('Would You Like A Tutorial?', panelX + panelW / 2, panelY + 75);
+            if (isCompact || panelW < 520) {
+                ctx.fillText('Would You Like', panelX + panelW / 2, panelY + 70);
+                ctx.fillText('A Tutorial?', panelX + panelW / 2, panelY + 96);
+            } else {
+                ctx.fillText('Would You Like A Tutorial?', panelX + panelW / 2, panelY + 75);
+            }
 
             drawButton(ctx, yes, state.hover === 'yes', 'YES');
             drawButton(ctx, no, state.hover === 'no', 'NO');
@@ -2336,16 +2759,18 @@ function showTutorialChoicePrompt() {
 
         const resize = () => {
             const dpr = Math.max(1, window.devicePixelRatio || 1);
-            uiW = window.innerWidth;
-            uiH = window.innerHeight;
+            uiW = window.visualViewport?.width || window.innerWidth;
+            uiH = window.visualViewport?.height || window.innerHeight;
             canvas.width = Math.floor(uiW * dpr);
             canvas.height = Math.floor(uiH * dpr);
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             draw();
         };
+        const onViewportResize = () => resize();
 
         const cleanup = () => {
             window.removeEventListener('resize', resize);
+            if (window.visualViewport) window.visualViewport.removeEventListener('resize', onViewportResize);
             canvas.remove();
         };
 
@@ -2373,8 +2798,14 @@ function showTutorialChoicePrompt() {
         };
 
         window.addEventListener('resize', resize);
+        if (window.visualViewport) window.visualViewport.addEventListener('resize', onViewportResize);
         canvas.addEventListener('mousemove', onMove);
         canvas.addEventListener('click', onClick);
+        canvas.addEventListener('touchstart', (e) => {
+            const touch = e.changedTouches?.[0];
+            if (!touch) return;
+            onClick({ clientX: touch.clientX, clientY: touch.clientY });
+        }, { passive: true });
         resize();
     });
 }
@@ -2398,9 +2829,12 @@ function drawButton(ctx, rect, hover, label) {
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = '#fff';
-    ctx.font = '900 30px Inter';
+    const fontSize = Math.max(16, Math.min(30, Math.floor(rect.h * 0.45)));
+    ctx.font = `900 ${fontSize}px Inter`;
     ctx.textAlign = 'center';
-    ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 11);
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2);
+    ctx.textBaseline = 'alphabetic';
 }
 
 async function chooseWorldForJoinAsync() {
@@ -2462,6 +2896,7 @@ if (respawnHomeBtn) {
     respawnHomeBtn.onclick = () => {
         const homeScreen = document.getElementById('home-screen');
         const respawnScreen = document.getElementById('respawn-screen');
+        closeHomeScreenBlockingUI();
         if (homeScreen) homeScreen.style.display = 'flex';
         if (respawnScreen) respawnScreen.style.display = 'none';
         uiState.forceHomeScreen = true;

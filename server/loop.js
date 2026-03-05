@@ -10,6 +10,7 @@ import { dataMap, isCoinObjectType } from '../public/shared/datamap.js';
 import { isBotNearAnyRealPlayer, processOffscreenBot, processOffscreenHunterBot } from './bots.js';
 import { recordCollisionFrame } from './debug.js';
 let npcLogicTick = 0;
+const SPECTATOR_PROXIMITY_RANGE_DIVISOR = 1.5;
 
 /**
  * Main game logic update loop.
@@ -104,7 +105,8 @@ function processProximityProcessables(entities, range, customFn = (e) => e.proce
         const isNear = players.some(p => {
             if ((p.world || 'main') !== entityWorld) return false;
             const viewRangeMult = p.viewRangeMult || 1;
-            const scaledRange = range * viewRangeMult;
+            const spectatorRangeMult = p.isAlive ? 1 : (1 / SPECTATOR_PROXIMITY_RANGE_DIVISOR);
+            const scaledRange = range * viewRangeMult * spectatorRangeMult;
             return Math.abs(p.x - ent.x) < scaledRange && Math.abs(p.y - ent.y) < scaledRange;
         });
         if (isNear) {

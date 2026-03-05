@@ -142,6 +142,9 @@ export class Projectile extends Entity {
         this.logicOnly = false;
         this.ttlMs = 0;
         this.spawnedAt = performance.now();
+        this.expandPerTick = 0;
+        this.persistentHits = false;
+        this.hitEntities = null;
 
         this.fixedDistanceTravel = false;
         if (options && Number.isFinite(options.maxDistanceOverride) && options.maxDistanceOverride > 0) {
@@ -168,6 +171,16 @@ export class Projectile extends Entity {
         if (Number.isFinite(options?.radiusOverride) && options.radiusOverride > 0) {
             this.radius = options.radiusOverride;
         }
+        if (Number.isFinite(options?.initialRadius) && options.initialRadius > 0) {
+            this.radius = options.initialRadius;
+        }
+        if (Number.isFinite(options?.expandPerTick) && options.expandPerTick > 0) {
+            this.expandPerTick = options.expandPerTick;
+        }
+        if (options?.persistentHits) {
+            this.persistentHits = true;
+            this.hitEntities = new Set();
+        }
         if (type === 10) {
             const defaultBoltLength = (dataMap.PROJECTILES[10]?.imgProportions?.[0] || 10) * (dataMap.PROJECTILES[10]?.radius || 30);
             const visualLength = (options && Number.isFinite(options.visualLength) && options.visualLength > 0) ? options.visualLength : defaultBoltLength;
@@ -185,6 +198,13 @@ export class Projectile extends Entity {
     }
 
     move() {
+        if (this.expandPerTick > 0) {
+            this.lastX = this.x;
+            this.lastY = this.y;
+            this.radius += this.expandPerTick;
+            this.distanceTraveled += this.expandPerTick;
+            return;
+        }
         if (this.noMove) return;
         this.lastX = this.x;
         this.lastY = this.y;
@@ -209,101 +229,104 @@ export class Projectile extends Entity {
     resolveCollisions() {
         recordResolveCollisionCall();
         const shooterIsMob = typeof this.shooter?.type !== 'undefined';
+        const isPersistentWave = this.persistentHits === true;
 
         // check structures
-        for (const id in ENTITIES.STRUCTURES) {
-            const structure = ENTITIES.STRUCTURES[id];
-            if (!structure) continue;
-            if ((structure.world || 'main') !== (this.world || 'main')) continue;
-            let buffer = 0;
-            if (this.type === -1) buffer += this.radius * 0.7; // thrown swords use 70% of their size as structure-collision buffer
+        if (!isPersistentWave) {
+            for (const id in ENTITIES.STRUCTURES) {
+                const structure = ENTITIES.STRUCTURES[id];
+                if (!structure) continue;
+                if ((structure.world || 'main') !== (this.world || 'main')) continue;
+                let buffer = 0;
+                if (this.type === -1) buffer += this.radius * 0.7; // thrown swords use 70% of their size as structure-collision buffer
 
-            if (colliding(this, structure, buffer)) {
-                if (structure.type === 3) {
-                    // Bushes drain projectile power once per bush crossed.
-                    if (!this.bushesPassed.has(structure.id)) {
-                        this.bushesPassed.add(structure.id);
-                        this.damage *= 0.5;
-                    }
-                } else {
-                    // other structures block the projectile
-                    const sfx = dataMap.sfxMap.indexOf('slash-clash');
+                if (colliding(this, structure, buffer)) {
+                    if (structure.type === 3) {
+                        // Bushes drain projectile power once per bush crossed.
+                        if (!this.bushesPassed.has(structure.id)) {
+                            this.bushesPassed.add(structure.id);
+                            this.damage *= 0.5;
+                        }
+                    } else {
+                        // other structures block the projectile
+                        const sfx = dataMap.sfxMap.indexOf('slash-clash');
 
-                    const now = performance.now();
-                    if (this.shooter) {
-                        if (!this.shooter._groupHitSounds) this.shooter._groupHitSounds = new Map();
-                        const lastSoundTime = this.shooter._groupHitSounds.get(this.groupId) || 0;
+                        const now = performance.now();
+                        if (this.shooter) {
+                            if (!this.shooter._groupHitSounds) this.shooter._groupHitSounds = new Map();
+                            const lastSoundTime = this.shooter._groupHitSounds.get(this.groupId) || 0;
 
-                        if (now - lastSoundTime > 50) { // only play one sound every 50ms for this group
-                            playSfx(this.x, this.y, sfx, 1000);
-                            this.shooter._groupHitSounds.set(this.groupId, now);
+                            if (now - lastSoundTime > 50) { // only play one sound every 50ms for this group
+                                playSfx(this.x, this.y, sfx, 1000);
+                                this.shooter._groupHitSounds.set(this.groupId, now);
 
-                            // basic cleanup
-                            if (this.shooter._groupHitSounds.size > 20) {
-                                for (const [gid, time] of this.shooter._groupHitSounds) {
-                                    if (now - time > 10000) this.shooter._groupHitSounds.delete(gid);
+                                // basic cleanup
+                                if (this.shooter._groupHitSounds.size > 20) {
+                                    for (const [gid, time] of this.shooter._groupHitSounds) {
+                                        if (now - time > 10000) this.shooter._groupHitSounds.delete(gid);
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    ENTITIES.deleteEntity('projectile', this.id);
-                    return;
+                        ENTITIES.deleteEntity('projectile', this.id);
+                        return;
+                    }
                 }
             }
-        }
 
-        // check with other projectiles
-        for (const pid in ENTITIES.PROJECTILES) {
-            const other = ENTITIES.PROJECTILES[pid];
-            if (!other || other.id === this.id) continue;
-            if ((other.world || 'main') !== (this.world || 'main')) continue;
-            // Ignore only true same-owner projectiles (same shooter object),
-            // not merely matching numeric ids across entity types.
-            if (other.shooter === this.shooter) continue;
+            // check with other projectiles
+            for (const pid in ENTITIES.PROJECTILES) {
+                const other = ENTITIES.PROJECTILES[pid];
+                if (!other || other.id === this.id) continue;
+                if ((other.world || 'main') !== (this.world || 'main')) continue;
+                // Ignore only true same-owner projectiles (same shooter object),
+                // not merely matching numeric ids across entity types.
+                if (other.shooter === this.shooter) continue;
 
-            if (colliding(this, other)) {
-                // If either is a throw, both disappear
-                if (this.type === -1 || other.type === -1) {
+                if (colliding(this, other)) {
+                    // If either is a throw, both disappear
+                    if (this.type === -1 || other.type === -1) {
+                        ENTITIES.deleteEntity('projectile', this.id);
+                        ENTITIES.deleteEntity('projectile', other.id);
+                        this.shooter.lastCombatTime = performance.now();
+                        other.shooter.lastCombatTime = performance.now();
+                        return;
+                    }
+
+                    // Both are slashes - handle clash
+                    const sfx = dataMap.sfxMap.indexOf('slash-clash');
+
+                    const now = performance.now();
+                    // Throttle clash sound and knockback per group
+                    if (this.shooter && (!this.shooter._groupClashSounds || !this.shooter._groupClashSounds.has(this.groupId) || now - this.shooter._groupClashSounds.get(this.groupId) > 100)) {
+                        if (!this.shooter._groupClashSounds) this.shooter._groupClashSounds = new Map();
+                        this.shooter._groupClashSounds.set(this.groupId, now);
+
+                        playSfx(this.x, this.y, sfx, 1000);
+
+                        // Knockback shooters (don't damage)
+                        const kbStrength = 60;
+                        const angle = Math.atan2(this.shooter.y - other.shooter.y, this.shooter.x - other.shooter.x);
+
+                        if (this.shooter.isAlive) {
+                            this.shooter.x += Math.cos(angle) * kbStrength;
+                            this.shooter.y += Math.sin(angle) * kbStrength;
+                            this.shooter.clamp();
+                        }
+                        if (other.shooter.isAlive) {
+                            other.shooter.x -= Math.cos(angle) * kbStrength;
+                            other.shooter.y -= Math.sin(angle) * kbStrength;
+                            other.shooter.clamp();
+                        }
+                    }
+
                     ENTITIES.deleteEntity('projectile', this.id);
                     ENTITIES.deleteEntity('projectile', other.id);
                     this.shooter.lastCombatTime = performance.now();
                     other.shooter.lastCombatTime = performance.now();
                     return;
                 }
-
-                // Both are slashes - handle clash
-                const sfx = dataMap.sfxMap.indexOf('slash-clash');
-
-                const now = performance.now();
-                // Throttle clash sound and knockback per group
-                if (this.shooter && (!this.shooter._groupClashSounds || !this.shooter._groupClashSounds.has(this.groupId) || now - this.shooter._groupClashSounds.get(this.groupId) > 100)) {
-                    if (!this.shooter._groupClashSounds) this.shooter._groupClashSounds = new Map();
-                    this.shooter._groupClashSounds.set(this.groupId, now);
-
-                    playSfx(this.x, this.y, sfx, 1000);
-
-                    // Knockback shooters (don't damage)
-                    const kbStrength = 60;
-                    const angle = Math.atan2(this.shooter.y - other.shooter.y, this.shooter.x - other.shooter.x);
-
-                    if (this.shooter.isAlive) {
-                        this.shooter.x += Math.cos(angle) * kbStrength;
-                        this.shooter.y += Math.sin(angle) * kbStrength;
-                        this.shooter.clamp();
-                    }
-                    if (other.shooter.isAlive) {
-                        other.shooter.x -= Math.cos(angle) * kbStrength;
-                        other.shooter.y -= Math.sin(angle) * kbStrength;
-                        other.shooter.clamp();
-                    }
-                }
-
-                ENTITIES.deleteEntity('projectile', this.id);
-                ENTITIES.deleteEntity('projectile', other.id);
-                this.shooter.lastCombatTime = performance.now();
-                other.shooter.lastCombatTime = performance.now();
-                return;
             }
         }
 
@@ -319,6 +342,9 @@ export class Projectile extends Entity {
             if (this.type === -1) buffer += 50; // a little buffer for thrown swords
 
             if (colliding(this, player, buffer)) {
+                const hitKey = `p:${player.id}`;
+                if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
+                if (isPersistentWave) this.hitEntities?.add(hitKey);
                 // damage player
                 let tookDamage = false;
                 if (!player.hasShield) {
@@ -340,8 +366,10 @@ export class Projectile extends Entity {
                     }
                 }
 
-                ENTITIES.deleteEntity('projectile', this.id);
-                return;
+                if (!isPersistentWave) {
+                    ENTITIES.deleteEntity('projectile', this.id);
+                    return;
+                }
             }
         }
         // check mobs
@@ -356,8 +384,11 @@ export class Projectile extends Entity {
             if (this.type === -1) buffer += 50; // a little buffer for thrown swords
 
             if (colliding(this, mob, buffer)) {
+                const hitKey = `m:${mob.id}`;
+                if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
+                if (isPersistentWave) this.hitEntities?.add(hitKey);
                 // Close swing parry: while minotaur is swinging, front-cone slash hits should clash and not leak damage.
-                if (!shooterIsMob && canMinotaurParrySlash(mob, this)) {
+                if (!isPersistentWave && !shooterIsMob && canMinotaurParrySlash(mob, this)) {
                     if (this.shooter && typeof mob.alarm === 'function') {
                         mob.alarm(this.shooter, 'hit');
                     }
@@ -374,7 +405,7 @@ export class Projectile extends Entity {
                 }
 
                 // Minotaur can parry thrown swords from the front without turning.
-                if (canMinotaurParryThrow(mob, this) && Math.random() < getMinotaurParryChance(mob)) {
+                if (!isPersistentWave && canMinotaurParryThrow(mob, this) && Math.random() < getMinotaurParryChance(mob)) {
                     if (typeof mob.performSwing === 'function') {
                         // Parry must be a real swing (spawns slash projectiles), not animation-only.
                         mob.performSwing(true);
@@ -408,8 +439,10 @@ export class Projectile extends Entity {
                 }
 
                 mob.alarm(this.shooter, 'hit');
-                ENTITIES.deleteEntity('projectile', this.id);
-                return;
+                if (!isPersistentWave) {
+                    ENTITIES.deleteEntity('projectile', this.id);
+                    return;
+                }
             }
         }
 
@@ -423,6 +456,9 @@ export class Projectile extends Entity {
             if (this.type === -1) buffer += 30; // a little buffer for thrown swords
 
             if (colliding(this, object, buffer)) {
+                const hitKey = `o:${object.id}`;
+                if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
+                if (isPersistentWave) this.hitEntities?.add(hitKey);
                 // damage object
                 const viking = getVikingHitInfo(this.shooter, this.getCurrentDamage());
                 const didDamage = object.damage(viking.damage, this.shooter);
@@ -430,8 +466,10 @@ export class Projectile extends Entity {
                     commitVikingHit(this.shooter, viking.nextCount);
                     if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, object.x, object.y);
                 }
-                ENTITIES.deleteEntity('projectile', this.id);
-                return;
+                if (!isPersistentWave) {
+                    ENTITIES.deleteEntity('projectile', this.id);
+                    return;
+                }
             }
         }
     }

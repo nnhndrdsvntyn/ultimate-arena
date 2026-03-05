@@ -124,10 +124,13 @@ function renderVisualsTab() {
 
 function renderStatsTab() {
     const s = Vars.myStats;
+    createStatItem(uiRefs.settingsBody, 'POINTS', s.availablePoints || 0);
+    createEl('div', { userSelect: 'none' }, uiRefs.settingsBody, { className: 'settings-section-header', textContent: 'Current Combat Stats' });
     createStatItem(uiRefs.settingsBody, 'DMG (hit)', s.dmgHit);
     createStatItem(uiRefs.settingsBody, 'DMG (throw sword)', s.dmgThrow);
     createStatItem(uiRefs.settingsBody, 'SPEED', s.speed);
     createStatItem(uiRefs.settingsBody, 'HP', `${Math.floor(s.hp)} / ${Math.floor(s.maxHp)}`);
+    createStatItem(uiRefs.settingsBody, 'REGEN / TICK', s.regenPerTick || 5);
 }
 
 function renderAdminTab() {

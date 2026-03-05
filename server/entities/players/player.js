@@ -13,7 +13,9 @@ import {
     accessoryItemTypeFromId,
     isAccessoryId,
     ACCESSORY_KEYS,
-    DEFAULT_VIEW_RANGE_MULT
+    DEFAULT_VIEW_RANGE_MULT,
+    getLevelFromXp,
+    getXpShopItemConfig
 } from '../../../public/shared/datamap.js';
 import {
     wss
@@ -39,6 +41,12 @@ const DROP_OWNER_PICKUP_LOCK_MS = 700;
 const DROP_INITIAL_PUSH = 18;
 const DROP_FINAL_PUSH = 90;
 const DROP_TRAVEL_TICKS = 4;
+const BUFF_STAGE_MAX = 10;
+const BUFF_POINTS_PER_LEVEL_UP = 1;
+const STRENGTH_BUFF_PER_STAGE = 2;
+const MAX_HP_BUFF_PER_STAGE = 12;
+const REGEN_BUFF_PER_STAGE = 1;
+const BASE_REGEN_AMOUNT = 5;
 const TUTORIAL_STEP_TEXT = [
     'Move around using the AWSD Keys.',
     'Attack using your left mouse button.',
@@ -46,7 +54,7 @@ const TUTORIAL_STEP_TEXT = [
     'Attack and break this chest.',
     'Pick up the dropped coins by touching them.',
     'Open the shop and buy the branch sword.',
-    "Press 3 on your keyboard to equip your new sword.",
+    "Equip the new branch sword by clicking its slot or pressing the number of the slot on your keyboard. (1-5)",
     'Eliminate the pig!',
     'Good job! Tutorial complete.'
 ];
@@ -92,11 +100,16 @@ export class Player extends Entity {
         // --- Attributes & Buffs ---
         this.defaultSpeed = dataMap.PLAYERS.baseMovementSpeed;
         this.speed = this.defaultSpeed;
-        this.strength = dataMap.PLAYERS.baseStrength;
+        this.baseStrength = dataMap.PLAYERS.baseStrength;
+        this.baseMaxHp = dataMap.PLAYERS.maxHealth;
+        this.strength = this.baseStrength;
+        this.maxHp = this.baseMaxHp;
+        this.hp = this.maxHp;
         this.score = 0;
+        this.level = 1;
         this.killCount = 0;
         this.goldCoins = 0;
-        this.attributeBuffs = { speed: 0, maxHp: 0, damage: 0 };
+        this.buffLevels = { strength: 0, maxHealth: 0, regenSpeed: 0 };
         this.lastStatsSpeed = Math.round(this.speed);
         this.vikingHitCount = 0;
         this.lastVikingHitTime = 0;
@@ -405,7 +418,7 @@ export class Player extends Entity {
             }
         }
 
-        const baseSpeed = this.defaultSpeed + this.attributeBuffs.speed;
+        const baseSpeed = this.defaultSpeed;
         const speedBoostMult = this.isMinotaurSpeedBoostActive() ? this.minotaurSpeedBoostMult : 1;
 
         if (this.inWater) {
@@ -499,7 +512,7 @@ export class Player extends Entity {
         }
         if (this.swingState >= 7) {
             this.swingState = 0;
-            this.speed = this.defaultSpeed + this.attributeBuffs.speed;
+            this.speed = this.defaultSpeed;
         }
     }
 
@@ -604,7 +617,6 @@ export class Player extends Entity {
             if ((obj.world || 'main') !== (this.world || 'main')) continue;
             if (!this.canPickupDroppedObject(obj, now)) continue;
             if (!obj || !isCoinObjectType(obj.type) || obj.collectorId || !colliding(this, obj)) continue;
-            if (this.isBot && obj.dropSource === 'player' && now - (obj.spawnTime || 0) < 10000) continue;
             if (now - (obj.spawnTime || 0) <= 200) continue;
             obj.startCollection(this);
         }
@@ -673,7 +685,6 @@ export class Player extends Entity {
             if (obj && colliding(this, obj)) {
                 // Ensure the object is pickable (isEphemeral)
                 if (!dataMap.OBJECTS[obj.type]?.isEphemeral) continue;
-                if (this.isBot && obj.dropSource === 'player' && now - (obj.spawnTime || 0) < 10000) continue;
 
                 // Respect 200ms pickup delay for everything manually picked up too
                 if (now - (obj.spawnTime || 0) < 200) continue;
@@ -710,6 +721,37 @@ export class Player extends Entity {
                     this.sendInventoryUpdate();
                     this.sendStatsUpdate();
                     return;
+                }
+
+                // Bot upgrade path: replace weaker sword when inventory is full.
+                if (this.isBot) {
+                    const incomingRank = obj.type & 0x7F;
+                    if (isSwordRank(incomingRank)) {
+                        let replaceSlot = -1;
+                        let lowestRank = incomingRank;
+                        for (let i = 0; i < this.inventory.length; i++) {
+                            if (this.inventoryCounts[i] <= 0) continue;
+                            const heldRank = this.inventory[i] & 0x7F;
+                            if (!isSwordRank(heldRank)) continue;
+                            if (heldRank < lowestRank) {
+                                lowestRank = heldRank;
+                                replaceSlot = i;
+                            }
+                        }
+
+                        if (replaceSlot !== -1) {
+                            const oldType = this.inventory[replaceSlot] & 0x7F;
+                            const oldCount = Math.max(1, this.inventoryCounts[replaceSlot] || 1);
+                            const dropObj = spawnObject(oldType, this.x, this.y, oldCount, 'player', this.world || 'main');
+                            this.applyDropLaunch(dropObj, oldType);
+                            this.inventory[replaceSlot] = obj.type;
+                            this.inventoryCounts[replaceSlot] = Math.max(1, obj.amount || 1);
+                            ENTITIES.deleteEntity('object', obj.id);
+                            this.sendInventoryUpdate();
+                            this.sendStatsUpdate();
+                            return;
+                        }
+                    }
                 }
             }
         }
@@ -762,6 +804,20 @@ export class Player extends Entity {
         this.inventory[emptySlot] = accessoryItemTypeFromId(accessoryId);
         this.inventoryCounts[emptySlot] = 1;
         this.sendInventoryUpdate();
+        this.sendStatsUpdate();
+    }
+
+    buyXp(itemType) {
+        if (!this.isAlive) return;
+        const itemConfig = getXpShopItemConfig(itemType);
+        if (!itemConfig) return;
+        const cost = Math.max(0, Math.floor(itemConfig.price || 0));
+        const xp = Math.max(0, Math.floor(itemConfig.xp || 0));
+        if (cost <= 0 || xp <= 0) return;
+        if (this.getTotalCoins() < cost) return;
+
+        this.deductCoins(cost);
+        this.addScore(xp);
         this.sendStatsUpdate();
     }
 
@@ -950,11 +1006,13 @@ export class Player extends Entity {
         this.inventoryCounts = new Array(35).fill(0);
         this.inventory[0] = 1;
         this.inventoryCounts[0] = 1;
-        this.hp = 100;
-        this.maxHp = 100;
-        this.score = Math.max(0, this.score - lost);
+        this.baseStrength = dataMap.PLAYERS.baseStrength;
+        this.baseMaxHp = dataMap.PLAYERS.maxHealth;
+        this.setScore(this.score - lost);
         this.killCount = 0;
-        this.attributeBuffs = { speed: 0, maxHp: 0, damage: 0 };
+        this.resetBuffs();
+        this.recomputeBuffedAttributes({ healByMaxIncrease: false });
+        this.hp = this.maxHp;
         this.attacking = false;
         this.keys = { w: 0, a: 0, s: 0, d: 0 };
         this.lastDamager = null;
@@ -981,13 +1039,73 @@ export class Player extends Entity {
         const inCombat = performance.now() - this.lastCombatTime < 10000;
         const regenIntervalMs = inCombat ? 1600 : 1000; // 60% slower in combat
         if (performance.now() - this.lastHealedTime > regenIntervalMs) {
-            this.hp = Math.min(this.hp + 5, this.maxHp);
+            this.hp = Math.min(this.hp + this.getRegenAmountPerTick(), this.maxHp);
             this.lastHealedTime = performance.now();
         }
     }
 
     addScore(points) {
-        this.score = Math.min(1000000000, this.score + points);
+        this.setScore(this.score + points);
+    }
+
+    syncLevelFromScore() {
+        this.level = Math.max(1, getLevelFromXp(this.score));
+    }
+
+    setScore(nextScore) {
+        const safeScore = Math.min(1000000000, Math.max(0, Math.floor(Number.isFinite(nextScore) ? nextScore : 0)));
+        this.score = safeScore;
+        this.syncLevelFromScore();
+    }
+
+    resetBuffs() {
+        this.buffLevels = { strength: 0, maxHealth: 0, regenSpeed: 0 };
+    }
+
+    getTotalBuffPointsEarned() {
+        return Math.max(0, ((this.level - 1) * BUFF_POINTS_PER_LEVEL_UP) + BUFF_POINTS_PER_LEVEL_UP);
+    }
+
+    getBuffPointsSpent() {
+        return (this.buffLevels.strength || 0) +
+            (this.buffLevels.maxHealth || 0) +
+            (this.buffLevels.regenSpeed || 0);
+    }
+
+    getAvailableBuffPoints() {
+        return Math.max(0, this.getTotalBuffPointsEarned() - this.getBuffPointsSpent());
+    }
+
+    getRegenAmountPerTick() {
+        return BASE_REGEN_AMOUNT + ((this.buffLevels.regenSpeed || 0) * REGEN_BUFF_PER_STAGE);
+    }
+
+    recomputeBuffedAttributes({ healByMaxIncrease = false } = {}) {
+        const prevMaxHp = this.maxHp;
+        this.strength = this.baseStrength + ((this.buffLevels.strength || 0) * STRENGTH_BUFF_PER_STAGE);
+        this.maxHp = this.baseMaxHp + ((this.buffLevels.maxHealth || 0) * MAX_HP_BUFF_PER_STAGE);
+        if (healByMaxIncrease && this.maxHp > prevMaxHp) {
+            this.hp = Math.min(this.maxHp, this.hp + (this.maxHp - prevMaxHp));
+        } else {
+            this.hp = Math.min(this.hp, this.maxHp);
+        }
+    }
+
+    tryUpgradeBuff(attributeType) {
+        const attributeMap = {
+            1: 'strength',
+            2: 'maxHealth',
+            3: 'regenSpeed'
+        };
+        const key = attributeMap[attributeType];
+        if (!key) return false;
+        if ((this.buffLevels[key] || 0) >= BUFF_STAGE_MAX) return false;
+        if (this.getAvailableBuffPoints() <= 0) return false;
+
+        this.buffLevels[key] += 1;
+        this.recomputeBuffedAttributes({ healByMaxIncrease: key === 'maxHealth' });
+        this.sendStatsUpdate();
+        return true;
     }
 
     resolveCollisions() {
@@ -1076,6 +1194,12 @@ export class Player extends Entity {
         ws.packetWriter.writeU8(this.vikingHitCount || 0);
         ws.packetWriter.writeU16(Math.min(65535, Math.floor(abilityCooldownMs)));
         ws.packetWriter.writeU16(Math.min(65535, Math.floor(abilityCooldownRemainingMs)));
+        ws.packetWriter.writeU16(Math.min(65535, this.level | 0));
+        ws.packetWriter.writeU16(Math.min(65535, this.getAvailableBuffPoints()));
+        ws.packetWriter.writeU8(Math.min(BUFF_STAGE_MAX, this.buffLevels.strength || 0));
+        ws.packetWriter.writeU8(Math.min(BUFF_STAGE_MAX, this.buffLevels.maxHealth || 0));
+        ws.packetWriter.writeU8(Math.min(BUFF_STAGE_MAX, this.buffLevels.regenSpeed || 0));
+        ws.packetWriter.writeU16(Math.min(65535, this.getRegenAmountPerTick()));
         ws.send(ws.packetWriter.getBuffer());
     }
 

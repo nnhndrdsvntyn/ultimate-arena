@@ -60,6 +60,12 @@ export class GameObject {
     }
     update() {
         if (typeof this.newX === 'undefined' || typeof this.newY === 'undefined') return;
+        // Pickups should match server hitboxes exactly; interpolation can make them look offset.
+        if (dataMap.OBJECTS[this.type]?.isEphemeral) {
+            this.x = this.newX;
+            this.y = this.newY;
+            return;
+        }
         const dx = this.newX - this.x;
         const dy = this.newY - this.y;
         const distSq = dx * dx + dy * dy;

@@ -11,7 +11,8 @@ import {
     TPS,
     dataMap,
     isSwordRank,
-    ACCESSORY_KEYS
+    ACCESSORY_KEYS,
+    getLevelFromXp
 } from './shared/datamap.js';
 
 function getHealthBarColor(healthRatio) {
@@ -70,7 +71,6 @@ export class Player {
     }
     update() {
         const lerpFactor = (TPS.clientCapped / TPS.server) / 10;
-        const TELEPORT_SNAP_DIST = 220;
 
         if (this._wasAliveState && !this.isAlive) {
             this._deathFadeStart = performance.now();
@@ -83,24 +83,16 @@ export class Player {
 
         if (typeof this.newX === 'undefined' || typeof this.newY === 'undefined') return;
 
-        const dxToServer = (this.newX ?? this.x) - (this.x ?? this.newX);
-        const dyToServer = (this.newY ?? this.y) - (this.y ?? this.newY);
-        const distSqToServer = (dxToServer * dxToServer) + (dyToServer * dyToServer);
-        if (distSqToServer > (TELEPORT_SNAP_DIST * TELEPORT_SNAP_DIST)) {
-            this.x = this.newX;
-            this.y = this.newY;
+        // Always interpolate positions to avoid hard snapping.
+        if (typeof this.x !== 'undefined') {
+            this.x = this.x + (this.newX - this.x) * lerpFactor;
         } else {
-            // lerp if x, y is NOT UNDEFINED, else don't lerp and change x, y directly.
-            if (typeof this.x !== 'undefined') {
-                this.x = this.x + (this.newX - this.x) * lerpFactor;
-            } else {
-                this.x = this.newX
-            }
-            if (typeof this.y !== 'undefined') {
-                this.y = this.y + (this.newY - this.y) * lerpFactor;
-            } else {
-                this.y = this.newY
-            };
+            this.x = this.newX;
+        }
+        if (typeof this.y !== 'undefined') {
+            this.y = this.y + (this.newY - this.y) * lerpFactor;
+        } else {
+            this.y = this.newY;
         }
 
         // update score
@@ -155,6 +147,17 @@ export class Player {
                 pos: [screenPosX - this.radius * 1.5, screenPosY - this.radius * 1.5],
                 size: [this.radius * 3, this.radius * 3],
                 transparency: 0.5 * alpha
+            });
+        }
+
+        const leaderId = Vars.topLeader?.id || 0;
+        if (leaderId === this.id && LC.images?.['ui-crown']) {
+            const crownSize = 72;
+            LC.drawImage({
+                name: 'ui-crown',
+                pos: [screenPosX - (crownSize / 2), screenPosY - this.radius - crownSize - 28],
+                size: [crownSize, crownSize],
+                transparency: alpha
             });
         }
 
@@ -285,8 +288,13 @@ export class Player {
 
         // draw username as text
         const usernameText = this.username;
+        const levelText = `${getLevelFromXp(this.score)} | `;
         const usernameMetrics = LC.measureText({
             text: usernameText,
+            font: 'bold 16px Arial'
+        });
+        const levelMetrics = LC.measureText({
+            text: levelText,
             font: 'bold 16px Arial'
         });
         let idText = "";
@@ -302,11 +310,19 @@ export class Player {
             });
         }
 
-        const totalWidth = usernameMetrics.width + idMetrics.width;
+        const totalWidth = levelMetrics.width + usernameMetrics.width + idMetrics.width;
+
+        LC.drawText({
+            text: levelText,
+            pos: [screenPosX - totalWidth / 2, screenPosY - this.radius - 5],
+            color: '#1e3a8a',
+            font: 'bold 16px Arial',
+            transparency: alpha
+        });
 
         LC.drawText({
             text: usernameText,
-            pos: [screenPosX - totalWidth / 2, screenPosY - this.radius - 5],
+            pos: [screenPosX - totalWidth / 2 + levelMetrics.width, screenPosY - this.radius - 5],
             color: 'white',
             font: 'bold 16px Arial',
             transparency: alpha
@@ -315,7 +331,7 @@ export class Player {
         if (Settings.showPlayerIds) {
             LC.drawText({
                 text: idText,
-                pos: [screenPosX - totalWidth / 2 + usernameMetrics.width, screenPosY - this.radius - 5],
+                pos: [screenPosX - totalWidth / 2 + levelMetrics.width + usernameMetrics.width, screenPosY - this.radius - 5],
                 color: 'lightgray',
                 font: 'bold 16px Arial',
                 transparency: alpha

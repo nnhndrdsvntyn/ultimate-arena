@@ -158,8 +158,9 @@ const MOB_TYPE_SUGGESTIONS = [
     '@m[type=minotaur]'
 ];
 const ACCESSORY_SUGGESTIONS = ACCESSORY_KEYS.filter(k => k !== 'none');
-const SETATTR_SUGGESTIONS = ['invincible', 'speed', 'damage', 'strength', 'maxhealth', 'score'];
+const SETATTR_SUGGESTIONS = ['invincible', 'speed', 'damage', 'strength', 'maxhealth', 'score', 'radius'];
 const INVINCIBLE_VALUE_SUGGESTIONS = ['true', 'false'];
+const SETATTR_COMMON_VALUE_SUGGESTIONS = ['default'];
 const ITEM_SUGGESTIONS = [
     ...SWORD_IDS.map(id => `sword${id}`),
     'gold-coin',
@@ -323,7 +324,9 @@ function updateSuggestions(raw, activeCommand) {
         } else if (tokenIndex >= 3) {
             const attrToken = (tokens[2] || '').toLowerCase();
             if (attrToken === 'invincible') {
-                suggestions = INVINCIBLE_VALUE_SUGGESTIONS.filter(s => s.startsWith(currentLower));
+                suggestions = [...INVINCIBLE_VALUE_SUGGESTIONS, ...SETATTR_COMMON_VALUE_SUGGESTIONS].filter(s => s.startsWith(currentLower));
+            } else {
+                suggestions = SETATTR_COMMON_VALUE_SUGGESTIONS.filter(s => s.startsWith(currentLower));
             }
         }
         if (tokenIndex === 2 && suggestions.length === 0) {
@@ -506,7 +509,12 @@ function openChatInput() {
     hideMobileChatButton();
 }
 
-function closeChatInput() {
+export function closeChatInput() {
+    if (!uiRefs.chatInput || !uiRefs.chatInputWrapper) {
+        uiState.isChatOpen = false;
+        uiState.lastChatCloseTime = performance.now();
+        return;
+    }
     uiRefs.chatInput.value = '';
     uiRefs.chatInputWrapper.style.display = 'none';
     uiRefs.chatInput.blur();
@@ -800,27 +808,32 @@ function handleSetAttribute(raw) {
         strength: 5,
         damage: 5,
         score: 2,
-        invincible: 3
+        invincible: 3,
+        radius: 9
     };
     const mobAttrMap = {
         speed: 1,
         strength: 5,
         damage: 5,
-        invincible: 7
+        invincible: 7,
+        radius: 9
     };
 
     const attrMap = parsed.type === 1 ? playerAttrMap : mobAttrMap;
     const attrIdx = attrMap[attributeName];
     let value;
-    if (rawValue.toLowerCase() === 'true') {
+    const lowerValue = rawValue.toLowerCase();
+    if (lowerValue === 'default') {
+        value = Number.NaN;
+    } else if (lowerValue === 'true') {
         value = 1;
-    } else if (rawValue.toLowerCase() === 'false') {
+    } else if (lowerValue === 'false') {
         value = 0;
     } else {
-        value = parseInt(rawValue);
+        value = Number(rawValue);
     }
 
-    if (!attrIdx || isNaN(value)) {
+    if (!attrIdx || (Number.isNaN(value) && lowerValue !== 'default') || !Number.isFinite(value) && lowerValue !== 'default') {
         sendChat(raw);
         return true;
     }

@@ -11,6 +11,7 @@ export function makeDraggable(el, handle) {
     let offset = { x: 0, y: 0 };
 
     const start = (clientX, clientY) => {
+        if (el.classList.contains('drag-disabled') || handle.dataset.dragDisabled === '1') return;
         isDragging = true;
         const rect = el.getBoundingClientRect();
         offset.x = clientX - rect.left;
@@ -40,11 +41,13 @@ export function makeDraggable(el, handle) {
 
     handle.onmousedown = (e) => {
         if (e.target.tagName === 'BUTTON') return;
+        if (el.classList.contains('drag-disabled') || handle.dataset.dragDisabled === '1') return;
         start(e.clientX, e.clientY);
     };
 
     handle.ontouchstart = (e) => {
         if (e.target.tagName === 'BUTTON') return;
+        if (el.classList.contains('drag-disabled') || handle.dataset.dragDisabled === '1') return;
         const touch = e.touches[0];
         start(touch.clientX, touch.clientY);
     };

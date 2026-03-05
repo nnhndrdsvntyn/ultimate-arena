@@ -129,6 +129,13 @@ export function sendPausePacket() {
     ws.send(writer.getBuffer());
 }
 
+export function sendUpgradePacket(attributeType) {
+    writer.reset();
+    writer.writeU8(10); // Type 10: Upgrade
+    writer.writeU8(attributeType);
+    ws.send(writer.getBuffer());
+}
+
 export function sendTutorialEvent(eventType) {
     if (!ws || ws.readyState !== ws.OPEN) return;
     writer.reset();

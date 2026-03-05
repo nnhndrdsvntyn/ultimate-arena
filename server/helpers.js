@@ -261,31 +261,38 @@ export function spawnEnergyBurstProjectiles(source, options = {}) {
     if (source.isAlive === false) return;
     if (Number.isFinite(source.hp) && source.hp <= 0) return;
 
-    const count = Number.isFinite(options.count) && options.count > 0 ? Math.floor(options.count) : 30;
     const logicOnly = options.logicOnly !== false;
     const durationMs = Number.isFinite(options.durationMs) && options.durationMs > 0 ? Math.round(options.durationMs) : 700;
     const fxWaves = Number.isFinite(options.fxWaves) && options.fxWaves > 0 ? Math.round(options.fxWaves) : 3;
+    const projectileRange = dataMap.PROJECTILES[10]?.maxDistance || 500;
+    const projectileSpeed = dataMap.PROJECTILES[10]?.speed || 100;
+    const projectileRadius = dataMap.PROJECTILES[10]?.radius || 30;
+    const initialRadius = Number.isFinite(options.initialRadius) && options.initialRadius > 0
+        ? Math.round(options.initialRadius)
+        : Math.max(projectileRadius, Math.round(source.radius || 0));
     const groupId = Math.random();
-    for (let i = 0; i < count; i++) {
-        const angle = (i / count) * Math.PI * 2;
-        const projectileOptions = {};
-        if (logicOnly) projectileOptions.logicOnly = true;
+    const projectileOptions = {
+        noMove: true,
+        maxDistanceOverride: projectileRange,
+        initialRadius,
+        expandPerTick: projectileSpeed,
+        persistentHits: true
+    };
+    if (logicOnly) projectileOptions.logicOnly = true;
 
-        ENTITIES.newEntity({
-            entityType: 'projectile',
-            id: getId('PROJECTILES'),
-            x: source.x + Math.cos(angle) * source.radius,
-            y: source.y + Math.sin(angle) * source.radius,
-            angle,
-            type: 10,
-            shooter: source,
-            groupId,
-            projectileOptions: Object.keys(projectileOptions).length ? projectileOptions : undefined
-        });
-    }
+    ENTITIES.newEntity({
+        entityType: 'projectile',
+        id: getId('PROJECTILES'),
+        x: source.x,
+        y: source.y,
+        angle: 0,
+        type: 10,
+        shooter: source,
+        groupId,
+        projectileOptions
+    });
 
     // Visuals are driven by a dedicated light packet instead of syncing every burst projectile.
-    const projectileRange = dataMap.PROJECTILES[10]?.maxDistance || 500;
     const burstRadius = projectileRange + (source.radius || 0);
     emitEnergyBurstFx(source.x, source.y, burstRadius, durationMs, fxWaves, source.world || 'main');
 }
@@ -377,17 +384,20 @@ class CommandMap {
         const entityListName = this.entityTypeMap[entityType];
         if (!entityListName) return;
         const entity = ENTITIES[entityListName][entityId];
+        const isDefault = !Number.isFinite(value);
 
         if (entity && entityType === 1) { // Player
             const player = entity;
             if (attrIdx === 1) { // defaultSpeed
-                player.defaultSpeed = value;
+                player.defaultSpeed = isDefault ? dataMap.PLAYERS.baseMovementSpeed : value;
             } else if (attrIdx === 2) { // score
+                const nextScore = isDefault ? 0 : Math.floor(value);
                 player.score = 0;
-                player.addScore(Math.floor(value));
+                player.addScore(nextScore);
             } else if (attrIdx === 3) { // invincible
-                player.invincible = !!value;
+                player.invincible = isDefault ? false : !!value;
             } else if (attrIdx === 4) { // weapon rank (admin give)
+                if (isDefault) return;
                 const rank = Math.floor(value);
                 if (isSwordRank(rank)) {
                     // Always place into a new slot; if full, drop on ground.
@@ -407,19 +417,36 @@ class CommandMap {
                     }
                 }
             } else if (attrIdx === 5) { // strength
-                player.strength = Math.floor(value);
+                player.baseStrength = isDefault ? dataMap.PLAYERS.baseStrength : Math.floor(value);
+                player.recomputeBuffedAttributes({ healByMaxIncrease: false });
             } else if (attrIdx === 6) { // maxHealth
-                const oldMaxHp = player.maxHp;
-                player.maxHp = Math.floor(value);
-                player.hp = Math.min(player.hp, player.maxHp); // Cap current hp to new max
+                const nextMaxHp = isDefault ? dataMap.PLAYERS.maxHealth : Math.floor(value);
+                player.baseMaxHp = Math.max(1, nextMaxHp);
+                player.recomputeBuffedAttributes({ healByMaxIncrease: false });
             } else if (attrIdx === 8) { // coins (admin give)
-                player.addGoldCoins(Math.floor(value));
+                if (isDefault) {
+                    player.goldCoins = 0;
+                } else {
+                    player.addGoldCoins(Math.floor(value));
+                }
+            } else if (attrIdx === 9) { // radius
+                const nextRadius = isDefault ? dataMap.PLAYERS.baseRadius : Math.floor(value);
+                player.radius = Math.max(1, nextRadius);
             }
             player.sendStatsUpdate();
         } else if (entity && entityType === 2) { // Mob
             const mob = entity;
-            if (attrIdx === 7) { // invincible
-                mob.invincible = !!value;
+            if (attrIdx === 1) { // speed
+                const baseSpeed = dataMap.MOBS[mob.type]?.speed || mob.speed || 0;
+                const speedMult = mob.isAlarmed && typeof mob.getAlarmSpeedMultiplier === 'function' ? mob.getAlarmSpeedMultiplier() : 1;
+                mob.speed = isDefault ? baseSpeed * speedMult : Math.max(0, value);
+            } else if (attrIdx === 5) { // strength
+                mob.strength = isDefault ? 0 : Math.floor(value);
+            } else if (attrIdx === 7) { // invincible
+                mob.invincible = isDefault ? false : !!value;
+            } else if (attrIdx === 9) { // radius
+                const defaultRadius = dataMap.MOBS[mob.type]?.radius || mob.radius || 1;
+                mob.radius = Math.max(1, isDefault ? defaultRadius : Math.floor(value));
             }
         }
     }
@@ -677,27 +704,9 @@ class CommandMap {
 
     // regular commands
     upgrade(ws, attributeType) {
-        let attributeMap = [0, 'maxHp', 'speed', 'damage'];
         const player = ENTITIES.PLAYERS[ws.id];
-        if (player) {
-            player.attributeBuffs[attributeMap[attributeType]] += 1;
-
-            // Apply buffs to base attributes
-            if (attributeType === 1) { // maxHp
-                player.maxHp += 10;
-                player.hp += 10;
-            } else if (attributeType === 3) { // damage
-                player.strength += 1;
-            }
-
-            helperWriter.reset();
-            helperWriter.writeU8(10);
-            helperWriter.writeU8(attributeType);
-            helperWriter.writeU8(1);
-            ws.send(helperWriter.getBuffer());
-
-            player.sendStatsUpdate();
-        }
+        if (!player || !player.isAlive) return;
+        player.tryUpgradeBuff(attributeType);
     }
 }
 

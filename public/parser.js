@@ -19,6 +19,7 @@ import {
 import {
     showNotification,
     uiState,
+    closeHomeScreenBlockingUI,
     updateSettingsBody,
     updateShopBody
 } from './ui.js';
@@ -26,6 +27,7 @@ import {
     Vars,
     LC,
     startJoinActionCooldown,
+    onHudUpgradePointsChanged,
     addDamageIndicator,
     addCriticalHitIndicator,
     spawnMobDeathFade,
@@ -418,6 +420,23 @@ function handleUpdatePacket(reader) {
         const amount = reader.readU16();
         spawnCoinPickupVfxToPlayer(startX, startY, angle, targetX, targetY, amount);
     }
+
+    // Optional top-leader marker payload:
+    // u8 hasTop, [u8 id, u16 x, u16 y, u32 score]
+    if (reader.offset < reader.view.byteLength) {
+        const hasTop = reader.readU8();
+        if (hasTop && reader.offset + 9 <= reader.view.byteLength) {
+            Vars.topLeader.id = reader.readU8();
+            Vars.topLeader.x = reader.readU16();
+            Vars.topLeader.y = reader.readU16();
+            Vars.topLeader.score = reader.readU32();
+        } else {
+            Vars.topLeader.id = 0;
+            Vars.topLeader.x = 0;
+            Vars.topLeader.y = 0;
+            Vars.topLeader.score = 0;
+        }
+    }
 }
 
 function handleLeaderboardPacket(reader) {
@@ -480,6 +499,7 @@ function handleKickedPacket(reader) {
     Vars.lastDiedTime = performance.now();
     startJoinActionCooldown();
     uiState.forceHomeScreen = true;
+    closeHomeScreenBlockingUI();
     const homeScreen = document.getElementById('home-screen');
     const respawnScreen = document.getElementById('respawn-screen');
     if (homeScreen) homeScreen.style.display = 'flex';
@@ -492,13 +512,9 @@ function handlePingPacket() {
 }
 
 function handleUpgradePacket(reader) {
-    const attributeMap = [null, 'maxHp', 'speed', 'damage'];
-    const attrType = reader.readU8();
-    const amount = reader.readU8();
-    const myPlayer = ENTITIES.PLAYERS[Vars.myId];
-    if (myPlayer && attributeMap[attrType]) {
-        myPlayer.serverAttributes[attributeMap[attrType]] += amount;
-    }
+    // Legacy packet; stats now sync directly through STATS packets.
+    if (reader.offset < reader.view.byteLength) reader.readU8();
+    if (reader.offset < reader.view.byteLength) reader.readU8();
 }
 
 function handleAdminAuthPacket(reader) {
@@ -535,6 +551,7 @@ function handleInventoryPacket(reader) {
 }
 
 function handleStatsPacket(reader) {
+    const prevAvailablePoints = Vars.myStats.availablePoints || 0;
     Vars.myStats.dmgHit = reader.readU16();
     Vars.myStats.dmgThrow = reader.readU16();
     Vars.myStats.speed = reader.readU16();
@@ -547,6 +564,13 @@ function handleStatsPacket(reader) {
     Vars.abilityCooldownMs = reader.readU16();
     Vars.abilityCooldownRemainingMs = reader.readU16();
     Vars.abilityCooldownEndsAt = performance.now() + Vars.abilityCooldownRemainingMs;
+    Vars.myStats.level = reader.readU16();
+    Vars.myStats.availablePoints = reader.readU16();
+    onHudUpgradePointsChanged(prevAvailablePoints, Vars.myStats.availablePoints);
+    Vars.myStats.buffStrength = reader.readU8();
+    Vars.myStats.buffMaxHealth = reader.readU8();
+    Vars.myStats.buffRegenSpeed = reader.readU8();
+    Vars.myStats.regenPerTick = reader.readU16();
 
     // Re-render stats if they are visible
     if (uiState.isSettingsOpen && uiState.activeTab === 'Stats') {
@@ -622,6 +646,7 @@ function handleTutorialCompletePacket() {
     }
     showNotification('Tutorial complete. Teleporting to main world.', 'green');
     uiState.forceHomeScreen = true;
+    closeHomeScreenBlockingUI();
     const homeScreen = document.getElementById('home-screen');
     const respawnScreen = document.getElementById('respawn-screen');
     if (homeScreen) homeScreen.style.display = 'flex';

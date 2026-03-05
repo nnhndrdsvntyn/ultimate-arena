@@ -14,6 +14,18 @@ body,
     cursor: none !important;
 }
 
+html,
+body {
+    width: 100%;
+    height: 100%;
+}
+
+body {
+    overscroll-behavior: none;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
 .settings-modal,
 .settings-modal *,
 .shop-modal,
@@ -765,6 +777,28 @@ body,
     color: #b79a6b;
 }
 
+.stat-upgrade-item .stat-value {
+    min-width: 110px;
+    text-align: right;
+}
+
+.stat-upgrade-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: rgba(183, 154, 107, 0.25);
+    color: #fff;
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.stat-upgrade-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
 .settings-section-header {
     font-size: 0.9rem;
     font-weight: 800;
@@ -1075,10 +1109,26 @@ body,
 
 /* Mobile Responsive Styles */
 @media (max-width: 1024px) {
+    #home-screen,
+    #respawn-screen,
+    #game-hud {
+        width: 100vw;
+        height: 100dvh;
+    }
+
+    #home-screen,
+    #respawn-screen {
+        padding: calc(env(safe-area-inset-top) + 10px) 12px calc(env(safe-area-inset-bottom) + 10px);
+        box-sizing: border-box;
+    }
+
     #home-screen h1 {
-        font-size: 2rem;
-        margin-bottom: 0.8rem;
+        font-size: 1.5rem;
+        margin-bottom: 0.45rem;
         letter-spacing: 0;
+        text-align: center;
+        line-height: 1.05;
+        max-width: 88vw;
     }
 
     #respawn-screen h1 {
@@ -1089,25 +1139,41 @@ body,
 
     #input-container {
         flex-direction: column;
-        gap: 10px;
+        gap: 6px;
+        width: 100%;
     }
 
     #homeUsrnInput {
-        width: 260px;
-        height: 50px;
-        font-size: 1.1rem;
+        width: min(82vw, 270px);
+        height: 40px;
+        font-size: 0.9rem;
+        border-radius: 6px;
     }
 
     #joinBtn {
-        width: 260px;
-        height: 50px;
+        width: min(82vw, 270px);
+        height: 40px;
+        font-size: 0.92rem;
+        letter-spacing: 0.04rem;
+        border-radius: 6px;
+    }
+
+    #respawn-actions {
+        flex-wrap: wrap;
+        justify-content: center;
+        row-gap: 10px;
     }
 
     #respawnBtn,
     #respawnHomeBtn {
-        width: 180px;
-        height: 50px;
-        font-size: 1rem;
+        width: min(40vw, 170px);
+        height: 42px;
+        font-size: 0.86rem;
+    }
+
+    #home-online-count {
+        font-size: 0.74rem;
+        padding: 5px 8px;
     }
 
     #update-log {
@@ -1115,15 +1181,16 @@ body,
         top: 60px;
         right: 50px;
         left: auto;
-        width: 160px;
-        max-height: 120px;
-        padding: 8px;
+        width: 140px;
+        max-height: 100px;
+        padding: 6px;
+        font-size: 0.56rem;
     }
 
     #home-info-toggle {
         left: 12px;
         bottom: 40px;
-        font-size: 0.85rem;
+        font-size: 0.8rem;
     }
 
     #home-discord-link {
@@ -1135,7 +1202,7 @@ body,
 
     /* Small Mobile Buttons */
     #top-left-bar {
-        top: 8px;
+        top: calc(env(safe-area-inset-top) + 8px);
         left: 50%;
         padding: 6px;
         gap: 6px;
@@ -1150,6 +1217,87 @@ body,
         height: 34px;
     }
 
+    #chat-input-wrapper {
+        width: min(88vw, 330px);
+        bottom: calc(env(safe-area-inset-bottom) + 122px);
+    }
+
+    #chatInput {
+        padding: 8px 12px;
+        font-size: 0.86rem;
+        border-radius: 14px;
+    }
+
+    #credits {
+        bottom: calc(env(safe-area-inset-bottom) + 8px);
+        font-size: 0.7rem;
+        letter-spacing: 0.04rem;
+    }
+}
+
+@media (max-width: 480px) {
+    #home-online-count {
+        top: calc(env(safe-area-inset-top) + 8px);
+        left: 10px;
+        padding: 6px 10px;
+        font-size: 0.8rem;
+    }
+
+    #home-screen h1,
+    #respawn-screen h1 {
+        font-size: 1.28rem;
+    }
+
+    #homeUsrnInput,
+    #joinBtn {
+        width: min(80vw, 245px);
+        height: 36px;
+    }
+
+    #homeUsrnInput {
+        font-size: 0.82rem;
+    }
+
+    #joinBtn {
+        font-size: 0.82rem;
+    }
+
+    #input-container {
+        gap: 5px;
+    }
+
+    #respawnBtn,
+    #respawnHomeBtn {
+        width: min(86vw, 320px);
+    }
+
+    #top-left-bar {
+        gap: 5px;
+        padding: 5px;
+    }
+
+    #top-left-bar #settingsBtn,
+    #top-left-bar #fullscreenBtn,
+    #top-left-bar #shopBtn,
+    #top-left-bar #pauseBtn {
+        width: 30px;
+        height: 30px;
+    }
+
+    #home-form-link,
+    #home-info-toggle {
+        font-size: 0.72rem;
+        max-width: 56vw;
+    }
+
+    #chat-input-wrapper {
+        width: min(84vw, 300px);
+        bottom: calc(env(safe-area-inset-bottom) + 112px);
+    }
+}
+
+.shop-modal.drag-disabled .settings-header {
+    cursor: default !important;
 }
 
 #update-log.hidden {

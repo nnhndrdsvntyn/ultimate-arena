@@ -32,7 +32,7 @@ const SHOCKWAVE_PROC_CHANCE = 0.25;
 const SHOCKWAVE_FREEZE_MS = 900;
 const SHOCKWAVE_WAVE_COUNT = 3;
 const SHOCKWAVE_WAVE_INTERVAL_MS = 300;
-const TURN_RATE_RAD = 10 * (Math.PI / 180);
+const TURN_RATE_RAD = 20 * (Math.PI / 180);
 const SWING_FACING_HALF_ARC = Math.PI / 2;
 const SLASH_OFFSETS = [-Math.PI / 10, 0, Math.PI / 10];
 const CLOSE_PROXIMITY_BURST_RANGE = 180;
@@ -175,8 +175,14 @@ export class Minotaur extends Mob {
     }
 
     process(runDecisionLogic = true) {
+        this.updateSwingState();
+
         if (!runDecisionLogic) {
             const now = performance.now();
+            if (this.isAlarmed) {
+                // Keep target tracking smooth even on throttled AI frames.
+                this.turn();
+            }
             if (now < this.freezeUntil) {
                 this.lastX = this.x;
                 this.lastY = this.y;
@@ -209,7 +215,6 @@ export class Minotaur extends Mob {
 
         this.resolveMobCollisions();
         this.processLeapBurst();
-        this.updateSwingState();
         this.trySwingAttack();
     }
 
@@ -271,6 +276,8 @@ export class Minotaur extends Mob {
         const target = targetFromId || targetFromRef;
         if (!target || !target.isAlive) return null;
         if ((target.world || 'main') !== (this.world || 'main')) return null;
+        // If this target died after aggro started, drop aggro even if they respawned.
+        if ((target.lastDiedTime || 0) > (this.startHuntingTime || 0)) return null;
         this.target = target;
         this.targetId = target.id;
         return target;

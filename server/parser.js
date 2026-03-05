@@ -18,7 +18,8 @@ import {
 import {
     isSwordRank,
     isAccessoryItemType,
-    accessoryIdFromItemType
+    accessoryIdFromItemType,
+    isXpShopItemType
 } from '../public/shared/datamap.js';
 
 // --- Packet Type Map ---
@@ -514,6 +515,8 @@ function handleBuyPacket(reader, player) {
         } else if (isAccessoryItemType(itemType)) {
             const accessoryId = accessoryIdFromItemType(itemType);
             player.buyAccessory(accessoryId);
+        } else if (isXpShopItemType(itemType)) {
+            player.buyXp(itemType);
         }
     }
 }

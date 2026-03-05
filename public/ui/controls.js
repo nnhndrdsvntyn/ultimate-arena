@@ -1,5 +1,5 @@
 import { ENTITIES } from '../game.js';
-import { ws, Vars, LC, camera } from '../client.js';
+import { ws, Vars, LC, camera, isTutorialMobileActionEnabled, getHudUpgradeTypeAtClientPos, isHudUpgradeHeaderAtClientPos, tryUseHudUpgradeAtClientPos } from '../client.js';
 import { writer, sendPickupCommand, sendEquipAccessoryPacket, sendUseAbilityPacket } from '../helpers.js';
 import { isMobile, HOTBAR_CONFIG, INVENTORY_CONFIG, ACCESSORY_SLOT_CONFIG, THROW_BTN_CONFIG, PICKUP_BTN_CONFIG, DROP_BTN_CONFIG, ATTACK_BTN_CONFIG } from './config.js';
 import { isSwordRank, isSellableItem, isAccessoryItemType, accessoryIdFromItemType } from '../shared/datamap.js';
@@ -577,19 +577,17 @@ function setupJoystickLogic(container, knob) {
 
     container.addEventListener('touchstart', e => {
         if (uiState.isChatOpen || uiState.isSettingsOpen) return;
-        e.preventDefault();
         const touch = e.changedTouches[0];
         moveId = touch.identifier;
         startX = touch.clientX;
         startY = touch.clientY;
-    });
+    }, { passive: true });
 
     container.addEventListener('touchmove', e => {
         if (uiState.isChatOpen || uiState.isSettingsOpen) return;
-        e.preventDefault();
         const touch = Array.from(e.changedTouches).find(t => t.identifier === moveId);
         if (touch) onMove(touch.clientX, touch.clientY);
-    });
+    }, { passive: true });
 
     container.addEventListener('mousedown', e => {
         if (uiState.isChatOpen || uiState.isSettingsOpen) return;
@@ -643,6 +641,10 @@ function setupMobileTouchActions(joyContainer, chatBtn) {
                 uiTouchIds.add(t.identifier);
 
                 // Check hotbar
+                if (tryUseHudUpgradeAtClientPos(t.clientX, t.clientY)) {
+                    return;
+                }
+
                 const hotbarSlot = isClickingHotbar(t.clientX, t.clientY);
                 if (hotbarSlot !== -1) {
                     handleHotbarSelection(hotbarSlot);
@@ -667,29 +669,35 @@ function setupMobileTouchActions(joyContainer, chatBtn) {
                 // Check action buttons
                 if (isButtonTouched(t.clientX, t.clientY, THROW_BTN_CONFIG)) {
                     const myPlayer = ENTITIES.PLAYERS[Vars.myId];
-                    if (myPlayer?.hasWeapon) sendThrowPacket();
+                    if (myPlayer?.hasWeapon && isTutorialMobileActionEnabled('throw')) sendThrowPacket();
                     throwTouchId = t.identifier;
                 } else if (isButtonTouched(t.clientX, t.clientY, ATTACK_BTN_CONFIG)) {
-                    sendAttackPacket(1);
+                    if (isTutorialMobileActionEnabled('attack')) sendAttackPacket(1);
                     attackTouchId = t.identifier;
                 } else if (isButtonTouched(t.clientX, t.clientY, PICKUP_BTN_CONFIG)) {
-                    sendPickupCommand();
+                    if (isTutorialMobileActionEnabled('pickup')) sendPickupCommand();
                 } else if (isButtonTouched(t.clientX, t.clientY, DROP_BTN_CONFIG)) {
-                    sendDropPacket();
+                    if (isTutorialMobileActionEnabled('drop')) sendDropPacket();
                 }
             }
         });
     });
 
     window.addEventListener('touchmove', (e) => {
-        if (uiState.isSettingsOpen || uiState.isShopOpen || uiState.isInventoryOpen) return;
+        const isDraggingInventoryItem = Vars.dragSlot !== -1 || Vars.dragAccessory;
         Array.from(e.changedTouches).forEach(t => {
-            // Update mouse position for drag visualization
-            Vars.mouseX = t.clientX;
-            Vars.mouseY = t.clientY;
+            if (isDraggingInventoryItem) {
+                // Keep drag ghost synced with finger even while modals are open.
+                Vars.mouseX = t.clientX;
+                Vars.mouseY = t.clientY;
+            }
+
+            if (uiState.isSettingsOpen || uiState.isShopOpen || uiState.isInventoryOpen) return;
 
             // Only rotate if NOT touching any UI
             if (!uiTouchIds.has(t.identifier) && t.identifier !== throwTouchId && t.identifier !== attackTouchId) {
+                Vars.mouseX = t.clientX;
+                Vars.mouseY = t.clientY;
                 updateRotationFromTouch(t.clientX, t.clientY);
             }
         });
@@ -786,6 +794,14 @@ function isTouchOnUI(clientX, clientY) {
         return true;
     }
 
+    if (getHudUpgradeTypeAtClientPos(clientX, clientY) !== 0) {
+        return true;
+    }
+
+    if (isHudUpgradeHeaderAtClientPos(clientX, clientY)) {
+        return true;
+    }
+
     if (isClickingAccessorySlot(clientX, clientY)) {
         return true;
     }
@@ -811,6 +827,10 @@ export function setupDesktopControls() {
         // Always track mouse position for dragging
         Vars.mouseX = e.clientX;
         Vars.mouseY = e.clientY;
+        const overUpgradeHeader = isHudUpgradeHeaderAtClientPos(e.clientX, e.clientY);
+        if (LC?.canvas) {
+            LC.canvas.style.cursor = overUpgradeHeader ? 'pointer' : 'default';
+        }
 
         const myPlayer = ENTITIES.PLAYERS[Vars.myId];
         if (!myPlayer?.isAlive || ws?.readyState !== ws.OPEN || uiState.isSettingsOpen || Vars.dragSlot !== -1 || Vars.dragAccessory) return;
@@ -825,6 +845,10 @@ export function setupDesktopControls() {
             const myPlayer = ENTITIES.PLAYERS[Vars.myId];
             const slotClicked = isClickingHotbar(e.clientX, e.clientY);
             const invSlot = isClickingInventory(e.clientX, e.clientY);
+
+            if (tryUseHudUpgradeAtClientPos(e.clientX, e.clientY)) {
+                return;
+            }
 
             if (e.shiftKey && uiState.isShopOpen && uiState.activeShopTab === 'Sell') {
                 const clickedSlot = slotClicked !== -1 ? slotClicked : invSlot;

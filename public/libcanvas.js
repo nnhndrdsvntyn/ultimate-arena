@@ -11,6 +11,10 @@ export class LibCanvas {
         this.createDOM();
         this.resizeCanvas();
         window.addEventListener('resize', () => this.resizeCanvas());
+        window.addEventListener('orientationchange', () => this.resizeCanvas());
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', () => this.resizeCanvas());
+        }
 
         this.zoom = 0.7;
         this._mouseX = window.innerWidth / 2;
@@ -30,14 +34,16 @@ export class LibCanvas {
         this.container.style.position = 'fixed';
         this.container.style.top = '0';
         this.container.style.left = '0';
-        this.container.style.width = '100%';
-        this.container.style.height = '100%';
+        this.container.style.width = '100vw';
+        this.container.style.height = '100dvh';
         this.container.style.margin = '0';
         this.container.style.padding = '0';
+        this.container.style.overflow = 'hidden';
 
-        this.canvas.style.width = '100%';
-        this.canvas.style.height = '100%';
+        this.canvas.style.width = '100vw';
+        this.canvas.style.height = '100dvh';
         this.canvas.style.backgroundColor = 'white';
+        this.canvas.style.display = 'block';
 
         this.container.appendChild(this.canvas);
         document.body.appendChild(this.container);

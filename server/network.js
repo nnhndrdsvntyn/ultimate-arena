@@ -8,6 +8,7 @@ import {
 import { drainQueuedCoinPickupFxByWorld } from './helpers.js';
 
 const UPDATE_SEND_BUFFER = 260;
+const SPECTATOR_RANGE_DIVISOR = 1.5;
 
 /**
  * Builds and sends updates for all connected clients.
@@ -26,7 +27,7 @@ export function sendUpdates(wss, lbWriter) {
         const localPlayer = ENTITIES.PLAYERS[ws.id] || { x: 0, y: 0 };
         const world = localPlayer.world || ws.world || 'main';
         const forceTutorialWorldSync = world.startsWith('tutorial');
-        const baseRange = localPlayer.isAlive ? 1200 : (1200 / 0.7);
+        const baseRange = localPlayer.isAlive ? 1200 : ((1200 / 0.7) / SPECTATOR_RANGE_DIVISOR);
         const alienHatKey = ACCESSORY_KEYS[localPlayer.accessoryId || 0];
         const wearingAlienHat = alienHatKey === 'alien-antennas';
         const alienHatRange = 1500;
@@ -54,6 +55,7 @@ export function sendUpdates(wss, lbWriter) {
         writeProjectiles(pw, lpX, lpY, renderDistanceSq, isFull, entitiesInUpdate, world, forceTutorialWorldSync);
         writeObjects(pw, lpX, lpY, renderDistanceSq, isFull, entitiesInUpdate, world, forceTutorialWorldSync);
         writeCoinPickupFxBatch(pw, queuedCoinFxByWorld.get(world) || []);
+        writeTopLeaderMarker(pw, world);
 
         ws.seenEntities = entitiesInUpdate;
 
@@ -86,6 +88,19 @@ function writeCoinPickupFxBatch(pw, events) {
     pw.writeU16At(countPos, count);
 }
 
+function writeTopLeaderMarker(pw, world) {
+    const top = getTopLeaderForWorld(world);
+    if (!top) {
+        pw.writeU8(0);
+        return;
+    }
+    pw.writeU8(1);
+    pw.writeU8(top.id);
+    pw.writeU16(top.x);
+    pw.writeU16(top.y);
+    pw.writeU32(top.score || 0);
+}
+
 export function sendPlayerCount(wss, writer) {
     const count = [...wss.clients].filter(ws => ws.readyState === 1).length;
     writer.reset();
@@ -103,6 +118,11 @@ function getLeaderboard(world) {
         .sort((a, b) => b.score - a.score);
     if (lb.length > 10) lb.length = 10;
     return lb;
+}
+
+function getTopLeaderForWorld(world) {
+    const lb = getLeaderboard(world);
+    return lb.length ? lb[0] : null;
 }
 
 function buildLeaderboardPacket(writer, leaderboard) {
@@ -299,8 +319,11 @@ function writeObjects(pw, lpX, lpY, rangeSq, isFullFn, entities, world, forceWor
 
         entities.add('o' + o.id);
         pw.writeU16(o.id);
-        const full = isFullFn('o', o.id);
+        let full = isFullFn('o', o.id);
         const prev = o.prev || {};
+        if (!full && (prev.x === undefined || prev.y === undefined || prev.health === undefined || prev.type === undefined)) {
+            full = true;
+        }
         let mask = full ? 0x80 : 0;
         if (!full) {
             if (Math.abs(o.x - prev.x) > 1) mask |= 0x01;
