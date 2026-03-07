@@ -139,6 +139,18 @@ export const UPDATES_LOG = [
             "Fixed extreme lag when energy burst ability is used.",
         ],
         date: '2026-03-05'
+    },
+    {
+        version: '1.4.3 (test) (W.I.P)',
+        changes: [
+            "Players can now buy XP in shop using coins!",  
+            "Small bug fixes",
+            "Small river tweaks.",
+            "Longer cow/polar bear melee cooldown",
+            "Fixed polar bear agro bug",
+            "Other players can now be seen as red dots on the minimap."
+        ],
+        date: '2026-03-05'
     }
 ];
 

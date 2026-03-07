@@ -8,7 +8,8 @@ import {
     ACCESSORY_KEYS
 } from '../../../public/shared/datamap.js';
 import {
-    playSfx
+    playSfx,
+    emitChestCoinSeed
 } from '../../helpers.js';
 import {
     GameObject
@@ -47,31 +48,40 @@ export class Chest extends GameObject {
     die(killer) {
         super.die(killer);
 
+        let totalGold = 0;
         if (Number.isFinite(this.tutorialCoinDrop) && this.tutorialCoinDrop > 0) {
-            spawnObject(getCoinObjectType(), this.x, this.y, Math.floor(this.tutorialCoinDrop), 'chest', this.world || 'main');
-            return;
+            totalGold = Math.max(1, Math.floor(this.tutorialCoinDrop));
+        } else {
+            if (!this.shouldDropLoop) return;
+            const coinDropRange = dataMap.OBJECTS[this.type].coinDropRange;
+            const [min, max] = coinDropRange;
+            const baseGold = Math.floor(Math.random() * (max - min + 1)) + min;
+            const killerAccessory = ACCESSORY_KEYS[killer?.accessoryId || 0];
+            totalGold = killerAccessory === 'pirate-hat'
+                ? Math.floor(baseGold * 1.2)
+                : baseGold;
         }
 
-        if (!this.shouldDropLoop) return;
-
-        const coinDropRange = dataMap.OBJECTS[this.type].coinDropRange;
-        const [min, max] = coinDropRange;
-        const baseGold = Math.floor(Math.random() * (max - min + 1)) + min;
-        const killerAccessory = ACCESSORY_KEYS[killer?.accessoryId || 0];
-        const totalGold = killerAccessory === 'pirate-hat'
-            ? Math.floor(baseGold * 1.2)
-            : baseGold;
         const coinType = getCoinObjectType();
         if (!coinType) return;
         const coinRadius = dataMap.OBJECTS[coinType]?.radius || 50;
         const dropSpread = this.radius + 45;
+        const worldId = this.world || 'main';
+        const seed = ((Math.random() * 0x100000000) >>> 0);
+        let rngState = seed;
+        const nextRand = () => {
+            rngState = (Math.imul(1664525, rngState) + 1013904223) >>> 0;
+            return rngState / 4294967296;
+        };
+
+        emitChestCoinSeed(this.x, this.y, dropSpread, totalGold, seed, 10000, worldId);
 
         for (let i = 0; i < totalGold; i++) {
-            const dropAngle = Math.random() * Math.PI * 2;
-            const dropDistance = Math.sqrt(Math.random()) * dropSpread;
+            const dropAngle = nextRand() * Math.PI * 2;
+            const dropDistance = Math.sqrt(nextRand()) * dropSpread;
             const dropX = Math.max(coinRadius, Math.min(MAP_SIZE[0] - coinRadius, this.x + Math.cos(dropAngle) * dropDistance));
             const dropY = Math.max(coinRadius, Math.min(MAP_SIZE[1] - coinRadius, this.y + Math.sin(dropAngle) * dropDistance));
-            spawnObject(coinType, dropX, dropY, 1, 'chest', this.world || 'main');
+            spawnObject(coinType, dropX, dropY, 1, 'chest', worldId);
         }
 
     }

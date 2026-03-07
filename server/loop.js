@@ -22,9 +22,11 @@ export function updateGame() {
 
     const now = performance.now();
     const activeWorlds = new Set();
+    const players = [];
     for (const id in ENTITIES.PLAYERS) {
         const p = ENTITIES.PLAYERS[id];
         if (!p) continue;
+        players.push(p);
         activeWorlds.add(p.world || 'main');
     }
 
@@ -45,13 +47,13 @@ export function updateGame() {
     if (ENTITIES.playerIds.size === 0) return;
 
     // 1. Process active entities
-    processPlayers(now);
-    processProximityProcessables(ENTITIES.MOBS, 1500, (mob) => mob.process(runNpcLogicThisFrame));
+    processPlayers(players, now);
+    processProximityProcessables(ENTITIES.MOBS, players, 1500, (mob) => mob.process(runNpcLogicThisFrame));
     processProcessables(ENTITIES.PROJECTILES);
-    processProximityProcessables(ENTITIES.OBJECTS, 1000);
+    processProximityProcessables(ENTITIES.OBJECTS, players, 1000);
 
     // 2. Resolve structure collisions
-    processProximityProcessables(ENTITIES.STRUCTURES, 1000, (s) => s.resolveCollisions());
+    processProximityProcessables(ENTITIES.STRUCTURES, players, 1000, (s) => s.resolveCollisions());
 
     // 3. Handle Respawns
     handleRespawns(deadMobs, (ent) => {
@@ -75,10 +77,13 @@ function processProcessables(entities) {
     }
 }
 
-function processPlayers(now = performance.now()) {
-    const realPlayers = Object.values(ENTITIES.PLAYERS).filter(p => p && !p.isBot);
-    for (const id in ENTITIES.PLAYERS) {
-        const p = ENTITIES.PLAYERS[id];
+function processPlayers(players, now = performance.now()) {
+    const realPlayers = [];
+    for (const p of players) {
+        if (p && !p.isBot) realPlayers.push(p);
+    }
+
+    for (const p of players) {
         if (!p) continue;
         const isActiveHunterBot = !!(p.isBot && p._botRole === 'pro' && p._botHunterTargetId);
         const isAssistTargetBot = !!(p.isBot && p._botAssistTargetId);
@@ -94,8 +99,7 @@ function processPlayers(now = performance.now()) {
     }
 }
 
-function processProximityProcessables(entities, range, customFn = (e) => e.process()) {
-    const players = Object.values(ENTITIES.PLAYERS);
+function processProximityProcessables(entities, players, range, customFn = (e) => e.process()) {
     for (const id in entities) {
         const ent = entities[id];
         if (!ent) continue;

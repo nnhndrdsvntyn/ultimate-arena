@@ -312,39 +312,27 @@ function canHunterEngageTarget(bot, target) {
     return hunterRank >= requiredHunterRank && targetRank >= minTargetRank;
 }
 
-function getAliveTeammate(bot) {
-    if (!bot || !bot.isBot) return null;
-    const group = getBotTeamGroup(bot);
-    if (!group) return null;
-    for (const id in ENTITIES.PLAYERS) {
-        const other = ENTITIES.PLAYERS[id];
-        if (!other || !other.isBot || !other.isAlive || other.id === bot.id) continue;
-        if ((other.world || 'main') !== (bot.world || 'main')) continue;
-        if (getBotTeamGroup(other) !== group) continue;
-        return other;
-    }
-    return null;
-}
-
-function getRetaliationTarget(bot, maxRange, now = performance.now()) {
+function getRetaliationTarget(bot) {
     const attacker = bot.lastDamager;
     if (!attacker || attacker.id === bot.id || !attacker.isAlive) return null;
     if ((attacker.world || 'main') !== (bot.world || 'main')) return null;
-    if (shouldIgnoreCombatBetween(bot, attacker)) return null;
-    if (now - (bot.lastDamagedTime || 0) > BOT_RETALIATE_WINDOW_MS) return null;
 
     const dx = attacker.x - bot.x;
     const dy = attacker.y - bot.y;
     const distSq = dx * dx + dy * dy;
-    const maxRangeSq = maxRange * maxRange;
-    if (distSq > maxRangeSq) return null;
-    return { player: attacker, distSq };
+    const isPlayerTarget = !!attacker.inventory;
+    if (isPlayerTarget) {
+        if (shouldIgnoreCombatBetween(bot, attacker)) return null;
+        return { kind: 'player', target: attacker, distSq };
+    }
+    return { kind: 'mob', target: attacker, distSq };
 }
 
-function refreshTeamerAssignments(now = performance.now()) {
-    const allBots = Object.values(ENTITIES.PLAYERS)
-        .filter(p => p && p.isBot && (p.world || 'main') === 'main');
-    const allBotIds = allBots.map(p => p.id);
+function refreshTeamerAssignments(now = performance.now(), allBots = null) {
+    const bots = Array.isArray(allBots)
+        ? allBots
+        : Object.values(ENTITIES.PLAYERS).filter(p => p && p.isBot && (p.world || 'main') === 'main');
+    const allBotIds = bots.map(p => p.id);
 
     const shouldShuffle =
         teamGroupByBotId.size === 0 ||
@@ -390,9 +378,9 @@ function refreshTeamerAssignments(now = performance.now()) {
 
     // Ensure at least one teamer is a pro bot (if any pro exists).
     const assignedIds = new Set(teamGroupByBotId.keys());
-    const hasProTeamer = allBots.some(bot => assignedIds.has(bot.id) && getBotRole(bot) === BOT_ROLE_PRO);
+    const hasProTeamer = bots.some(bot => assignedIds.has(bot.id) && getBotRole(bot) === BOT_ROLE_PRO);
     if (!hasProTeamer) {
-        const proCandidates = allBots.filter(bot => getBotRole(bot) === BOT_ROLE_PRO && !assignedIds.has(bot.id));
+        const proCandidates = bots.filter(bot => getBotRole(bot) === BOT_ROLE_PRO && !assignedIds.has(bot.id));
         if (proCandidates.length && teamGroupByBotId.size > 0) {
             const incomingPro = proCandidates[Math.floor(Math.random() * proCandidates.length)];
             const outgoingIds = Array.from(teamGroupByBotId.keys());
@@ -404,12 +392,12 @@ function refreshTeamerAssignments(now = performance.now()) {
     }
 
     // Mirror group membership onto bot objects for debugging/inspection.
-    for (const bot of allBots) {
+    for (const bot of bots) {
         bot._botTeamGroup = teamGroupByBotId.get(bot.id) || 0;
     }
 }
 
-function refreshHunterAssignments(realPlayers, now = performance.now()) {
+function refreshHunterAssignments(realPlayers, now = performance.now(), context = null) {
     if (now - lastHunterAssignmentAt < HUNTER_REASSIGN_MS) return;
     lastHunterAssignmentAt = now;
 
@@ -421,10 +409,38 @@ function refreshHunterAssignments(realPlayers, now = performance.now()) {
         (p.world || 'main') === 'main'
     );
     const realIds = new Set(aliveRealPlayers.map(p => p.id));
-    const proBots = Object.values(ENTITIES.PLAYERS).filter(b =>
-        b && b.isBot && b.isAlive && (b.world || 'main') === 'main' && getBotRole(b) === BOT_ROLE_PRO
-    );
-    const allBots = Object.values(ENTITIES.PLAYERS).filter(b => b && b.isBot);
+    const proBots = Array.isArray(context?.proBots)
+        ? context.proBots
+        : Object.values(ENTITIES.PLAYERS).filter(b =>
+            b && b.isBot && b.isAlive && (b.world || 'main') === 'main' && getBotRole(b) === BOT_ROLE_PRO
+        );
+    const allBots = Array.isArray(context?.allBots)
+        ? context.allBots
+        : Object.values(ENTITIES.PLAYERS).filter(b => b && b.isBot);
+
+    const groupAliveBots = new Map();
+    for (const bot of allBots) {
+        if (!bot || !bot.isAlive || (bot.world || 'main') !== 'main') continue;
+        const group = getBotTeamGroup(bot);
+        if (!group) continue;
+        if (!groupAliveBots.has(group)) groupAliveBots.set(group, []);
+        groupAliveBots.get(group).push(bot);
+    }
+    const teammateByBotId = new Map();
+    for (const botsInGroup of groupAliveBots.values()) {
+        for (let i = 0; i < botsInGroup.length; i++) {
+            const bot = botsInGroup[i];
+            let teammate = null;
+            for (let j = 0; j < botsInGroup.length; j++) {
+                if (i === j) continue;
+                teammate = botsInGroup[j];
+                break;
+            }
+            teammateByBotId.set(bot.id, teammate);
+        }
+    }
+    const getCachedTeammate = (bot) => teammateByBotId.get(bot?.id) || null;
+
     for (const bot of allBots) {
         bot._botAssistTargetId = 0;
     }
@@ -461,7 +477,7 @@ function refreshHunterAssignments(realPlayers, now = performance.now()) {
         for (let i = 0; i < unassignedHunters.length; i++) {
             const bot = unassignedHunters[i];
             if (!canHunterEngageTarget(bot, player)) continue;
-            const teammate = getAliveTeammate(bot);
+            const teammate = getCachedTeammate(bot);
             const canBringTeammate = !!teammate && ((player.score || 0) > ((bot.score || 0) * HUNTER_TEAMUP_SCORE_MULT));
             const priority = canBringTeammate ? 0 : 1;
             const dx = player.x - bot.x;
@@ -493,7 +509,7 @@ function refreshHunterAssignments(realPlayers, now = performance.now()) {
 
         const needsTeammatePressure = (player.score || 0) > ((currentHunter.score || 0) * HUNTER_TEAMUP_SCORE_MULT);
         if (!needsTeammatePressure) continue;
-        if (getAliveTeammate(currentHunter)) continue;
+        if (getCachedTeammate(currentHunter)) continue;
 
         // Find best reassignment candidate that can bring a teammate.
         let bestCandidate = null;
@@ -504,7 +520,7 @@ function refreshHunterAssignments(realPlayers, now = performance.now()) {
             if (candidate._botHunterTargetId) continue;
             if ((candidate.score || 0) < PRO_HUNTER_MIN_SCORE) continue;
             if (!canHunterEngageTarget(candidate, player)) continue;
-            if (!getAliveTeammate(candidate)) continue;
+            if (!getCachedTeammate(candidate)) continue;
 
             const dx = player.x - candidate.x;
             const dy = player.y - candidate.y;
@@ -527,11 +543,36 @@ function refreshHunterAssignments(realPlayers, now = performance.now()) {
         if (!targetId) continue;
         const target = ENTITIES.PLAYERS[targetId];
         if (!target || !target.isAlive || target.isBot) continue;
-        const teammate = getAliveTeammate(hunter);
+        const teammate = getCachedTeammate(hunter);
         if (!teammate) continue;
         if ((target.score || 0) <= ((hunter.score || 0) * HUNTER_TEAMUP_SCORE_MULT)) continue;
         teammate._botAssistTargetId = targetId;
     }
+}
+
+function collectBotTickState() {
+    const realPlayers = [];
+    const allBots = [];
+    const allMainBots = [];
+    const proMainBots = [];
+
+    for (const id in ENTITIES.PLAYERS) {
+        const p = ENTITIES.PLAYERS[id];
+        if (!p) continue;
+        if (p.isBot) {
+            allBots.push(p);
+            if ((p.world || 'main') === 'main') {
+                allMainBots.push(p);
+                if (p.isAlive && getBotRole(p) === BOT_ROLE_PRO) {
+                    proMainBots.push(p);
+                }
+            }
+            continue;
+        }
+        realPlayers.push(p);
+    }
+
+    return { realPlayers, allBots, allMainBots, proMainBots };
 }
 
 function getHunterTarget(bot) {
@@ -692,24 +733,22 @@ function tryBotShopUpgrade(bot, now = performance.now()) {
         console.log(`[BOT ${bot.id}] shop-no-purchase coins=${coins} best=${getBestSwordRank(bot)} canBuyAccessory=${canBuyAccessory}`);
     }
 
-    const role = getBotRole(bot);
-    const canBuyXp = role !== BOT_ROLE_CASUAL && XP_SHOP_ITEMS.length > 0;
-    if (!canBuyXp) return;
+    tryBotConvertCoinsToXp(bot);
+}
 
-    const bestSword = getBestSwordRank(bot);
-    const hasAccessoryEquipped = hasEquippedAccessory(bot);
-    if (!hasAccessoryEquipped) return;
-    if (role === BOT_ROLE_PRO && bestSword < 8) return;
-    if (role === BOT_ROLE_NOOB && bestSword < getBotSwordCap(bot)) return;
+function tryBotConvertCoinsToXp(bot) {
+    const role = getBotRole(bot);
+    if ((role !== BOT_ROLE_PRO && role !== BOT_ROLE_CASUAL) || XP_SHOP_ITEMS.length === 0) return false;
 
     const latestCoins = bot.getTotalCoins();
-    const affordableXp = XP_SHOP_ITEMS.filter(item => latestCoins >= item.price);
-    if (!affordableXp.length) return;
+    if (latestCoins < 700) return false;
 
-    // Prefer higher XP packs once geared.
+    const affordableXp = XP_SHOP_ITEMS.filter(item => latestCoins >= item.price);
+    if (!affordableXp.length) return false;
     const chosen = affordableXp[affordableXp.length - 1];
-    if (!chosen) return;
+    if (!chosen) return false;
     bot.buyXp(chosen.id);
+    return true;
 }
 
 function findNearestPolarBear(bot, maxRange) {
@@ -820,6 +859,10 @@ function maintainBotInventory(bot, now = performance.now()) {
     const bestSword = getBestSwordRank(bot);
     const hasAccessoryEquipped = hasEquippedAccessory(bot);
 
+    if (full && (role === BOT_ROLE_PRO || role === BOT_ROLE_CASUAL)) {
+        tryBotConvertCoinsToXp(bot);
+    }
+
     const dropSlots = [];
     const sellSlots = [];
 
@@ -861,20 +904,14 @@ function maintainBotInventory(bot, now = performance.now()) {
         dropSlots.push(i);
     }
 
-    // Noob only: once geared for its cap, free up room by dropping coin stacks if inventory is filling up.
-    if (
-        role === BOT_ROLE_NOOB &&
-        bestSword >= getBotSwordCap(bot) &&
-        hasAccessoryEquipped &&
-        isInventoryFillingUp(bot)
-    ) {
+    // Noob only: drop coin stacks once the inventory is full to keep making room.
+    if (role === BOT_ROLE_NOOB && full) {
         for (let i = bot.inventory.length - 1; i >= 0; i--) {
             if (bot.inventoryCounts[i] <= 0) continue;
             const type = bot.inventory[i] & 0x7F;
             if (!isCoinObjectType(type)) continue;
             if (dropSlots.includes(i)) continue;
             dropSlots.push(i);
-            // Drop one or two stacks per maintenance tick to avoid over-dumping.
             if (dropSlots.length >= 2) break;
         }
     }
@@ -1018,7 +1055,6 @@ function findNearestCoin(bot, maxRange, excludedIds = null) {
         if ((obj.world || 'main') !== (bot.world || 'main')) continue;
         if (obj.collectorId) continue;
         if ((obj.teleportTicks || 0) > 0) continue;
-        if (bot.isBot && obj.dropSource === 'player' && now - (obj.spawnTime || 0) < 10000) continue;
         if (now - (obj.spawnTime || 0) < 220) continue;
 
         const dx = obj.x - bot.x;
@@ -1530,40 +1566,60 @@ export function processOffscreenBot(bot, now = performance.now()) {
         bot.y += Math.sin(bot.angle) * speed;
     };
 
-    const coinTarget = findNearestCoin(bot, 1500);
-    if (coinTarget) {
+    const polarThreat = findNearestPolarBear(bot, BOT_POLAR_BEAR_AVOID_RANGE);
+    if (polarThreat) {
+        const dx = bot.x - polarThreat.target.x;
+        const dy = bot.y - polarThreat.target.y;
+        bot.angle = Math.atan2(dy, dx);
+        bot.x += Math.cos(bot.angle) * speed;
+        bot.y += Math.sin(bot.angle) * speed;
         bot.attacking = 0;
-        primitiveMoveToward(coinTarget.target.x, coinTarget.target.y);
-        bot.tryPickup();
     } else {
-        const chestTarget = findNearestChest(bot, 1900);
-        if (chestTarget) {
-            primitiveMoveToward(chestTarget.target.x, chestTarget.target.y);
-            bot.attacking = 1;
+        const retaliationTarget = (getBotRole(bot) === BOT_ROLE_PRO || getBotRole(bot) === BOT_ROLE_CASUAL)
+            ? getRetaliationTarget(bot)
+            : null;
+        if (retaliationTarget) {
+            primitiveMoveToward(retaliationTarget.target.x, retaliationTarget.target.y);
+            const attackRange = retaliationTarget.kind === 'mob' ? BOT_MOB_ATTACK_RANGE : BOT_ATTACK_RANGE;
+            bot.attacking = retaliationTarget.distSq <= (attackRange * attackRange) ? 1 : 0;
             bot.tryPickup();
-
-            const chest = chestTarget.target;
-            const hitRange = (bot.radius + chest.radius + 35);
-            const dx = chest.x - bot.x;
-            const dy = chest.y - bot.y;
-            const distSq = dx * dx + dy * dy;
-            const canHit = distSq <= (hitRange * hitRange);
-            if (canHit && now - (bot._botPrimitiveLastChestHitAt || 0) >= 220) {
-                const primitiveDamage = Math.max(8, Math.round((bot.strength || 10) * 0.8));
-                if (typeof chest.damage === 'function') {
-                    chest.damage(primitiveDamage, bot);
-                }
-                bot._botPrimitiveLastChestHitAt = now;
-            }
         } else {
-            bot.attacking = 0;
-            if (now >= (bot._botPrimitiveTurnAt || 0)) {
-                bot._botPrimitiveAngle = (bot._botPrimitiveAngle || 0) + ((Math.random() * 1.2) - 0.6);
-                bot._botPrimitiveTurnAt = now + randomRangeInt(1200, 3200);
+            const coinTarget = findNearestCoin(bot, 1500);
+            if (coinTarget) {
+                bot.attacking = 0;
+                primitiveMoveToward(coinTarget.target.x, coinTarget.target.y);
+                bot.tryPickup();
+            } else {
+                const chestTarget = findNearestChest(bot, 1900);
+                if (chestTarget) {
+                    primitiveMoveToward(chestTarget.target.x, chestTarget.target.y);
+                    bot.attacking = 1;
+                    bot.tryPickup();
+
+                    const chest = chestTarget.target;
+                    const hitRange = (bot.radius + chest.radius + 35);
+                    const dx = chest.x - bot.x;
+                    const dy = chest.y - bot.y;
+                    const distSq = dx * dx + dy * dy;
+                    const canHit = distSq <= (hitRange * hitRange);
+                    if (canHit && now - (bot._botPrimitiveLastChestHitAt || 0) >= 220) {
+                        const primitiveDamage = Math.max(8, Math.round((bot.strength || 10) * 0.8));
+                        if (typeof chest.damage === 'function') {
+                            chest.damage(primitiveDamage, bot);
+                        }
+                        bot._botPrimitiveLastChestHitAt = now;
+                    }
+                } else {
+                    bot.attacking = 0;
+                    if (now >= (bot._botPrimitiveTurnAt || 0)) {
+                        bot._botPrimitiveAngle = (bot._botPrimitiveAngle || 0) + ((Math.random() * 1.2) - 0.6);
+                        bot._botPrimitiveTurnAt = now + randomRangeInt(1200, 3200);
+                    }
+                    bot.angle = bot._botPrimitiveAngle || bot.angle || 0;
+                    bot.x += Math.cos(bot.angle) * speed;
+                    bot.y += Math.sin(bot.angle) * speed;
+                }
             }
-            bot.angle = bot._botPrimitiveAngle || bot.angle || 0;
-            bot.x += Math.cos(bot.angle) * speed;
-            bot.y += Math.sin(bot.angle) * speed;
         }
     }
 
@@ -1582,6 +1638,27 @@ export function processOffscreenBot(bot, now = performance.now()) {
 
 export function processOffscreenHunterBot(bot, now = performance.now()) {
     if (!bot || !bot.isBot || !bot.isAlive) return;
+
+    const retaliationTarget = (getBotRole(bot) === BOT_ROLE_PRO || getBotRole(bot) === BOT_ROLE_CASUAL)
+        ? getRetaliationTarget(bot)
+        : null;
+    if (retaliationTarget) {
+        bot.lastX = bot.x;
+        bot.lastY = bot.y;
+        bot._botHasLockedTarget = true;
+        const dx = retaliationTarget.target.x - bot.x;
+        const dy = retaliationTarget.target.y - bot.y;
+        if ((dx * dx + dy * dy) <= 1) return;
+        bot.angle = Math.atan2(dy, dx);
+        const speed = (bot.defaultSpeed || bot.speed || 17) * 0.9;
+        bot.x += Math.cos(bot.angle) * speed;
+        bot.y += Math.sin(bot.angle) * speed;
+        const attackRange = retaliationTarget.kind === 'mob' ? BOT_MOB_ATTACK_RANGE : BOT_ATTACK_RANGE;
+        bot.attacking = retaliationTarget.distSq <= (attackRange * attackRange) ? 1 : 0;
+        bot.x = Math.max(0, Math.min(MAP_SIZE[0], bot.x));
+        bot.y = Math.max(0, Math.min(MAP_SIZE[1], bot.y));
+        return;
+    }
 
     const targetId = bot._botHunterTargetId || bot._botAssistTargetId || 0;
     if (!targetId) return;
@@ -1610,19 +1687,21 @@ export function processOffscreenHunterBot(bot, now = performance.now()) {
 
 export function updateBotPlayers(now = performance.now()) {
     ensureBotPopulation();
-    const realPlayers = Object.values(ENTITIES.PLAYERS).filter(p => p && !p.isBot);
-    refreshTeamerAssignments(now);
-    refreshHunterAssignments(realPlayers, now);
+    const tickState = collectBotTickState();
+    const { realPlayers, allBots, allMainBots, proMainBots } = tickState;
+    refreshTeamerAssignments(now, allMainBots);
+    refreshHunterAssignments(realPlayers, now, {
+        allBots,
+        proBots: proMainBots
+    });
     const teamCoinReservations = new Map();
     const teamChestReservations = new Map();
     const getTeamReservationSet = (store, group) => {
         if (!store.has(group)) store.set(group, new Set());
         return store.get(group);
     };
-    for (const id in ENTITIES.PLAYERS) {
-        const bot = ENTITIES.PLAYERS[id];
-        if (!bot || !bot.isBot) continue;
-        if ((bot.world || 'main') !== 'main') continue;
+    for (const bot of allMainBots) {
+        if (!bot) continue;
         const role = getBotRole(bot);
         const teamGroup = getBotTeamGroup(bot);
         const reservedCoins = teamGroup > 0 ? getTeamReservationSet(teamCoinReservations, teamGroup) : null;
@@ -1642,11 +1721,16 @@ export function updateBotPlayers(now = performance.now()) {
         bot._botNextDecisionAt = now + BOT_DECISION_INTERVAL_MS;
         tryBotSpendBuffPoints(bot, now);
 
+        ensureBotAlwaysArmed(bot, now);
+        tryBotShopUpgrade(bot, now);
+        maintainBotInventory(bot, now);
+
         const hunterTargetId = bot._botHunterTargetId || 0;
         const hunterTarget = getHunterTarget(bot);
         const assistTargetId = bot._botAssistTargetId || 0;
         const assistTarget = getAssistTarget(bot);
-        if (!isBotNearAnyRealPlayer(bot, realPlayers) && !hunterTarget && !assistTarget) {
+        const nearRealPlayer = isBotNearAnyRealPlayer(bot, realPlayers);
+        if (!nearRealPlayer && !hunterTarget && !assistTarget) {
             bot.attacking = 0;
             continue;
         }
@@ -1656,36 +1740,36 @@ export function updateBotPlayers(now = performance.now()) {
             continue;
         }
 
-        ensureBotAlwaysArmed(bot, now);
-        tryBotShopUpgrade(bot, now);
-        maintainBotInventory(bot, now);
-
         const forced = forceBotBackInBounds(bot);
         if (forced) {
             bot.attacking = 0;
             bot._botHasLockedTarget = true;
         } else {
-            if (role === BOT_ROLE_PRO || role === BOT_ROLE_CASUAL) {
-                const polarThreat = findNearestPolarBear(bot, BOT_POLAR_BEAR_AVOID_RANGE);
-                if (polarThreat) {
-                    bot._botHasLockedTarget = true;
-                    bot.attacking = 0;
-                    moveAwayFrom(bot, polarThreat.target.x, polarThreat.target.y);
-                    bot._botNextMoveAt = now + 80 + Math.floor(Math.random() * 120);
-                    continue;
-                }
+            const polarThreat = findNearestPolarBear(bot, BOT_POLAR_BEAR_AVOID_RANGE);
+            if (polarThreat) {
+                bot._botHasLockedTarget = true;
+                bot.attacking = 0;
+                moveAwayFrom(bot, polarThreat.target.x, polarThreat.target.y);
+                bot._botNextMoveAt = now + 80 + Math.floor(Math.random() * 120);
+                continue;
             }
 
-            // If this bot is assigned as a hunter, it may only target its assigned real player.
-            // No fallback to other players, mobs, chests, or coins while assignment exists.
-            if (hunterTargetId && !hunterTarget) {
+            const retaliationTarget = (role === BOT_ROLE_PRO || role === BOT_ROLE_CASUAL)
+                ? getRetaliationTarget(bot)
+                : null;
+
+            // If this bot is assigned as a hunter, it may only target its assigned real player
+            // unless it is currently retaliating against the latest attacker.
+            if (hunterTargetId && !hunterTarget && !retaliationTarget) {
                 bot.attacking = 0;
                 continue;
             }
 
-            // Priority 1: Role-based PvP logic
+            // Priority 1: Retaliation / role-based PvP logic
             let playerTarget = null;
-            if (hunterTarget) {
+            if (retaliationTarget?.kind === 'player') {
+                playerTarget = { player: retaliationTarget.target, distSq: retaliationTarget.distSq };
+            } else if (hunterTarget) {
                 playerTarget = hunterTarget;
             } else if (assistTarget) {
                 playerTarget = assistTarget;
@@ -1693,8 +1777,6 @@ export function updateBotPlayers(now = performance.now()) {
                 playerTarget = findNearestCombatPlayer(bot, BOT_AGGRO_RANGE, {
                     targetFilter: (target) => canHunterEngageTarget(bot, target)
                 });
-            } else {
-                playerTarget = getRetaliationTarget(bot, BOT_AGGRO_RANGE, now);
             }
 
             if (playerTarget) {
@@ -1702,6 +1784,12 @@ export function updateBotPlayers(now = performance.now()) {
                 bot._botHasLockedTarget = true;
                 chasePlayer(bot, playerTarget.player, playerTarget.distSq, now);
                 tryThrowAtTarget(bot, playerTarget.distSq, now, BOT_THROW_RANGE_MIN, BOT_THROW_RANGE_MAX);
+                bot._botNextMoveAt = now + 90 + Math.floor(Math.random() * 120);
+            } else if (retaliationTarget?.kind === 'mob') {
+                bot._botHasLockedTarget = true;
+                moveAroundCombatTarget(bot, retaliationTarget.target.x, retaliationTarget.target.y, retaliationTarget.distSq, now);
+                bot.attacking = retaliationTarget.distSq <= (BOT_MOB_ATTACK_RANGE * BOT_MOB_ATTACK_RANGE) ? 1 : 0;
+                tryThrowAtTarget(bot, retaliationTarget.distSq, now, BOT_THROW_RANGE_MIN, BOT_THROW_RANGE_MAX);
                 bot._botNextMoveAt = now + 90 + Math.floor(Math.random() * 120);
             } else {
                 // Priority 2: Desired loot (better sword or accessory when unequipped)

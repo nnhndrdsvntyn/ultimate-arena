@@ -22,6 +22,7 @@ server.listen(PORT, '0.0.0.0', () => console.log(`Server running on http://local
 
 // --- WebSocket Management ---
 export const wss = new WebSocketServer({ noServer: true });
+export const wsById = new Map();
 
 server.on('upgrade', (req, socket, head) => {
     const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
@@ -64,6 +65,7 @@ wss.on('connection', (ws, req) => {
     ws.seenEntities = new Set();
 
     ENTITIES.playerIds.add(ws.id);
+    wsById.set(ws.id, ws);
     ws.send(ws.id.toString());
 
     // Initialize non-alive player entity
@@ -88,6 +90,7 @@ wss.on('connection', (ws, req) => {
 
     ws.on('close', () => {
         const world = ws.world || 'main';
+        wsById.delete(ws.id);
         const count = ipTracker.get(ws.ip) || 1;
         if (count <= 1) ipTracker.delete(ws.ip);
         else ipTracker.set(ws.ip, count - 1);

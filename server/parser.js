@@ -16,7 +16,6 @@ import {
     MAP_SIZE
 } from './game.js';
 import {
-    isSwordRank,
     isAccessoryItemType,
     accessoryIdFromItemType,
     isXpShopItemType

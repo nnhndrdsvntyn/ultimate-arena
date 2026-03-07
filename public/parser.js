@@ -1,5 +1,6 @@
 import {
-    ENTITIES
+    ENTITIES,
+    MAP_SIZE
 } from './game.js';
 import {
     Player
@@ -33,7 +34,9 @@ import {
     spawnMobDeathFade,
     spawnCoinPickupVfxToPlayer,
     spawnEnergyBurstFx,
-    spawnLightningShotFx
+    spawnPoisonAoeFx,
+    spawnLightningShotFx,
+    spawnSeededChestCoins
 } from './client.js';
 import {
     dataMap,
@@ -41,6 +44,7 @@ import {
     isChestObjectType,
     isCoinObjectType
 } from './shared/datamap.js';
+import { generateSeededStructureLayout } from './shared/structure-layout.js';
 
 // --- Packet Type Map ---
 const PACKET_TYPES = {
@@ -60,6 +64,7 @@ const PACKET_TYPES = {
     COIN_PICKUP_FX: 22,
     ENERGY_BURST_FX: 23,
     CRITICAL_HIT_FX: 24,
+    POISON_AOE_FX: 25,
     TUTORIAL_OBJECTIVE: 26,
     TUTORIAL_COMPLETE: 27
 };
@@ -138,6 +143,9 @@ export function parsePacket(buffer) {
         case PACKET_TYPES.CRITICAL_HIT_FX:
             handleCriticalHitFxPacket(reader);
             break;
+        case PACKET_TYPES.POISON_AOE_FX:
+            handlePoisonAoeFxPacket(reader);
+            break;
         case PACKET_TYPES.TUTORIAL_OBJECTIVE:
             handleTutorialObjectivePacket(reader);
             break;
@@ -181,14 +189,29 @@ function handleInitPacket(reader) {
     }
 
     // Structures
-    const structureCount = reader.readU16();
-    for (let i = 0; i < structureCount; i++) {
-        const id = reader.readU16();
-        const x = reader.readU16();
-        const y = reader.readU16();
-        const type = reader.readI8();
+    const structureEncoding = reader.readU8();
+    if (structureEncoding === 1) {
+        const structureSeed = reader.readU32();
+        const layout = generateSeededStructureLayout(structureSeed, MAP_SIZE, {
+            rockCount: 100,
+            bushCount: 100
+        });
+        for (const structure of layout) {
+            new Structure(structure.id, structure.x, structure.y, structure.type);
+        }
+        Vars.structureSeed = structureSeed >>> 0;
+        // console.log(`[INIT] structure seed=${Vars.structureSeed} structures=${layout.length}`);
+    } else {
+        const structureCount = reader.readU16();
+        for (let i = 0; i < structureCount; i++) {
+            const id = reader.readU16();
+            const x = reader.readU16();
+            const y = reader.readU16();
+            const type = reader.readI8();
 
-        new Structure(id, x, y, type);
+            new Structure(id, x, y, type);
+        }
+        Vars.structureSeed = null;
     }
 
     // Objects
@@ -228,6 +251,7 @@ function handleUpdatePacket(reader) {
             const hasWeapon = reader.readU8();
             const accessoryId = reader.readU8();
             const isInvisible = reader.readU8();
+            const radius = reader.readU16();
             const username = reader.readString();
             const chatMessage = reader.readString();
 
@@ -245,6 +269,7 @@ function handleUpdatePacket(reader) {
             p.hasWeapon = hasWeapon;
             p.accessoryId = accessoryId;
             p.isInvisible = isInvisible;
+            p.radius = radius;
             p.username = username;
             p.chatMessage = chatMessage;
             triggerDamageIndicator(prevPlayerHp, hp, x, y, dataMap.PLAYERS.baseRadius);
@@ -302,12 +327,14 @@ function handleUpdatePacket(reader) {
             const maxHp = reader.readU16();
             const type = reader.readU8();
             const swingState = reader.readU8();
+            const radius = reader.readU16();
 
             if (!m) m = new Mob(id, x, y, type);
             m.x = x; m.y = y; m.angle = angle;
             m.newX = x; m.newY = y; m.newAngle = angle;
             m.health = hp; m.maxHealth = maxHp; m.type = type;
             m.newSwingState = swingState;
+            m.radius = radius;
             if (m.type !== m.lastType) m.lastType = m.type;
             triggerDamageIndicator(prevMobHp, hp, x, y, dataMap.MOBS[type]?.radius);
         } else { // Delta Update
@@ -351,6 +378,7 @@ function handleUpdatePacket(reader) {
             if (!p) p = new Projectile(id, x, y, angle, type, rank);
             p.newX = x; p.newY = y; p.newAngle = angle;
             p.type = type; p.weaponRank = rank;
+            p.radius = reader.readU16();
             p.renderLength = (type === 10) ? reader.readU16() : 0;
         } else { // Delta Update
             if (!p) continue;
@@ -360,6 +388,7 @@ function handleUpdatePacket(reader) {
             if (mask & 0x08) p.type = reader.readI8();
             if (mask & 0x10) p.weaponRank = reader.readU8();
             if (mask & 0x20) p.renderLength = reader.readU16();
+            if (mask & 0x40) p.radius = reader.readU16();
         }
     }
     for (const id in ENTITIES.PROJECTILES) {
@@ -410,6 +439,17 @@ function handleUpdatePacket(reader) {
         }
     }
 
+    const chestSeedCount = reader.readU16();
+    for (let i = 0; i < chestSeedCount; i++) {
+        const x = reader.readU16();
+        const y = reader.readU16();
+        const spread = reader.readU16();
+        const totalCoins = reader.readU16();
+        const seed = reader.readU32();
+        const lifetimeMs = reader.readU16();
+        spawnSeededChestCoins(x, y, spread, totalCoins, seed, lifetimeMs);
+    }
+
     const coinFxCount = reader.readU16();
     for (let i = 0; i < coinFxCount; i++) {
         const startX = reader.readU16();
@@ -436,6 +476,21 @@ function handleUpdatePacket(reader) {
             Vars.topLeader.y = 0;
             Vars.topLeader.score = 0;
         }
+    }
+
+    // Optional minimap players payload:
+    // u8 count, then repeated [u8 id, u16 x, u16 y]
+    if (reader.offset < reader.view.byteLength) {
+        const count = reader.readU8();
+        const minimapPlayers = {};
+        for (let i = 0; i < count; i++) {
+            if (reader.offset + 5 > reader.view.byteLength) break;
+            const id = reader.readU8();
+            const x = reader.readU16();
+            const y = reader.readU16();
+            minimapPlayers[id] = { id, x, y };
+        }
+        Vars.minimapPlayers = minimapPlayers;
     }
 }
 
@@ -496,6 +551,15 @@ function handleAudioPacket(reader) {
 
 function handleKickedPacket(reader) {
     const message = reader.readString();
+    const normalized = (message || '').toLowerCase();
+    const isTooManyIpConnections = normalized.includes('more than 3 connections on one ip');
+    if (isTooManyIpConnections) {
+        Vars.disableAutoReconnect = true;
+        Vars.disconnectMessage = 'You have too many connections playing on this IP already!';
+    } else {
+        Vars.disableAutoReconnect = false;
+        Vars.disconnectMessage = message || 'Disconnected from server.';
+    }
     Vars.lastDiedTime = performance.now();
     startJoinActionCooldown();
     uiState.forceHomeScreen = true;
@@ -625,6 +689,15 @@ function handleCriticalHitFxPacket(reader) {
     addCriticalHitIndicator(x, y);
 }
 
+function handlePoisonAoeFxPacket(reader) {
+    const x = reader.readU16();
+    const y = reader.readU16();
+    const radius = reader.readU16();
+    const durationMs = reader.readU16();
+    const waves = reader.readU8();
+    spawnPoisonAoeFx(x, y, radius, durationMs, waves);
+}
+
 function handleTutorialObjectivePacket(reader) {
     const status = reader.readU8();
     const step = reader.readU8();
@@ -690,3 +763,4 @@ class PacketReader {
         return str;
     }
 }
+

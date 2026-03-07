@@ -43,7 +43,8 @@ const MAX_DEATH_COIN_DROP = 1500;
 const MIN_DEATH_COIN_STACK = 5;
 const MAX_DEATH_COIN_STACK = 25;
 const DEATH_COIN_SPREAD = 140;
-const SWORD9_DROP_CHANCE = 0.25;
+const SWORD9_DROP_CHANCE = 0.5;
+const MINOTAUR_HAT_DROP_CHANCE = 0.5;
 const BONUS_DROP_SPREAD = 80;
 
 export class Minotaur extends Mob {
@@ -464,7 +465,9 @@ export class Minotaur extends Mob {
         if (Math.random() < SWORD9_DROP_CHANCE) {
             this.spawnDropAtDeathPosition(9);
         }
-        this.spawnMinotaurHatDrop();
+        if (Math.random() < MINOTAUR_HAT_DROP_CHANCE) {
+            this.spawnMinotaurHatDrop();
+        }
     }
 
     spawnDropAtDeathPosition(type) {

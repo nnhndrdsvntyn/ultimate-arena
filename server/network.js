@@ -5,16 +5,20 @@ import {
     ACCESSORY_KEYS,
     TPS
 } from '../public/shared/datamap.js';
-import { drainQueuedCoinPickupFxByWorld } from './helpers.js';
+import { drainQueuedCoinPickupFxByWorld, drainQueuedChestCoinSeedsByWorld } from './helpers.js';
 
 const UPDATE_SEND_BUFFER = 260;
 const SPECTATOR_RANGE_DIVISOR = 1.5;
+const MINIMAP_UPDATE_INTERVAL_TICKS = 3;
 
 /**
  * Builds and sends updates for all connected clients.
  */
 export function sendUpdates(wss, lbWriter) {
     const queuedCoinFxByWorld = drainQueuedCoinPickupFxByWorld();
+    const queuedChestCoinSeedsByWorld = drainQueuedChestCoinSeedsByWorld();
+    const topLeaderByWorld = new Map();
+    const minimapByWorld = new Map();
     wss.clients.forEach(ws => {
         if (ws.readyState !== 1) return; // WebSocket.OPEN
 
@@ -26,12 +30,14 @@ export function sendUpdates(wss, lbWriter) {
 
         const localPlayer = ENTITIES.PLAYERS[ws.id] || { x: 0, y: 0 };
         const world = localPlayer.world || ws.world || 'main';
+        const spectateRef = !localPlayer.isAlive ? (getTopLeaderForWorld(world) || null) : null;
+        const rangeRefPlayer = spectateRef || localPlayer;
         const forceTutorialWorldSync = world.startsWith('tutorial');
         const baseRange = localPlayer.isAlive ? 1200 : ((1200 / 0.7) / SPECTATOR_RANGE_DIVISOR);
-        const alienHatKey = ACCESSORY_KEYS[localPlayer.accessoryId || 0];
+        const alienHatKey = ACCESSORY_KEYS[rangeRefPlayer.accessoryId || 0];
         const wearingAlienHat = alienHatKey === 'alien-antennas';
         const alienHatRange = 1500;
-        const viewRangeMult = (localPlayer.viewRangeMult ?? ws.viewRangeMult ?? 1);
+        const viewRangeMult = (rangeRefPlayer.viewRangeMult ?? localPlayer.viewRangeMult ?? ws.viewRangeMult ?? 1);
         const requestedRange = baseRange * viewRangeMult;
         let renderDistance = requestedRange;
         if (wearingAlienHat) {
@@ -54,8 +60,30 @@ export function sendUpdates(wss, lbWriter) {
         writeMobs(pw, lpX, lpY, renderDistanceSq, isFull, entitiesInUpdate, world, forceTutorialWorldSync);
         writeProjectiles(pw, lpX, lpY, renderDistanceSq, isFull, entitiesInUpdate, world, forceTutorialWorldSync);
         writeObjects(pw, lpX, lpY, renderDistanceSq, isFull, entitiesInUpdate, world, forceTutorialWorldSync);
+        writeChestCoinSeedBatch(pw, queuedChestCoinSeedsByWorld.get(world) || []);
         writeCoinPickupFxBatch(pw, queuedCoinFxByWorld.get(world) || []);
-        writeTopLeaderMarker(pw, world);
+        const top = getTopLeaderCached(topLeaderByWorld, world);
+        const minimap = getMinimapSnapshotCached(minimapByWorld, world);
+        const worldChanged = ws._lastOptionalSyncWorld !== world;
+        const topSig = top ? `${top.id}:${top.x}:${top.y}:${top.score || 0}` : 'none';
+        const minimapChanged = worldChanged || ws._lastMinimapSignature !== minimap.signature;
+        const topChanged = worldChanged || ws._lastTopLeaderSignature !== topSig;
+        const minimapTickCounter = (ws._minimapTickCounter || 0) + 1;
+        const minimapCadenceDue = worldChanged || minimapTickCounter >= MINIMAP_UPDATE_INTERVAL_TICKS;
+        ws._minimapTickCounter = minimapCadenceDue ? 0 : minimapTickCounter;
+        const shouldSendMinimap = minimapChanged && minimapCadenceDue;
+        const shouldSendTopLeader = topChanged || shouldSendMinimap;
+
+        // Keep packet order stable: minimap section can only be sent after top-leader section.
+        if (shouldSendTopLeader) {
+            writeTopLeaderMarker(pw, top);
+            ws._lastTopLeaderSignature = topSig;
+            if (shouldSendMinimap) {
+                writeMinimapPlayers(pw, minimap.players);
+                ws._lastMinimapSignature = minimap.signature;
+            }
+            ws._lastOptionalSyncWorld = world;
+        }
 
         ws.seenEntities = entitiesInUpdate;
 
@@ -88,8 +116,24 @@ function writeCoinPickupFxBatch(pw, events) {
     pw.writeU16At(countPos, count);
 }
 
-function writeTopLeaderMarker(pw, world) {
-    const top = getTopLeaderForWorld(world);
+function writeChestCoinSeedBatch(pw, events) {
+    const countPos = pw.reserveU16();
+    let count = 0;
+    const limit = Math.min(65535, events.length);
+    for (let i = 0; i < limit; i++) {
+        const evt = events[i];
+        pw.writeU16(evt.x);
+        pw.writeU16(evt.y);
+        pw.writeU16(evt.spread);
+        pw.writeU16(evt.totalCoins);
+        pw.writeU32(evt.seed >>> 0);
+        pw.writeU16(evt.lifetimeMs);
+        count++;
+    }
+    pw.writeU16At(countPos, count);
+}
+
+function writeTopLeaderMarker(pw, top) {
     if (!top) {
         pw.writeU8(0);
         return;
@@ -99,6 +143,55 @@ function writeTopLeaderMarker(pw, world) {
     pw.writeU16(top.x);
     pw.writeU16(top.y);
     pw.writeU32(top.score || 0);
+}
+
+function writeMinimapPlayers(pw, players) {
+    const safePlayers = Array.isArray(players) ? players : [];
+    const count = Math.min(255, safePlayers.length);
+    pw.writeU8(count);
+    for (let i = 0; i < count; i++) {
+        const p = safePlayers[i];
+        if (!p) continue;
+        pw.writeU8(p.id);
+        pw.writeU16(p.x);
+        pw.writeU16(p.y);
+    }
+}
+
+function getTopLeaderCached(cache, world) {
+    if (cache.has(world)) return cache.get(world);
+    const top = getTopLeaderForWorld(world);
+    cache.set(world, top || null);
+    return top || null;
+}
+
+function getMinimapSnapshotCached(cache, world) {
+    if (cache.has(world)) return cache.get(world);
+    const players = [];
+    let hash = 2166136261;
+    let count = 0;
+
+    for (const id in ENTITIES.PLAYERS) {
+        const p = ENTITIES.PLAYERS[id];
+        if (!p || !p.isAlive) continue;
+        if ((p.world || 'main') !== world) continue;
+        if (count >= 255) break;
+        players.push(p);
+        hash ^= (p.id & 0xFF);
+        hash = Math.imul(hash, 16777619);
+        hash ^= (p.x & 0xFFFF);
+        hash = Math.imul(hash, 16777619);
+        hash ^= (p.y & 0xFFFF);
+        hash = Math.imul(hash, 16777619);
+        count++;
+    }
+
+    const snapshot = {
+        players,
+        signature: `${count}:${hash >>> 0}`
+    };
+    cache.set(world, snapshot);
+    return snapshot;
 }
 
 export function sendPlayerCount(wss, writer) {
@@ -197,6 +290,7 @@ function writePlayers(pw, ws, lpX, lpY, rangeSq, isFullFn, entities, world) {
             pw.writeU8(p.hasShield ? 1 : 0); pw.writeU8(p.isAlive ? 1 : 0);
             pw.writeU8(p.hasWeapon ? 1 : 0); pw.writeU8(p.accessoryId || 0);
             pw.writeU8(p.isInvisible ? 1 : 0);
+            pw.writeU16(Math.max(1, Math.min(65535, Math.floor(p.radius || 1))));
             pw.writeStr(p.username); pw.writeStr(p.chatMessage);
         } else {
             if (mask & 0x01) pw.writeU16(p.x);
@@ -251,6 +345,7 @@ function writeMobs(pw, lpX, lpY, rangeSq, isFullFn, entities, world, forceWorldS
         if (mask & 0x80) {
             pw.writeU16(m.x); pw.writeU16(m.y); pw.writeF32(m.angle);
             pw.writeU16(m.hp); pw.writeU16(m.maxHp); pw.writeU8(m.type); pw.writeU8(m.swingState || 0);
+            pw.writeU16(Math.max(1, Math.min(65535, Math.floor(m.radius || 1))));
         } else {
             if (mask & 0x01) pw.writeU16(m.x);
             if (mask & 0x02) pw.writeU16(m.y);
@@ -289,11 +384,13 @@ function writeProjectiles(pw, lpX, lpY, rangeSq, isFullFn, entities, world, forc
             if (p.type !== prev.type) mask |= 0x08;
             if (p.weaponRank !== prev.weaponRank) mask |= 0x10;
             if ((p.renderLength || 0) !== (prev.renderLength || 0)) mask |= 0x20;
+            if ((p.radius || 0) !== (prev.radius || 0)) mask |= 0x40;
         }
         pw.writeU8(mask);
         if (mask & 0x80) {
             pw.writeU16(sendX); pw.writeU16(sendY); pw.writeF32(p.angle);
             pw.writeI8(p.type); pw.writeU8(p.weaponRank);
+            pw.writeU16(Math.max(1, Math.min(65535, Math.round(p.radius || 1))));
             if (p.type === 10) pw.writeU16(p.renderLength || 0);
         } else {
             if (mask & 0x01) pw.writeU16(sendX);
@@ -302,6 +399,7 @@ function writeProjectiles(pw, lpX, lpY, rangeSq, isFullFn, entities, world, forc
             if (mask & 0x08) pw.writeI8(p.type);
             if (mask & 0x10) pw.writeU8(p.weaponRank);
             if (mask & 0x20) pw.writeU16(p.renderLength || 0);
+            if (mask & 0x40) pw.writeU16(Math.max(1, Math.min(65535, Math.round(p.radius || 1))));
         }
         count++;
     }
@@ -314,6 +412,7 @@ function writeObjects(pw, lpX, lpY, rangeSq, isFullFn, entities, world, forceWor
     for (const id in ENTITIES.OBJECTS) {
         const o = ENTITIES.OBJECTS[id];
         if ((o.world || 'main') !== world) continue;
+        if (o.source === 'chest') continue; // chest coins are reconstructed client-side from seed events
         const dx = o.x - lpX; const dy = o.y - lpY;
         if (!forceWorldSync && dx * dx + dy * dy > rangeSq) continue;
 
@@ -367,7 +466,7 @@ export function saveHistory() {
     for (const p of Object.values(ENTITIES.PROJECTILES)) {
         const sendX = p.staticRender ? (p.renderX ?? p.x) : p.x;
         const sendY = p.staticRender ? (p.renderY ?? p.y) : p.y;
-        p.prev = { x: sendX, y: sendY, angle: p.angle, type: p.type, weaponRank: p.weaponRank, renderLength: p.renderLength || 0 };
+        p.prev = { x: sendX, y: sendY, angle: p.angle, type: p.type, weaponRank: p.weaponRank, renderLength: p.renderLength || 0, radius: p.radius || 0 };
     }
     for (const o of Object.values(ENTITIES.OBJECTS)) {
         o.prev = { x: o.x, y: o.y, health: o.health, type: o.type, amount: o.amount };

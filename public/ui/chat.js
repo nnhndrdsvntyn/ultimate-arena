@@ -141,7 +141,7 @@ const COMMANDS = [{
     },
     {
         name: '/activateability',
-        params: '<energy_burst|lightning_shot|stamina_boost|speed_boost> [durationSec]'
+        params: '<energy_burst|lightning_shot|poison_aoe|stamina_boost|speed_boost> [durationSec]'
     }
 ];
 
@@ -166,7 +166,7 @@ const ITEM_SUGGESTIONS = [
     'gold-coin',
     ...ACCESSORY_SUGGESTIONS
 ];
-const ABILITY_SUGGESTIONS = ['energy_burst', 'lightning_shot', 'stamina_boost', 'speed_boost'];
+const ABILITY_SUGGESTIONS = ['energy_burst', 'lightning_shot', 'poison_aoe', 'stamina_boost', 'speed_boost'];
 const CHAT_AUTOCOMPLETE_DEBUG = false;
 
 function updateCommandUI() {

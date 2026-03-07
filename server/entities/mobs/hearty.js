@@ -43,8 +43,9 @@ export class Hearty extends Mob {
             return;
         }
         this.lastLungeTime = performance.now();
-        this.speed = dataMap.MOBS[this.type].speed * 8;
+        this.speed = dataMap.MOBS[this.type].speed * 2.5;
         const sfx = dataMap.sfxMap.indexOf('heart-beat');
         playSfx(this.x, this.y, sfx, 1000);
     }
 }
+

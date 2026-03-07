@@ -24,21 +24,28 @@ export class Structure extends Entity {
     }
     resolveCollisions() {
         recordResolveCollisionCall();
-        if (dataMap.STRUCTURES[this.type].noCollisions) return;
+        const cfg = dataMap.STRUCTURES[this.type] || {};
+        if (cfg.noCollisions || cfg.isSafeZone) return;
+        const world = this.world || 'main';
+        const baseNearRange = (this.radius || 0) + 80;
 
         // check collisions with players
         for (const id in ENTITIES.PLAYERS) {
             const player = ENTITIES.PLAYERS[id];
-            if ((player.world || 'main') !== (this.world || 'main')) continue;
-            if (this.type === 1 && performance.now() - 10000 > player.lastCombatTime) break; // spawn zones don't handle collisions with players unless they were recently in combat
+            if (!player) continue;
+            if ((player.world || 'main') !== world) continue;
             if (!player.isAlive) continue;
+            const nearDx = player.x - this.x;
+            const nearDy = player.y - this.y;
+            if ((nearDx * nearDx + nearDy * nearDy) > (baseNearRange * baseNearRange)) continue;
 
             // check if touching
             if (colliding(player, this, 50)) {
                 // resolve collision
-                const angle = Math.atan2(player.y - this.y, player.x - this.x);
-                const dx = Math.cos(angle) * player.radius
-                const dy = Math.sin(angle) * player.radius
+                const dist = Math.hypot(nearDx, nearDy) || 1;
+                const scale = (player.radius || 0) / dist;
+                const dx = nearDx * scale;
+                const dy = nearDy * scale;
 
                 // only move the player
                 player.x += dx;
@@ -49,13 +56,18 @@ export class Structure extends Entity {
         // check collisions with mobs
         for (const id in ENTITIES.MOBS) {
             const mob = ENTITIES.MOBS[id];
-            if ((mob.world || 'main') !== (this.world || 'main')) continue;
+            if (!mob) continue;
+            if ((mob.world || 'main') !== world) continue;
+            const nearDx = mob.x - this.x;
+            const nearDy = mob.y - this.y;
+            if ((nearDx * nearDx + nearDy * nearDy) > (baseNearRange * baseNearRange)) continue;
             // check if touching
             if (colliding(mob, this, 50)) {
                 // resolve collision
-                const angle = Math.atan2(mob.y - this.y, mob.x - this.x);
-                const dx = Math.cos(angle) * mob.radius
-                const dy = Math.sin(angle) * mob.radius
+                const dist = Math.hypot(nearDx, nearDy) || 1;
+                const scale = (mob.radius || 0) / dist;
+                const dx = nearDx * scale;
+                const dy = nearDy * scale;
 
                 // only move the mob
                 mob.x += dx;

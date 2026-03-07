@@ -56,16 +56,23 @@ export class GameObject extends Entity {
     resolveCollisions() {
         recordResolveCollisionCall();
         if (this.lastX === this.x && this.lastY === this.y) return;
+        const world = this.world || 'main';
 
         // Simple collision resolution with structures of type 2 (Rocks)
         for (const id in ENTITIES.STRUCTURES) {
             const structure = ENTITIES.STRUCTURES[id];
-            if ((structure.world || 'main') !== (this.world || 'main')) continue;
+            if (!structure) continue;
+            if ((structure.world || 'main') !== world) continue;
             if (structure.type === 2) {
+                const dx = this.x - structure.x;
+                const dy = this.y - structure.y;
+                const nearRange = (this.radius || 0) + (structure.radius || 0) + 10;
+                if ((dx * dx + dy * dy) > (nearRange * nearRange)) continue;
                 if (colliding(this, structure)) {
-                    const angle = Math.atan2(this.y - structure.y, this.x - structure.x);
-                    this.x += Math.cos(angle) * 10;
-                    this.y += Math.sin(angle) * 10;
+                    const dist = Math.hypot(dx, dy) || 1;
+                    const pushScale = 10 / dist;
+                    this.x += dx * pushScale;
+                    this.y += dy * pushScale;
                 }
             }
         }

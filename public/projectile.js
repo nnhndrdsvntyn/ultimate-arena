@@ -72,8 +72,12 @@ export class Projectile {
             let swordWidth = 100;
             let swordHeight = 33;
             if (dataMap.SWORDS.imgs[this.weaponRank]) {
-                swordWidth = dataMap.SWORDS.imgs[this.weaponRank].swordWidth;
-                swordHeight = dataMap.SWORDS.imgs[this.weaponRank].swordHeight;
+                const baseWidth = dataMap.SWORDS.imgs[this.weaponRank].swordWidth;
+                const baseHeight = dataMap.SWORDS.imgs[this.weaponRank].swordHeight;
+                const drawWidth = Number.isFinite(this.radius) && this.radius > 0 ? this.radius : baseWidth;
+                const scale = drawWidth / Math.max(1, baseWidth);
+                swordWidth = drawWidth;
+                swordHeight = baseHeight * scale;
             }
 
             LC.drawImage({
@@ -103,10 +107,7 @@ export class Projectile {
 
         if (Settings.drawHitboxes) {
             if (this.type == -1) {
-                let swordWidth = 100;
-                if (dataMap.SWORDS.imgs[this.weaponRank]) {
-                    swordWidth = dataMap.SWORDS.imgs[this.weaponRank].swordWidth;
-                }
+                let swordWidth = Number.isFinite(this.radius) && this.radius > 0 ? this.radius : 100;
                 LC.drawCircle({
                     pos: [screenPosX, screenPosY],
                     radius: swordWidth,

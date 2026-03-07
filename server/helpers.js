@@ -141,6 +141,7 @@ export function validateUsername(username) {
 
 const helperWriter = new PacketWriter();
 const queuedCoinPickupFx = [];
+const queuedChestCoinSeeds = [];
 
 export function drainQueuedCoinPickupFxByWorld() {
     if (!queuedCoinPickupFx.length) return new Map();
@@ -156,6 +157,34 @@ export function drainQueuedCoinPickupFxByWorld() {
     }
     queuedCoinPickupFx.length = 0;
     return byWorld;
+}
+
+export function drainQueuedChestCoinSeedsByWorld() {
+    if (!queuedChestCoinSeeds.length) return new Map();
+    const byWorld = new Map();
+    for (let i = 0; i < queuedChestCoinSeeds.length; i++) {
+        const evt = queuedChestCoinSeeds[i];
+        let arr = byWorld.get(evt.world);
+        if (!arr) {
+            arr = [];
+            byWorld.set(evt.world, arr);
+        }
+        arr.push(evt);
+    }
+    queuedChestCoinSeeds.length = 0;
+    return byWorld;
+}
+
+export function emitChestCoinSeed(x, y, spread, totalCoins, seed, lifetimeMs = 10000, world = 'main') {
+    queuedChestCoinSeeds.push({
+        world,
+        x: Math.max(0, Math.min(65535, Math.round(x))),
+        y: Math.max(0, Math.min(65535, Math.round(y))),
+        spread: Math.max(1, Math.min(65535, Math.round(spread))),
+        totalCoins: Math.max(1, Math.min(65535, Math.round(totalCoins))),
+        seed: (seed >>> 0),
+        lifetimeMs: Math.max(1, Math.min(65535, Math.round(lifetimeMs)))
+    });
 }
 
 export function playSfx(xorigin, yorigin, type, range) {
@@ -224,6 +253,25 @@ export function emitEnergyBurstFx(x, y, radius = 500, durationMs = 700, waves = 
     const fxWriter = new PacketWriter(16);
     fxWriter.reset();
     fxWriter.writeU8(23); // Energy burst effect
+    fxWriter.writeU16(Math.max(0, Math.min(65535, Math.round(x))));
+    fxWriter.writeU16(Math.max(0, Math.min(65535, Math.round(y))));
+    fxWriter.writeU16(Math.max(1, Math.min(65535, Math.round(radius))));
+    fxWriter.writeU16(Math.max(1, Math.min(10000, Math.round(durationMs))));
+    fxWriter.writeU8(Math.max(1, Math.min(8, Math.round(waves))));
+    const packet = fxWriter.getBuffer();
+    wss.clients.forEach(client => {
+        if (client.readyState !== 1) return;
+        const player = ENTITIES.PLAYERS[client.id];
+        if (!player) return;
+        if ((player.world || 'main') !== world) return;
+        client.send(packet);
+    });
+}
+
+export function emitPoisonAoeFx(x, y, radius = 300, durationMs = 700, waves = 2, world = 'main') {
+    const fxWriter = new PacketWriter(16);
+    fxWriter.reset();
+    fxWriter.writeU8(25); // Poison AOE effect
     fxWriter.writeU16(Math.max(0, Math.min(65535, Math.round(x))));
     fxWriter.writeU16(Math.max(0, Math.min(65535, Math.round(y))));
     fxWriter.writeU16(Math.max(1, Math.min(65535, Math.round(radius))));
@@ -333,6 +381,11 @@ export function poison(entity, dmgPerRate, rate, duration) {
     entity._poison.timer = setTimeout(tick, rate);
 }
 
+function hasActivePoisonEffect(entity) {
+    if (!entity || !entity._poison) return false;
+    return Number.isFinite(entity._poison.endTime) && performance.now() < entity._poison.endTime;
+}
+
 class CommandMap {
     constructor() {
         this.entityTypeMap = {
@@ -430,8 +483,12 @@ class CommandMap {
                     player.addGoldCoins(Math.floor(value));
                 }
             } else if (attrIdx === 9) { // radius
+                const hpRatio = (player.maxHp > 0) ? (player.hp / player.maxHp) : 1;
                 const nextRadius = isDefault ? dataMap.PLAYERS.baseRadius : Math.floor(value);
                 player.radius = Math.max(1, nextRadius);
+                player.recomputeBuffedAttributes({ healByMaxIncrease: false });
+                player.hp = Math.max(0, Math.min(player.maxHp, Math.round(player.maxHp * hpRatio)));
+                player._forceFullSync = true;
             }
             player.sendStatsUpdate();
         } else if (entity && entityType === 2) { // Mob
@@ -445,8 +502,14 @@ class CommandMap {
             } else if (attrIdx === 7) { // invincible
                 mob.invincible = isDefault ? false : !!value;
             } else if (attrIdx === 9) { // radius
+                const oldRadius = Math.max(1, mob.radius || 1);
+                const hpRatio = (mob.maxHp > 0) ? (mob.hp / mob.maxHp) : 1;
                 const defaultRadius = dataMap.MOBS[mob.type]?.radius || mob.radius || 1;
                 mob.radius = Math.max(1, isDefault ? defaultRadius : Math.floor(value));
+                const radiusScale = mob.radius / oldRadius;
+                mob.maxHp = Math.max(1, Math.round((mob.maxHp || 1) * radiusScale));
+                mob.hp = Math.max(0, Math.min(mob.maxHp, Math.round(mob.maxHp * hpRatio)));
+                mob._forceFullSync = true;
             }
         }
     }
@@ -641,7 +704,7 @@ class CommandMap {
         if (!player || !player.isAlive) return;
 
         const ability = (abilityName || '').toLowerCase();
-        if (ability !== 'energy_burst' && ability !== 'lightning_shot' && ability !== 'stamina_boost' && ability !== 'speed_boost') return;
+        if (ability !== 'energy_burst' && ability !== 'lightning_shot' && ability !== 'stamina_boost' && ability !== 'speed_boost' && ability !== 'poison_aoe') return;
 
         if (ability === 'stamina_boost') {
             const seconds = Number.isFinite(durationSeconds) ? durationSeconds : 5;
@@ -655,9 +718,11 @@ class CommandMap {
             return;
         }
 
-        const electricSfx = dataMap.sfxMap.indexOf('electric-sfx1');
-        if (electricSfx >= 0) {
-            playSfx(player.x, player.y, electricSfx, 1200);
+        if (ability !== 'poison_aoe') {
+            const electricSfx = dataMap.sfxMap.indexOf('electric-sfx1');
+            if (electricSfx >= 0) {
+                playSfx(player.x, player.y, electricSfx, 1200);
+            }
         }
 
         if (ability === 'lightning_shot') {
@@ -696,6 +761,64 @@ class CommandMap {
                     }
                 });
             }
+            return;
+        }
+
+        if (ability === 'poison_aoe') {
+            const aoeRadius = 300;
+            const aoeDurationMs = 750;
+            const poisonDamage = 5;
+            const poisonTickRateMs = 750;
+            const poisonDurationMs = 2000;
+            const pulseIntervalMs = 50;
+            const sourceWorld = player.world || 'main';
+            const originX = player.x;
+            const originY = player.y;
+            const sourceRadius = Math.max(0, player.radius || 0);
+            const startedAt = performance.now();
+            const endsAt = startedAt + aoeDurationMs;
+
+            const applyPulse = () => {
+                const now = performance.now();
+                const progress = Math.max(0, Math.min(1, (now - startedAt) / aoeDurationMs));
+                const currentRadius = aoeRadius * progress;
+
+                for (const id in ENTITIES.PLAYERS) {
+                    const target = ENTITIES.PLAYERS[id];
+                    if (!target || !target.isAlive || target.id === player.id) continue;
+                    if ((target.world || 'main') !== sourceWorld) continue;
+                    if (hasActivePoisonEffect(target)) continue;
+                    const dx = target.x - originX;
+                    const dy = target.y - originY;
+                    const allowed = currentRadius + sourceRadius + Math.max(0, target.radius || 0);
+                    if (dx * dx + dy * dy <= (allowed * allowed)) {
+                        poison(target, poisonDamage, poisonTickRateMs, poisonDurationMs);
+                    }
+                }
+
+                for (const id in ENTITIES.MOBS) {
+                    const target = ENTITIES.MOBS[id];
+                    if (!target || target.hp <= 0) continue;
+                    if ((target.world || 'main') !== sourceWorld) continue;
+                    if (hasActivePoisonEffect(target)) continue;
+                    const dx = target.x - originX;
+                    const dy = target.y - originY;
+                    const allowed = currentRadius + sourceRadius + Math.max(0, target.radius || 0);
+                    if (dx * dx + dy * dy <= (allowed * allowed)) {
+                        poison(target, poisonDamage, poisonTickRateMs, poisonDurationMs);
+                    }
+                }
+            };
+
+            applyPulse();
+            const pulseTimer = setInterval(() => {
+                applyPulse();
+                if (performance.now() >= endsAt) {
+                    clearInterval(pulseTimer);
+                }
+            }, pulseIntervalMs);
+
+            emitPoisonAoeFx(player.x, player.y, aoeRadius, aoeDurationMs, 2, sourceWorld);
             return;
         }
 

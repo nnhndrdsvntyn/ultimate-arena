@@ -4,7 +4,8 @@ import {
 import {
     dataMap,
     ACCESSORY_KEYS,
-    isChestObjectType
+    isChestObjectType,
+    isSwordRank
 } from '../../public/shared/datamap.js';
 import {
     colliding,
@@ -113,11 +114,19 @@ export class Projectile extends Entity {
         const speed = dataMap.PROJECTILES[statsType]?.speed;
         const radius = dataMap.PROJECTILES[statsType]?.radius;
         super(id, x, y, radius, speed, 0, 0);
+        const basePlayerRadius = Math.max(1, dataMap.PLAYERS.baseRadius || 30);
+        const isPlayerShooter = shooter && typeof shooter.accessoryId !== 'undefined';
+        const playerScale = isPlayerShooter && Number.isFinite(shooter.radius)
+            ? Math.max(0.2, shooter.radius / basePlayerRadius)
+            : 1;
 
         this.groupId = groupId;
         this.angle = angle;
         this.type = type;
         this.damage = (shooter.strength + dataMap.PROJECTILES[statsType]?.damage) * 1.15;
+        if (isPlayerShooter) {
+            this.damage *= playerScale;
+        }
         if (this.shooter?.type === 6 && typeof this.shooter.getAttackDamageMultiplier === 'function') {
             this.damage *= this.shooter.getAttackDamageMultiplier();
         }
@@ -125,10 +134,14 @@ export class Projectile extends Entity {
 
         if (type === -1) {
             this.damage /= 1.5;
-            this.radius = dataMap.SWORDS.imgs[shooter.weapon.rank].swordWidth;
+            this.radius = (dataMap.SWORDS.imgs[shooter.weapon.rank].swordWidth || this.radius || 100) * playerScale;
             this.speed /= 1.25;
-            this.maxDistance *= 4;
+            this.maxDistance *= (4 * playerScale);
             this.weaponRank = shooter.weapon.rank;
+        }
+        if (type !== -1 && isSwordRank(type)) {
+            this.radius *= playerScale;
+            this.maxDistance *= playerScale;
         }
         this.distanceTraveled = 0;
         this.shooter = shooter;
@@ -230,13 +243,14 @@ export class Projectile extends Entity {
         recordResolveCollisionCall();
         const shooterIsMob = typeof this.shooter?.type !== 'undefined';
         const isPersistentWave = this.persistentHits === true;
+        const world = this.world || 'main';
 
         // check structures
         if (!isPersistentWave) {
             for (const id in ENTITIES.STRUCTURES) {
                 const structure = ENTITIES.STRUCTURES[id];
                 if (!structure) continue;
-                if ((structure.world || 'main') !== (this.world || 'main')) continue;
+                if ((structure.world || 'main') !== world) continue;
                 let buffer = 0;
                 if (this.type === -1) buffer += this.radius * 0.7; // thrown swords use 70% of their size as structure-collision buffer
 
@@ -279,7 +293,8 @@ export class Projectile extends Entity {
             for (const pid in ENTITIES.PROJECTILES) {
                 const other = ENTITIES.PROJECTILES[pid];
                 if (!other || other.id === this.id) continue;
-                if ((other.world || 'main') !== (this.world || 'main')) continue;
+                if (other.id < this.id) continue;
+                if ((other.world || 'main') !== world) continue;
                 // Ignore only true same-owner projectiles (same shooter object),
                 // not merely matching numeric ids across entity types.
                 if (other.shooter === this.shooter) continue;
@@ -334,7 +349,7 @@ export class Projectile extends Entity {
         for (const id in ENTITIES.PLAYERS) {
             const player = ENTITIES.PLAYERS[id];
             if (!player || !player.isAlive) continue;
-            if ((player.world || 'main') !== (this.world || 'main')) continue;
+            if ((player.world || 'main') !== world) continue;
             // Ignore true self-hit only when shooter is also a player.
             if (!shooterIsMob && player.id === this.shooter.id) continue;
 
@@ -353,6 +368,9 @@ export class Projectile extends Entity {
                     if (tookDamage && viking.apply) {
                         commitVikingHit(this.shooter, viking.nextCount);
                         if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, player.x, player.y);
+                    }
+                    if (tookDamage && this.type !== -1 && ACCESSORY_KEYS[this.shooter?.accessoryId] === 'bush-cloak') {
+                        poison(player, 5, 750, 2000);
                     }
                     if (this.type !== -1 && ACCESSORY_KEYS[player.accessoryId] === 'bush-cloak' && this.shooter && tookDamage) {
                         poison(this.shooter, 5, 750, 2000);
@@ -376,7 +394,7 @@ export class Projectile extends Entity {
         for (const id in ENTITIES.MOBS) {
             const mob = ENTITIES.MOBS[id];
             if (!mob) continue;
-            if ((mob.world || 'main') !== (this.world || 'main')) continue;
+            if ((mob.world || 'main') !== world) continue;
             // Ignore true self-hit only when shooter is also a mob.
             if (shooterIsMob && mob.id === this.shooter.id) continue;
 
@@ -437,6 +455,9 @@ export class Projectile extends Entity {
                     commitVikingHit(this.shooter, viking.nextCount);
                     if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, mob.x, mob.y);
                 }
+                if (tookDamage && this.type !== -1 && ACCESSORY_KEYS[this.shooter?.accessoryId] === 'bush-cloak') {
+                    poison(mob, 5, 750, 2000);
+                }
 
                 mob.alarm(this.shooter, 'hit');
                 if (!isPersistentWave) {
@@ -450,7 +471,7 @@ export class Projectile extends Entity {
         for (const id in ENTITIES.OBJECTS) {
             const object = ENTITIES.OBJECTS[id];
             if (!object || !isChestObjectType(object.type)) continue;
-            if ((object.world || 'main') !== (this.world || 'main')) continue;
+            if ((object.world || 'main') !== world) continue;
 
             let buffer = -10;
             if (this.type === -1) buffer += 30; // a little buffer for thrown swords
@@ -481,6 +502,7 @@ export class Projectile extends Entity {
         }
         if (this.distanceTraveled > this.maxDistance) {
             ENTITIES.deleteEntity('projectile', this.id);
+            return;
         }
 
         this.move();

@@ -101,7 +101,6 @@ function renderVisualsTab() {
     createEl('div', { userSelect: 'none' }, uiRefs.settingsBody, { className: 'settings-section-header', textContent: 'Minimap' });
     addToggleSetting(uiRefs.settingsBody, 'Show Minimap', 'showMinimap', (val) => Settings.showMinimap = val);
     addToggleSetting(uiRefs.settingsBody, 'Show Nearby Mobs On Minimap (orange)', 'showMobsOnMinimap', (val) => Settings.showMobsOnMinimap = val);
-    addToggleSetting(uiRefs.settingsBody, 'Show Nearby Players On Minimap (red)', 'showPlayersOnMinimap', (val) => Settings.showPlayersOnMinimap = val);
     addToggleSetting(uiRefs.settingsBody, 'Show Nearby Chests On Minimap (brown)', 'showChestsOnMinimap', (val) => Settings.showChestsOnMinimap = val);
 
     createEl('div', { userSelect: 'none' }, uiRefs.settingsBody, { className: 'settings-section-header', textContent: 'View Distance' });

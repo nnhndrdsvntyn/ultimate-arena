@@ -127,7 +127,8 @@ export class Mob extends Entity {
 
         let targetInBush = false;
         if (typeof bushCollisionPadding === 'number') {
-            for (const structure of Object.values(ENTITIES.STRUCTURES)) {
+            for (const id in ENTITIES.STRUCTURES) {
+                const structure = ENTITIES.STRUCTURES[id];
                 if ((structure.world || 'main') !== (this.world || 'main')) continue;
                 if (structure.type === 3 && colliding(structure, target, bushCollisionPadding)) {
                     targetInBush = true;
@@ -156,6 +157,7 @@ export class Mob extends Entity {
         ENTITIES.deleteEntity('mob', this.id);
     }
     process(runDecisionLogic = true) {
+        const currentTime = performance.now();
         if (!runDecisionLogic) {
             // Keep movement full-rate; AI/turning runs on throttled ticks.
             if (this.inWater) {
@@ -168,24 +170,28 @@ export class Mob extends Entity {
             this.clamp();
             return;
         }
-
-        const currentTime = performance.now();
         const inTutorialWorld = (this.world || '').startsWith('tutorial');
+        const world = this.world || 'main';
 
         // check if inside center vertical river
-        const waterxr = [MAP_SIZE[0] * 0.47, MAP_SIZE[0] * 0.53];
-        const wateryr = [0, MAP_SIZE[1]];
+        const waterLeft = MAP_SIZE[0] * 0.47;
+        const waterRight = MAP_SIZE[0] * 0.53;
         let inBase = false;
-        for (const structure of Object.values(ENTITIES.STRUCTURES)) {
-            if ((structure.world || 'main') !== (this.world || 'main')) continue;
+        for (const id in ENTITIES.STRUCTURES) {
+            const structure = ENTITIES.STRUCTURES[id];
+            if ((structure.world || 'main') !== world) continue;
             if (dataMap.STRUCTURES[structure.type].isSafeZone) {
+                const maxRange = (structure.radius || 0) + (this.radius || 0) + 10;
+                const dx = structure.x - this.x;
+                const dy = structure.y - this.y;
+                if ((dx * dx + dy * dy) > (maxRange * maxRange)) continue;
                 if (colliding(structure, this)) {
                     inBase = true;
                     break;
                 }
             }
         }
-        this.inWater = !inTutorialWorld && this.x > waterxr[0] && this.x < waterxr[1] && this.y > wateryr[0] && this.y < wateryr[1] && !inBase;
+        this.inWater = !inTutorialWorld && this.x > waterLeft && this.x < waterRight && !inBase;
         if (this.inWater) {
             if (this.type === 5) {
                 this.speed = dataMap.MOBS[this.type].speed * 1.5; // polar bears speed up in water
@@ -206,8 +212,8 @@ export class Mob extends Entity {
         // Keep left-side mobs on left biome edge.
         // Minotaur is exempt while alarmed so it can chase/swim across the map.
         let returningToSide = false;
-        const keepOnLeftSide = !inTutorialWorld && ([1, 2, 3].includes(this.type) || (this.type === 6 && !this.isAlarmed));
-        if (keepOnLeftSide && this.x > MAP_SIZE[0] * 0.47 - this.radius) {
+        const keepOnLeftSide = !inTutorialWorld && (this.type === 1 || this.type === 2 || this.type === 3 || (this.type === 6 && !this.isAlarmed));
+        if (keepOnLeftSide && this.x > waterLeft - this.radius) {
             returningToSide = true;
             this.angle = Math.PI; // return straight left
             this.target = null;
@@ -227,7 +233,7 @@ export class Mob extends Entity {
 
         // for polar bear (keep on right side)
         if (!inTutorialWorld && this.type === 5) {
-            const boundary = this.isAlarmed ? MAP_SIZE[0] * 0.47 : MAP_SIZE[0] * 0.53;
+            const boundary = this.isAlarmed ? waterLeft : waterRight;
             if (this.x < boundary + this.radius) {
                 // TURN RIGHT
                 this.angle = 0;
@@ -236,7 +242,7 @@ export class Mob extends Entity {
             }
         }
         // main stuff
-        if (!returningToSide && (performance.now() - this.lastTurnTime > this.nextTurnDelay || this.isAlarmed)) {
+        if (!returningToSide && (currentTime - this.lastTurnTime > this.nextTurnDelay || this.isAlarmed)) {
             this.turn();
         }
         this.move();

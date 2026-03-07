@@ -47,7 +47,6 @@ import {
     PacketWriter,
     getId
 } from './helpers.js';
-const initWriter = new PacketWriter(1024 * 512);
 import {
     dataMap,
     isChestObjectType,
@@ -55,7 +54,11 @@ import {
     getChestObjectTypes,
     resolveObjectType
 } from '../public/shared/datamap.js';
+import { generateSeededStructureLayout } from '../public/shared/structure-layout.js';
+
+const initWriter = new PacketWriter(1024 * 512);
 export const MAP_SIZE = [15000, 15000];
+const WORLD_STRUCTURE_SEEDS = new Map();
 export const ENTITIES = {
     PLAYERS: {},
     MOBS: {},
@@ -188,113 +191,33 @@ export const ENTITIES = {
     }
 };
 // create some structures
-new Base(1, MAP_SIZE[0] * 0.5, MAP_SIZE[1] * 0.5); // spawn zone
-// rock structures (make sure to not spawn within spawnzoneradius + 100 distance from a spawn zon)
-const ROCK_EXTRA_GAP = 100;
-const ROCK_SPAWN_PADDING = 500;
-const LEFT_BIOME_MAX_X = MAP_SIZE[0] * 0.47;
-const RIGHT_BIOME_MIN_X = MAP_SIZE[0] * 0.53;
+function spawnSeededStructuresForWorld(world = 'main') {
+    const seed = ((Math.random() * 0x100000000) >>> 0);
+    WORLD_STRUCTURE_SEEDS.set(world, seed);
 
-function getRandomRockPosition(radius, side) {
-    const minX = side === 'right'
-        ? Math.ceil(RIGHT_BIOME_MIN_X + radius + ROCK_EXTRA_GAP)
-        : ROCK_SPAWN_PADDING;
-    const maxX = side === 'right'
-        ? MAP_SIZE[0] - ROCK_SPAWN_PADDING
-        : Math.floor(LEFT_BIOME_MAX_X - radius - ROCK_EXTRA_GAP);
-    const minY = ROCK_SPAWN_PADDING;
-    const maxY = MAP_SIZE[1] - ROCK_SPAWN_PADDING;
-    const safeMaxX = Math.max(minX, maxX);
-    const safeMaxY = Math.max(minY, maxY);
+    const layout = generateSeededStructureLayout(seed, MAP_SIZE, {
+        rockCount: 100,
+        bushCount: 100
+    });
 
-    const x = Math.floor(minX + Math.random() * (safeMaxX - minX + 1));
-    const y = Math.floor(minY + Math.random() * (safeMaxY - minY + 1));
-    return { x, y };
-}
-
-function isValidRockPosition(x, y, radius, spawnZone, side) {
-    const dx = x - spawnZone.x;
-    const dy = y - spawnZone.y;
-    const distanceSq = dx * dx + dy * dy;
-    const minX = side === 'right'
-        ? Math.ceil(RIGHT_BIOME_MIN_X + radius + ROCK_EXTRA_GAP)
-        : ROCK_SPAWN_PADDING;
-    const maxX = side === 'right'
-        ? MAP_SIZE[0] - ROCK_SPAWN_PADDING
-        : Math.floor(LEFT_BIOME_MAX_X - radius - ROCK_EXTRA_GAP);
-    const minSpawnZoneDistanceSq = (spawnZone.radius + 100) * (spawnZone.radius + 100);
-    if (!(distanceSq > minSpawnZoneDistanceSq &&
-        x >= minX && x <= maxX &&
-        y >= ROCK_SPAWN_PADDING && y <= (MAP_SIZE[1] - ROCK_SPAWN_PADDING))) {
-        return false;
-    }
-
-    // Ensure new rocks don't touch each other and keep an extra 100 units of spacing.
-    for (const existing of Object.values(ENTITIES.STRUCTURES)) {
-        if (existing.type !== 2) continue;
-        const existingRadius = dataMap.STRUCTURES[existing.type]?.radius || 0;
-        const minCenterDist = radius + existingRadius + ROCK_EXTRA_GAP;
-        const ex = x - existing.x;
-        const ey = y - existing.y;
-        if ((ex * ex + ey * ey) < (minCenterDist * minCenterDist)) {
-            return false;
+    for (const structure of layout) {
+        if (structure.type === 1) {
+            new Base(structure.id, structure.x, structure.y);
+        } else if (structure.type === 2) {
+            new Rock(structure.id, structure.x, structure.y);
+        } else if (structure.type === 3) {
+            new Bush(structure.id, structure.x, structure.y);
+        } else {
+            continue;
         }
+        const spawned = ENTITIES.STRUCTURES[structure.id];
+        if (spawned) spawned.world = world;
     }
 
-    return true;
+    console.log(`[WORLD ${world}] structure seed=${seed} structures=${layout.length}`);
 }
+spawnSeededStructuresForWorld('main');
 
-for (let i = 0; i < 100; i++) {
-    let x = 0, y = 0;
-    let validPosition = false;
-    const side = i % 2 === 0 ? 'left' : 'right';
-    const spawnZone = ENTITIES.STRUCTURES[1]; // Assuming spawn zone is structure with id 1
-    const radius = dataMap.STRUCTURES[2].radius;
-    let attempts = 0;
-    while (!validPosition) {
-        attempts++;
-        const pos = getRandomRockPosition(radius, side);
-        x = pos.x;
-        y = pos.y;
-        validPosition = isValidRockPosition(x, y, radius, spawnZone, side);
-        if (!validPosition && attempts > 5000) break;
-    }
-
-    if (!validPosition) {
-        continue;
-    }
-    new Rock(getId('STRUCTURES'), x, y);
-}
-// tree structures (left side only)
-for (let i = 101; i < 201; i++) {
-    let x, y;
-    let validPosition = false;
-    let attempts = 0;
-    const radius = dataMap.STRUCTURES[3].radius;
-    const maxTreeX = Math.floor(LEFT_BIOME_MAX_X - radius);
-    while (!validPosition) {
-        attempts++;
-        x = Math.floor(ROCK_SPAWN_PADDING + Math.random() * (Math.max(ROCK_SPAWN_PADDING, maxTreeX) - ROCK_SPAWN_PADDING + 1));
-        y = Math.floor(ROCK_SPAWN_PADDING + Math.random() * ((MAP_SIZE[1] - ROCK_SPAWN_PADDING) - ROCK_SPAWN_PADDING + 1));
-        const spawnZone = ENTITIES.STRUCTURES[1]; // Assuming spawn zone is structure with id 1
-        const dx = x - spawnZone.x;
-        const dy = y - spawnZone.y;
-        const distanceSq = dx * dx + dy * dy;
-        const minDistanceSq = (spawnZone.radius + 100) * (spawnZone.radius + 100);
-
-        // Ensure not near spawn zone and keep trees on the left biome.
-        if (distanceSq > minDistanceSq &&
-            x >= ROCK_SPAWN_PADDING && x <= maxTreeX &&
-            y >= ROCK_SPAWN_PADDING && y <= (MAP_SIZE[1] - ROCK_SPAWN_PADDING)) {
-            validPosition = true;
-        }
-        if (!validPosition && attempts > 5000) break;
-    }
-    if (!validPosition) {
-        continue;
-    }
-    new Bush(getId('STRUCTURES'), x, y);
-}
 export function buildInitPacket(wsId, world = 'main') {
     // console.log("Building init packet for", wsId);
     initWriter.reset();
@@ -309,32 +232,27 @@ export function buildInitPacket(wsId, world = 'main') {
         initWriter.writeF32(player.angle);
         initWriter.writeStr(player.username);
     }
-    const mobs = Object.values(ENTITIES.MOBS).filter(mob => (mob.world || 'main') === world);
-    initWriter.writeU16(mobs.length);
-    for (const mob of mobs) {
-        initWriter.writeU16(mob.id);
-        initWriter.writeU16(mob.x);
-        initWriter.writeU16(mob.y);
-        initWriter.writeF32(mob.angle);
-        initWriter.writeU8(mob.type);
-    }
-    const structures = Object.values(ENTITIES.STRUCTURES).filter(structure => (structure.world || 'main') === world);
-    initWriter.writeU16(structures.length);
-    for (const structure of structures) {
-        initWriter.writeU16(structure.id);
-        initWriter.writeU16(structure.x);
-        initWriter.writeU16(structure.y);
-        initWriter.writeU8(structure.type);
+
+    // Mobs are synced entirely by update packets (create/delete by presence in each tick).
+    initWriter.writeU16(0);
+    const structureSeed = WORLD_STRUCTURE_SEEDS.get(world);
+    if (Number.isInteger(structureSeed)) {
+        initWriter.writeU8(1); // seeded structure layout
+        initWriter.writeU32(structureSeed >>> 0);
+    } else {
+        initWriter.writeU8(0); // raw structure list
+        const structures = Object.values(ENTITIES.STRUCTURES).filter(structure => (structure.world || 'main') === world);
+        initWriter.writeU16(structures.length);
+        for (const structure of structures) {
+            initWriter.writeU16(structure.id);
+            initWriter.writeU16(structure.x);
+            initWriter.writeU16(structure.y);
+            initWriter.writeU8(structure.type);
+        }
     }
 
-    const objects = Object.values(ENTITIES.OBJECTS).filter(object => (object.world || 'main') === world);
-    initWriter.writeU16(objects.length);
-    for (const object of objects) {
-        initWriter.writeU16(object.id);
-        initWriter.writeU16(object.x);
-        initWriter.writeU16(object.y);
-        initWriter.writeU8(object.type);
-    }
+    // Objects are synced entirely by update packets (create/delete by presence in each tick).
+    initWriter.writeU16(0);
 
     return initWriter.getBuffer();
 }
@@ -465,3 +383,8 @@ for (const type of getChestObjectTypes()) {
 }
 
 export const brokenObjects = {};
+
+
+
+
+

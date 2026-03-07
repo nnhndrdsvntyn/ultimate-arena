@@ -17,7 +17,6 @@ export const Settings = {
     showPlayerIds: false,
     showChestIds: false,
     showMobsOnMinimap: false,
-    showPlayersOnMinimap: false,
     showChestsOnMinimap: false,
     showMinimap: true,
 };
@@ -163,7 +162,11 @@ export const Vars = {
         x: 0,
         y: 0,
         score: 0
-    }
+    },
+    minimapPlayers: {},
+    disconnectMessage: '',
+    disableAutoReconnect: false,
+    structureSeed: null
 };
 
 const DAMAGE_INDICATOR_DURATION = 800;
@@ -172,9 +175,12 @@ const damageIndicators = [];
 const COIN_PICKUP_EFFECT_DURATION = 180;
 const COIN_PICKUP_EFFECT_MAX_DISTANCE = 140;
 const COIN_PICKUP_EFFECT_MAX_SPRITES = 5;
+const SEEDED_CHEST_COIN_CONSUME_RADIUS = 55;
 const coinPickupEffects = [];
+const seededChestCoins = [];
 const lightningShotEffects = [];
 const energyBurstEffects = [];
+const poisonAoeEffects = [];
 const mobDeathFades = [];
 const keyHintUi = {
     visible: false,
@@ -295,6 +301,8 @@ export function spawnCoinPickupVfxToPlayer(startX, startY, angle, targetX, targe
     if (!Number.isFinite(angle)) return;
     if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) return;
 
+    consumeSeededChestCoinsNear(startX, startY, Math.max(1, Math.floor(amount || 1)));
+
     const spriteCount = Math.min(COIN_PICKUP_EFFECT_MAX_SPRITES, Math.max(1, amount >= 5 ? 5 : amount));
     coinPickupEffects.push({
         startX,
@@ -306,6 +314,64 @@ export function spawnCoinPickupVfxToPlayer(startX, startY, angle, targetX, targe
         spriteCount,
         seed: Math.random() * Math.PI * 2
     });
+}
+
+export function spawnSeededChestCoins(centerX, centerY, spread, totalCoins, seed, lifetimeMs = 10000) {
+    const safeTotal = Math.max(1, Math.min(65535, Math.floor(totalCoins || 0)));
+    const safeSpread = Math.max(1, Math.floor(spread || 1));
+    const coinRadius = dataMap.OBJECTS[getCoinObjectType()]?.radius || 15;
+    const expiresAt = performance.now() + Math.max(1, Math.floor(lifetimeMs || 10000));
+    let rngState = (seed >>> 0);
+    const nextRand = () => {
+        rngState = (Math.imul(1664525, rngState) + 1013904223) >>> 0;
+        return rngState / 4294967296;
+    };
+
+    for (let i = 0; i < safeTotal; i++) {
+        const angle = nextRand() * Math.PI * 2;
+        const distance = Math.sqrt(nextRand()) * safeSpread;
+        const x = Math.max(coinRadius, Math.min(MAP_SIZE[0] - coinRadius, centerX + Math.cos(angle) * distance));
+        const y = Math.max(coinRadius, Math.min(MAP_SIZE[1] - coinRadius, centerY + Math.sin(angle) * distance));
+        seededChestCoins.push({
+            x,
+            y,
+            expiresAt,
+            removed: false
+        });
+    }
+}
+
+function pruneSeededChestCoins(now = performance.now()) {
+    for (let i = seededChestCoins.length - 1; i >= 0; i--) {
+        const coin = seededChestCoins[i];
+        if (coin.removed || coin.expiresAt <= now) {
+            seededChestCoins.splice(i, 1);
+        }
+    }
+}
+
+function consumeSeededChestCoinsNear(x, y, amount = 1) {
+    if (!seededChestCoins.length || amount <= 0) return;
+    pruneSeededChestCoins();
+    const safeAmount = Math.max(1, Math.floor(amount));
+    const maxDistSq = SEEDED_CHEST_COIN_CONSUME_RADIUS * SEEDED_CHEST_COIN_CONSUME_RADIUS;
+    for (let n = 0; n < safeAmount; n++) {
+        let bestIndex = -1;
+        let bestDistSq = Infinity;
+        for (let i = 0; i < seededChestCoins.length; i++) {
+            const coin = seededChestCoins[i];
+            if (coin.removed) continue;
+            const dx = coin.x - x;
+            const dy = coin.y - y;
+            const distSq = dx * dx + dy * dy;
+            if (distSq < bestDistSq) {
+                bestDistSq = distSq;
+                bestIndex = i;
+            }
+        }
+        if (bestIndex < 0 || bestDistSq > maxDistSq) break;
+        seededChestCoins[bestIndex].removed = true;
+    }
 }
 
 export function spawnLightningShotFx(startX, startY, endX, endY, durationMs = 500) {
@@ -342,6 +408,19 @@ export function spawnEnergyBurstFx(x, y, radius = 500, durationMs = 700, waves =
         waves: Math.max(1, Math.min(8, waves | 0)),
         startTime: performance.now(),
         seed: Math.random() * Math.PI * 2
+    });
+}
+
+export function spawnPoisonAoeFx(x, y, radius = 300, durationMs = 700, waves = 2) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const duration = Math.max(1, durationMs | 0);
+    poisonAoeEffects.push({
+        x,
+        y,
+        radius: Math.max(1, radius),
+        duration,
+        waves: Math.max(1, Math.min(8, waves | 0)),
+        startTime: performance.now()
     });
 }
 
@@ -435,6 +514,11 @@ const loadingState = {
     connected: false,
     alpha: 1,
     fadeOut: false
+};
+const disconnectedState = {
+    active: false,
+    header: 'Disconnected!',
+    subText: 'Attempting to reconnect...'
 };
 
 async function loadAssets() {
@@ -555,13 +639,55 @@ function drawLoadingScreen() {
     LC.ctx.restore();
 }
 
+function drawDisconnectedScreen() {
+    if (!disconnectedState.active) return;
+
+    const scaleX = LC.scaleX ?? 1;
+    const scaleY = LC.scaleY ?? 1;
+
+    LC.ctx.save();
+    LC.ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+    if (LC.images?.['loading-background']) {
+        LC.drawImage({
+            name: 'loading-background',
+            pos: [0, 0],
+            size: [LC.width, LC.height],
+            transparency: 0.1
+        });
+    }
+    LC.ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+    LC.ctx.fillRect(0, 0, LC.width, LC.height);
+
+    const y = LC.height / 2 + 50;
+
+    drawFPS();
+
+    LC.drawText({ text: disconnectedState.header.toUpperCase(), pos: [LC.width / 2, y - 20], font: '900 32px Inter, sans-serif', color: '#ef4444', textAlign: 'center' });
+    if (disconnectedState.subText) {
+        LC.drawText({ text: disconnectedState.subText, pos: [LC.width / 2, y + 14], font: '600 15px Inter, sans-serif', color: 'rgba(248, 113, 113, 0.92)', textAlign: 'center' });
+    }
+
+    LC.ctx.restore();
+}
+
 // --- WebSocket Setup ---
 const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
-export const ws = new WebSocket(`${wsProtocol}${location.host}?world=${encodeURIComponent(CURRENT_WORLD)}`);
+const wsUrl = `${wsProtocol}${location.host}?world=${encodeURIComponent(CURRENT_WORLD)}`;
+let reconnectProbeTimer = null;
+let reconnectProbeInFlight = false;
+export const ws = new WebSocket(wsUrl);
 ws.binaryType = 'arraybuffer';
 window.ws = ws;
 
 ws.onopen = () => {
+    disconnectedState.active = false;
+    Vars.disconnectMessage = '';
+    Vars.disableAutoReconnect = false;
+    if (LC.container) LC.container.style.zIndex = '';
+    if (reconnectProbeTimer) {
+        clearInterval(reconnectProbeTimer);
+        reconnectProbeTimer = null;
+    }
     if (loadingState.loadedAssets === loadingState.totalAssets) {
         loadingState.header = 'Connected!';
         loadingState.progress = 1;
@@ -582,6 +708,38 @@ ws.onmessage = (event) => {
     parsePacket(event.data);
 };
 
+function startReconnectProbeLoop() {
+    if (reconnectProbeTimer) return;
+    reconnectProbeTimer = setInterval(() => {
+        if (reconnectProbeInFlight) return;
+        reconnectProbeInFlight = true;
+        const probe = new WebSocket(wsUrl);
+        probe.onopen = () => {
+            try { probe.close(); } catch (e) {}
+            if (reconnectProbeTimer) {
+                clearInterval(reconnectProbeTimer);
+                reconnectProbeTimer = null;
+            }
+            window.location.reload();
+        };
+        probe.onerror = () => {
+            try { probe.close(); } catch (e) {}
+        };
+        probe.onclose = () => {
+            reconnectProbeInFlight = false;
+        };
+    }, 500);
+}
+
+ws.onclose = () => {
+    disconnectedState.active = true;
+    disconnectedState.subText = Vars.disconnectMessage || 'Attempting to reconnect...';
+    if (LC.container) LC.container.style.zIndex = '2147483647';
+    if (!Vars.disableAutoReconnect) {
+        startReconnectProbeLoop();
+    }
+};
+
 // --- Main Render Loop ---
 function updateCamera(localPlayer) {
     if (!localPlayer) return;
@@ -599,10 +757,13 @@ function updateZoom(localPlayer) {
         if (inWater || localPlayer.hasShield) targetZoom = 1.3;
     }
 
-    const accessoryKey = ACCESSORY_KEYS[localPlayer?.accessoryId || 0];
+    const zoomRefPlayer = getZoomReferencePlayer(localPlayer);
+    const accessoryKey = ACCESSORY_KEYS[zoomRefPlayer?.accessoryId || 0];
     const accessoryMult = dataMap.ACCESSORIES[accessoryKey]?.viewRangeMult || 1;
+    const baseRadius = Math.max(1, dataMap.PLAYERS.baseRadius || 30);
+    const radiusScale = Math.max(0.1, (zoomRefPlayer?.radius || baseRadius) / baseRadius);
     const baseViewRange = Vars.viewRangeMult || DEFAULT_VIEW_RANGE_MULT;
-    const viewRangeMult = Math.max(0.1, baseViewRange * accessoryMult);
+    const viewRangeMult = Math.max(0.1, baseViewRange * accessoryMult * radiusScale);
     targetZoom /= viewRangeMult;
 
     const delta = targetZoom - LC.zoom;
@@ -611,6 +772,30 @@ function updateZoom(localPlayer) {
     } else {
         LC.zoom += delta * 0.18;
     }
+}
+
+function getZoomReferencePlayer(localPlayer) {
+    if (!localPlayer) return null;
+    if (localPlayer.isAlive) return localPlayer;
+
+    const topLeaderId = ENTITIES.leaderboard?.[0]?.id;
+    const topLeader = topLeaderId ? ENTITIES.PLAYERS[topLeaderId] : null;
+    if (topLeader?.isAlive) return topLeader;
+
+    let closestAlive = null;
+    let bestDistSq = Infinity;
+    for (const id in ENTITIES.PLAYERS) {
+        const p = ENTITIES.PLAYERS[id];
+        if (!p || !p.isAlive) continue;
+        const dx = p.x - localPlayer.x;
+        const dy = p.y - localPlayer.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < bestDistSq) {
+            bestDistSq = distSq;
+            closestAlive = p;
+        }
+    }
+    return closestAlive || localPlayer;
 }
 
 function drawBackground() {
@@ -661,8 +846,47 @@ function drawBackground() {
         });
     }
 
+    drawStaticRiverBridges(staticViewRect);
     drawRiverShoreline(staticViewRect);
     drawOutsideMapOverlay(staticViewRect);
+}
+
+function drawStaticRiverBridges(viewRect) {
+    const cfg = dataMap.STRUCTURES?.['1'] || {};
+    const bridgeHalfHeight = Math.max(10, Math.floor(cfg.bridgeHalfHeight || 70));
+    const bridgeCount = Math.max(1, Math.floor(cfg.bridgeCount || 5));
+    const centerBridgeIndex = Math.ceil(bridgeCount / 2);
+    const bridgeColor = cfg.bridgeColor || 'rgba(120, 85, 48, 0.96)';
+    const bridgeOutlineColor = 'rgba(70, 46, 24, 0.95)';
+    const riverStartX = MAP_SIZE[0] * 0.47;
+    const riverEndX = MAP_SIZE[0] * 0.53;
+    const bridgeWidth = riverEndX - riverStartX;
+    const bridgeHeight = bridgeHalfHeight * 2;
+    const segmentHeight = MAP_SIZE[1] / (bridgeCount + 1);
+
+    for (let i = 1; i <= bridgeCount; i++) {
+        if (i === centerBridgeIndex) continue;
+        const bridgeCenterY = segmentHeight * i;
+        const bridgeTop = bridgeCenterY - bridgeHalfHeight;
+        if (!isRectVisible(riverStartX, bridgeTop, bridgeWidth, bridgeHeight, viewRect)) continue;
+
+        LC.drawRect({
+            pos: [riverStartX - camera.x, bridgeTop - camera.y],
+            size: [bridgeWidth, bridgeHeight],
+            color: bridgeColor
+        });
+
+        LC.ctx.save();
+        LC.ctx.strokeStyle = bridgeOutlineColor;
+        LC.ctx.lineWidth = 3;
+        LC.ctx.beginPath();
+        LC.ctx.moveTo(riverStartX - camera.x, bridgeTop - camera.y);
+        LC.ctx.lineTo(riverEndX - camera.x, bridgeTop - camera.y);
+        LC.ctx.moveTo(riverStartX - camera.x, bridgeTop + bridgeHeight - camera.y);
+        LC.ctx.lineTo(riverEndX - camera.x, bridgeTop + bridgeHeight - camera.y);
+        LC.ctx.stroke();
+        LC.ctx.restore();
+    }
 }
 
 function drawRiverShoreline(viewRect) {
@@ -747,6 +971,13 @@ function drawOutsideMapOverlay(viewRect) {
 }
 
 function render() {
+    if (disconnectedState.active) {
+        LC.clearCanvas();
+        drawDisconnectedScreen();
+        requestAnimationFrame(render);
+        return;
+    }
+
     if (loadingState.active) {
         LC.clearCanvas();
         drawLoadingScreen();
@@ -783,10 +1014,12 @@ function render() {
         if (!isCircleVisible(structure.x, structure.y, structure.radius || 0, staticViewRect)) return;
         structure.draw();
     });
+    drawSeededChestCoins();
     [ENTITIES.OBJECTS, ENTITIES.MOBS, ENTITIES.PROJECTILES].forEach(group => {
         Object.values(group).forEach(e => e.draw());
     });
     drawMobDeathFades();
+    drawPoisonAoeEffects();
     drawEnergyBurstEffects();
     drawLightningShotEffects();
     drawCoinPickupEffects();
@@ -1650,6 +1883,24 @@ function drawCoinPickupEffects() {
     }
 }
 
+function drawSeededChestCoins() {
+    if (!seededChestCoins.length) return;
+    const now = performance.now();
+    pruneSeededChestCoins(now);
+    if (!seededChestCoins.length) return;
+    const radius = dataMap.OBJECTS[getCoinObjectType()]?.radius || 15;
+    const size = radius * 2;
+    for (let i = 0; i < seededChestCoins.length; i++) {
+        const coin = seededChestCoins[i];
+        if (coin.removed || coin.expiresAt <= now) continue;
+        LC.drawImage({
+            name: 'gold-coin',
+            pos: [coin.x - camera.x - size / 2, coin.y - camera.y - size / 2],
+            size: [size, size]
+        });
+    }
+}
+
 function drawLightningShotEffects() {
     const now = performance.now();
 
@@ -1794,6 +2045,38 @@ function drawEnergyBurstEffects() {
                 );
             }
         }
+        LC.ctx.restore();
+    }
+}
+
+function drawPoisonAoeEffects() {
+    const now = performance.now();
+    for (let i = poisonAoeEffects.length - 1; i >= 0; i--) {
+        const fx = poisonAoeEffects[i];
+        const t = (now - fx.startTime) / fx.duration;
+        if (t >= 1) {
+            poisonAoeEffects.splice(i, 1);
+            continue;
+        }
+
+        const centerX = fx.x - camera.x;
+        const centerY = fx.y - camera.y;
+        const currentRadius = fx.radius * Math.max(0, Math.min(1, t));
+        const baseAlpha = Math.max(0, 1 - t);
+        const fillAlpha = Math.min(0.24, 0.24 * baseAlpha);
+        const strokeAlpha = Math.min(0.75, 0.75 * baseAlpha);
+
+        LC.ctx.save();
+        LC.ctx.beginPath();
+        LC.ctx.arc(centerX, centerY, currentRadius, 0, Math.PI * 2);
+        LC.ctx.fillStyle = `rgba(70, 220, 90, ${fillAlpha})`;
+        LC.ctx.fill();
+
+        LC.ctx.beginPath();
+        LC.ctx.arc(centerX, centerY, currentRadius, 0, Math.PI * 2);
+        LC.ctx.strokeStyle = `rgba(80, 255, 110, ${strokeAlpha})`;
+        LC.ctx.lineWidth = 3;
+        LC.ctx.stroke();
         LC.ctx.restore();
     }
 }
@@ -2021,7 +2304,10 @@ function drawMinimap() {
 
     if (Settings.showMobsOnMinimap) Object.values(ENTITIES.MOBS).forEach(m => drawDot(m, 'orange'));
     if (Settings.showChestsOnMinimap) Object.values(ENTITIES.OBJECTS).filter(o => isChestObjectType(o.type)).forEach(o => drawDot(o, '#b45309'));
-    if (Settings.showPlayersOnMinimap) Object.values(ENTITIES.PLAYERS).filter(p => p.id !== Vars.myId && p.isAlive).forEach(p => drawDot(p, 'red'));
+    Object.values(Vars.minimapPlayers || {}).forEach(p => {
+        if (!p || p.id === Vars.myId) return;
+        drawDot(p, 'red');
+    });
     const lp = ENTITIES.PLAYERS[Vars.myId];
     if (lp) drawDot(lp, 'white');
 
@@ -2430,7 +2716,7 @@ function drawLevelProgressBar(hotbarX, hotbarY, hotbarWidth) {
 function drawAbilityCooldownBar(hotbarX, hotbarY, hotbarWidth) {
     const myPlayer = ENTITIES.PLAYERS[Vars.myId];
     const accessoryKey = ACCESSORY_KEYS[myPlayer?.accessoryId || 0];
-    if (accessoryKey !== 'minotaur-hat' && accessoryKey !== 'pirate-hat') return;
+    if (accessoryKey !== 'minotaur-hat' && accessoryKey !== 'pirate-hat' && accessoryKey !== 'bush-cloak') return;
 
     const cooldownMs = Math.max(0, Vars.abilityCooldownMs || 0);
     if (cooldownMs <= 0) return;
@@ -2933,3 +3219,4 @@ if (respawnHomeBtn) {
         // Ignore storage errors.
     }
 })();
+

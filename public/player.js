@@ -100,6 +100,9 @@ export class Player {
 
         // lerp swing state
         const delta = this.newSwingState - this.swingState;
+        const baseRadius = Math.max(1, dataMap.PLAYERS.baseRadius || 30);
+        const radiusScale = Math.max(0.1, (this.radius || baseRadius) / baseRadius);
+        const swingLerpFactor = Math.max(0.05, lerpFactor / radiusScale);
 
         // snap if delta is tiny
         if (Math.abs(delta) < 0.01) {
@@ -108,7 +111,7 @@ export class Player {
             // if the new swing state is lower than the current, then automcailly just set it, dont lerp.
             this.swingState = this.newSwingState;
         } else {
-            this.swingState += delta * lerpFactor;
+            this.swingState += delta * swingLerpFactor;
         }
 
         // lerp angle for other players
@@ -171,8 +174,10 @@ export class Player {
         }
 
         if (isSwordRank(currentRank)) {
-            const swordWidth = dataMap.SWORDS.imgs[currentRank]?.swordWidth || 100;
-            const swordHeight = dataMap.SWORDS.imgs[currentRank]?.swordHeight || 50;
+            const baseRadius = Math.max(1, dataMap.PLAYERS.baseRadius || 30);
+            const swordScale = this.radius / baseRadius;
+            const swordWidth = (dataMap.SWORDS.imgs[currentRank]?.swordWidth || 100) * swordScale;
+            const swordHeight = (dataMap.SWORDS.imgs[currentRank]?.swordHeight || 50) * swordScale;
 
             // move origin to the handle instead of center
             const offsetX = Math.cos(angleRad) * (this.radius + swordWidth / 2);
@@ -210,24 +215,29 @@ export class Player {
         const accessoryKey = ACCESSORY_KEYS[this.accessoryId];
         if (accessoryKey && accessoryKey !== 'none') {
             const accessory = dataMap.ACCESSORIES[accessoryKey];
-            let playerScale = this.radius / dataMap.PLAYERS.baseRadius;
+            const baseRadius = Math.max(1, dataMap.PLAYERS.baseRadius || 30);
+            const playerScale = this.radius / baseRadius;
             if (accessory) {
                 const cos = Math.cos(this.angle);
                 const sin = Math.sin(this.angle);
+                const scaledOffsetX = (accessory.hatOffset?.x || 0) * playerScale;
+                const scaledOffsetY = (accessory.hatOffset?.y || 0) * playerScale;
+                const scaledWidth = (accessory.size?.[0] || 0) * playerScale;
+                const scaledHeight = (accessory.size?.[1] || 0) * playerScale;
 
                 // Standard rotation matrix:
                 // x' = x*cos - y*sin
                 // y' = x*sin + y*cos
-                const rotatedX = accessory.hatOffset.x * cos - accessory.hatOffset.y * playerScale * sin;
-                const rotatedY = accessory.hatOffset.x * sin + accessory.hatOffset.y * playerScale * cos;
+                const rotatedX = scaledOffsetX * cos - scaledOffsetY * sin;
+                const rotatedY = scaledOffsetX * sin + scaledOffsetY * cos;
 
                 LC.drawImage({
                     name: accessory.name,
                     pos: [
-                        screenPosX + rotatedX - accessory.size[0] * (playerScale / 2) + playerScale,
-                        screenPosY + rotatedY - accessory.size[1] * (playerScale / 2) + playerScale
+                        screenPosX + rotatedX - (scaledWidth / 2),
+                        screenPosY + rotatedY - (scaledHeight / 2)
                     ],
-                    size: [accessory.size[0] * playerScale, accessory.size[1] * playerScale],
+                    size: [scaledWidth, scaledHeight],
                     rotation: this.angle,
                     transparency: alpha
                 });

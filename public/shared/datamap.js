@@ -288,7 +288,19 @@ export const dataMap = {
         '11': { radius: 30, speed: 100, damage: 35, maxDistance: 500, knockbackStrength: 25, imgProportions: [10, 2.5], imgSrc: './images/projectiles/lightning.png', imgName: 'projectiles-lightning'}
     },
     STRUCTURES: {
-        '1': { radius: 500, isSafeZone: true, imgSrc: './images/spawn-zone.png', imgName: 'structures-spawn-zone' },
+        '1': {
+            radius: 500,
+            isSafeZone: true,
+            noCollisions: true,
+            safeZoneHalfSize: 220,
+            bridgeCount: 5,
+            bridgeHalfHeight: 80,
+            bridgeColor: 'rgba(120, 85, 48, 0.96)',
+            safeZoneColor: 'rgba(150, 108, 62, 0.96)',
+            safeZoneBorderColor: 'rgba(84, 57, 30, 1)',
+            imgSrc: './images/spawn-zone.png',
+            imgName: 'structures-spawn-zone'
+        },
         '2': { radius: 200, imgSrc: './images/rock1.png', imgName: 'structures-rock1' },
         '3': { radius: 200, noCollisions: true, imgSrc: './images/tree1.png', imgName: 'structures-tree1' }
     },
@@ -301,13 +313,13 @@ export const ACCESSORY_NAME_TO_ID = ACCESSORY_KEYS.reduce((acc, name, idx) => {
     return acc;
 }, {});
 export const ACCESSORY_DESCRIPTIONS = {
-    'bush-cloak': 'Poisons melee attackers',
+    'bush-cloak': 'Active: Poison AOE (F). Applies poison in a 300 radius.',
     'sunglasses': 'Coming Soon',
     'pirate-hat': 'Chest drops +20% coins and grants a stamina boost ability (F)',
     'viking-hat': 'Every 3 hits, you do 30% more damage.',
     'alien-antennas': 'Allows you to view more of the map',
     'dark-cloak': 'Mobs have slightly more difficulty spotting you',
-    'minotaur-hat': 'A trophy from the arena minotaur'
+    'minotaur-hat': 'Active: Energy Burst (F). Passive: 20% damage reduction.'
 };
 export const ACCESSORY_ITEM_OFFSET = 100;
 
@@ -394,5 +406,5 @@ export function getLevelFromXp(xp) {
 }
 
 if (typeof window !== 'undefined') {
-    // window.datamap = dataMap;
+    window.datamap = dataMap;
 }

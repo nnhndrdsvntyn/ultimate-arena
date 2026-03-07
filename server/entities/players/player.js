@@ -18,7 +18,8 @@ import {
     getXpShopItemConfig
 } from '../../../public/shared/datamap.js';
 import {
-    wss
+    wss,
+    wsById
 } from '../../../server.js';
 import {
     playSfx,
@@ -133,6 +134,7 @@ export class Player extends Entity {
         this.minotaurSpeedBoostUntil = 0;
         this.minotaurSpeedBoostMult = 1;
         this.pendingWeaponReturnTimer = null;
+        this.lastSwingAnimStepTime = 0;
         this.tutorial = null;
 
         // --- Social & Movement ---
@@ -197,7 +199,7 @@ export class Player extends Entity {
     }
 
     sendTutorialObjective(text, status = 0, step = this.tutorial?.stage ?? 0) {
-        const ws = Array.from(wss.clients).find(c => c.id === this.id);
+        const ws = wsById.get(this.id);
         if (!ws) return;
         ws.packetWriter.reset();
         ws.packetWriter.writeU8(TUTORIAL_PACKET_OBJECTIVE);
@@ -210,7 +212,7 @@ export class Player extends Entity {
     completeTutorial() {
         if (!this.tutorial || this.tutorial.finished) return;
         this.tutorial.finished = true;
-        const ws = Array.from(wss.clients).find(c => c.id === this.id);
+        const ws = wsById.get(this.id);
         if (!ws) return;
         ws.packetWriter.reset();
         ws.packetWriter.writeU8(TUTORIAL_PACKET_COMPLETE);
@@ -406,7 +408,37 @@ export class Player extends Entity {
     updateEnvironment() {
         const inTutorial = this.isTutorialWorld();
         const waterxr = [MAP_SIZE[0] * 0.47, MAP_SIZE[0] * 0.53];
-        this.inWater = !inTutorial && this.x > waterxr[0] && this.x < waterxr[1] && !this.touchingSafeZone;
+        let onBridge = false;
+        if (!inTutorial) {
+            for (const id in ENTITIES.STRUCTURES) {
+                const s = ENTITIES.STRUCTURES[id];
+                if (!s || s.type !== 1) continue;
+                if ((s.world || 'main') !== (this.world || 'main')) continue;
+                const cfg = dataMap.STRUCTURES[s.type] || {};
+                const bridgeHalfHeight = Math.max(1, Math.floor(cfg.bridgeHalfHeight || 70));
+                const bridgeCount = Math.max(1, Math.floor(cfg.bridgeCount || 5));
+                const centerBridgeIndex = Math.ceil(bridgeCount / 2);
+                const bridgeXMin = waterxr[0];
+                const bridgeXMax = waterxr[1];
+                const segmentHeight = MAP_SIZE[1] / (bridgeCount + 1);
+                for (let i = 1; i <= bridgeCount; i++) {
+                    if (i === centerBridgeIndex) continue;
+                    const bridgeCenterY = segmentHeight * i;
+                    const bridgeBandYMin = bridgeCenterY - bridgeHalfHeight;
+                    const bridgeBandYMax = bridgeCenterY + bridgeHalfHeight;
+                    const inBridgeBand = this.y >= bridgeBandYMin && this.y <= bridgeBandYMax && this.x >= bridgeXMin && this.x <= bridgeXMax;
+                    if (inBridgeBand) {
+                        onBridge = true;
+                        break;
+                    }
+                }
+                if (onBridge) {
+                    break;
+                }
+            }
+        }
+
+        this.inWater = !inTutorial && this.x > waterxr[0] && this.x < waterxr[1] && !this.touchingSafeZone && !onBridge;
 
         this.isHidden = false;
         for (const id in ENTITIES.STRUCTURES) {
@@ -420,7 +452,6 @@ export class Player extends Entity {
 
         const baseSpeed = this.defaultSpeed;
         const speedBoostMult = this.isMinotaurSpeedBoostActive() ? this.minotaurSpeedBoostMult : 1;
-
         if (this.inWater) {
             this.speed = baseSpeed * 0.5 * speedBoostMult;
             const dx = (MAP_SIZE[0] / 2) - this.x;
@@ -442,12 +473,14 @@ export class Player extends Entity {
         const now = performance.now();
         const accessoryKey = ACCESSORY_KEYS[this.accessoryId];
         const accessoryMult = dataMap.ACCESSORIES[accessoryKey]?.viewRangeMult || 1;
+        const baseRadius = Math.max(1, dataMap.PLAYERS.baseRadius || 30);
+        const radiusScale = Math.max(0.1, (this.radius || baseRadius) / baseRadius);
         const base = (typeof this.viewRangeOverride === 'number')
             ? this.viewRangeOverride
             : this.baseViewRangeMult;
-        this.viewRangeMult = Math.max(0.1, base * accessoryMult);
+        this.viewRangeMult = Math.max(0.1, base * accessoryMult * radiusScale);
         const swingMult = this.isStaminaBoostActive() ? 0.7 : 1;
-        this.attackCooldownTime = Math.max(100, dataMap.PLAYERS.baseAttackCooldown * swingMult);
+        this.attackCooldownTime = Math.max(100, dataMap.PLAYERS.baseAttackCooldown * swingMult * radiusScale);
         const nextAbility = this.getEquippedAbility();
         const nextAbilityCooldown = this.getAbilityCooldownMs(nextAbility);
         if (this.activeAbility !== nextAbility || this.abilityCooldownMs !== nextAbilityCooldown) {
@@ -471,12 +504,14 @@ export class Player extends Entity {
 
     getEquippedAbility() {
         const accessoryKey = ACCESSORY_KEYS[this.accessoryId];
+        if (accessoryKey === 'bush-cloak') return 'poison_aoe';
         if (accessoryKey === 'pirate-hat') return 'stamina_boost';
-        if (accessoryKey === 'minotaur-hat') return 'speed_boost';
+        if (accessoryKey === 'minotaur-hat') return 'energy_burst';
         return '';
     }
 
     getAbilityCooldownMs(abilityName = this.activeAbility) {
+        if (abilityName === 'poison_aoe') return 5000;
         if (abilityName === 'stamina_boost') return 10000;
         if (abilityName === 'speed_boost') return 10000;
         if (abilityName === 'energy_burst') return 5000;
@@ -507,11 +542,21 @@ export class Player extends Entity {
 
     updateAnimations() {
         if (this.swingState > 0) {
-            this.swingState = Math.floor(this.swingState + 1);
+            const now = performance.now();
+            const baseRadius = Math.max(1, dataMap.PLAYERS.baseRadius || 30);
+            const radiusScale = Math.max(0.1, (this.radius || baseRadius) / baseRadius);
+            const stepIntervalMs = 50 * radiusScale;
+            if (!this.lastSwingAnimStepTime) this.lastSwingAnimStepTime = now;
+            if (now - this.lastSwingAnimStepTime >= stepIntervalMs) {
+                const steps = Math.max(1, Math.floor((now - this.lastSwingAnimStepTime) / stepIntervalMs));
+                this.swingState = Math.floor(this.swingState + steps);
+                this.lastSwingAnimStepTime = now;
+            }
             this.speed = 0;
         }
         if (this.swingState >= 7) {
             this.swingState = 0;
+            this.lastSwingAnimStepTime = 0;
             this.speed = this.defaultSpeed;
         }
     }
@@ -528,6 +573,11 @@ export class Player extends Entity {
             this.lastStatsSpeed = currentSpeed;
             this.sendStatsUpdate();
         }
+    }
+
+    getCombatScale() {
+        const baseRadius = Math.max(1, dataMap.PLAYERS.baseRadius || 30);
+        return Math.max(0.1, (this.radius || baseRadius) / baseRadius);
     }
 
     // --- Actions ---
@@ -548,6 +598,7 @@ export class Player extends Entity {
 
         this.lastAttackTime = now;
         this.swingState = 1;
+        this.lastSwingAnimStepTime = performance.now();
         playSfx(this.x, this.y, dataMap.sfxMap.indexOf('sword-slash'), 1000);
 
         const groupId = Math.random();
@@ -927,13 +978,13 @@ export class Player extends Entity {
         if (this.invincible || performance.now() - this.lastDamagedTime < 200) return false;
 
         let finalHealthLoss = health;
-        if (attacker && attacker !== this && ACCESSORY_KEYS[this.accessoryId] === 'minotaur-hat') {
+        if (ACCESSORY_KEYS[this.accessoryId] === 'minotaur-hat') {
             finalHealthLoss *= 0.8;
         }
 
         this.lastDamagedTime = performance.now();
         this.hp -= finalHealthLoss;
-        if (attacker && attacker instanceof Player && !attacker?.noKillCredit) {
+        if (attacker && typeof attacker.id !== 'undefined' && !attacker?.noKillCredit) {
             this.lastDamager = attacker;
         }
 
@@ -1083,7 +1134,9 @@ export class Player extends Entity {
     recomputeBuffedAttributes({ healByMaxIncrease = false } = {}) {
         const prevMaxHp = this.maxHp;
         this.strength = this.baseStrength + ((this.buffLevels.strength || 0) * STRENGTH_BUFF_PER_STAGE);
-        this.maxHp = this.baseMaxHp + ((this.buffLevels.maxHealth || 0) * MAX_HP_BUFF_PER_STAGE);
+        const healthScale = this.getCombatScale();
+        const rawMaxHp = this.baseMaxHp + ((this.buffLevels.maxHealth || 0) * MAX_HP_BUFF_PER_STAGE);
+        this.maxHp = Math.max(1, Math.round(rawMaxHp * healthScale));
         if (healByMaxIncrease && this.maxHp > prevMaxHp) {
             this.hp = Math.min(this.maxHp, this.hp + (this.maxHp - prevMaxHp));
         } else {
@@ -1111,29 +1164,46 @@ export class Player extends Entity {
     resolveCollisions() {
         recordResolveCollisionCall();
         if (!this.isAlive) return;
+        const world = this.world || 'main';
 
         // Player vs Player
         for (const id in ENTITIES.PLAYERS) {
             const p = ENTITIES.PLAYERS[id];
-            if ((p.world || 'main') !== (this.world || 'main')) continue;
-            if (p.id !== this.id && p.isAlive && colliding(this, p, 15)) {
-                const ang = Math.atan2(p.y - this.y, p.x - this.x);
-                const dx = Math.cos(ang) * 3, dy = Math.sin(ang) * 3;
-                this.x -= dx; this.y -= dy;
-                p.x += dx; p.y += dy;
-            }
+            if (!p || p.id === this.id || !p.isAlive) continue;
+            if ((p.world || 'main') !== world) continue;
+            const nearDx = p.x - this.x;
+            const nearDy = p.y - this.y;
+            const nearRadius = (this.radius || 30) + (p.radius || 30) + 20;
+            if ((nearDx * nearDx + nearDy * nearDy) > (nearRadius * nearRadius)) continue;
+            if (!colliding(this, p, 15)) continue;
+            const dist = Math.hypot(nearDx, nearDy) || 1;
+            const pushScale = 3 / dist;
+            const dx = nearDx * pushScale;
+            const dy = nearDy * pushScale;
+            this.x -= dx; this.y -= dy;
+            p.x += dx; p.y += dy;
         }
 
-        // Safe Zones
-        this.touchingSafeZone = Object.values(ENTITIES.STRUCTURES).some(s =>
-            (s.world || 'main') === (this.world || 'main') &&
-            dataMap.STRUCTURES[s.type].isSafeZone && colliding(s, this, 15) && performance.now() - 10000 > this.lastCombatTime
-        );
+        this.touchingSafeZone = false;
+        for (const id in ENTITIES.STRUCTURES) {
+            const s = ENTITIES.STRUCTURES[id];
+            if (!s || s.type !== 1) continue;
+            if ((s.world || 'main') !== world) continue;
+            const safeDx = s.x - this.x;
+            const safeDy = s.y - this.y;
+            const safeRange = (s.radius || 0) + (this.radius || 0) + 10;
+            if ((safeDx * safeDx + safeDy * safeDy) > (safeRange * safeRange)) continue;
+            if (colliding(this, s)) {
+                this.touchingSafeZone = true;
+                break;
+            }
+        }
 
         // Player vs Mobs
         for (const id in ENTITIES.MOBS) {
             const m = ENTITIES.MOBS[id];
-            if ((m.world || 'main') !== (this.world || 'main')) continue;
+            if (!m) continue;
+            if ((m.world || 'main') !== world) continue;
 
             if (m.type === 5 && !m.isAlarmed && !this.hasShield && !this.invincible && !this.isHidden && !this.isInvisible) {
                 const dx = m.x - this.x;
@@ -1147,16 +1217,31 @@ export class Player extends Entity {
 
             let buffer = 15;
             if (m.type == 5) buffer -= 20; // polar bear larger collision buffer
+            const hitDx = m.x - this.x;
+            const hitDy = m.y - this.y;
+            const nearRange = (m.radius || 0) + (this.radius || 0) + 25;
+            if ((hitDx * hitDx + hitDy * hitDy) > (nearRange * nearRange)) continue;
             if (colliding(m, this, buffer)) {
-                const ang = Math.atan2(m.y - this.y, m.x - this.x);
-                const dx = Math.cos(ang) * 10, dy = Math.sin(ang) * 10;
+                const dist = Math.hypot(hitDx, hitDy) || 1;
+                const pushScale = 10 / dist;
+                const dx = hitDx * pushScale;
+                const dy = hitDy * pushScale;
                 this.x -= dx; this.y -= dy;
                 m.x += dx; m.y += dy;
 
                 const mHealthRatio = m.maxHp ? (m.hp / m.maxHp) : 1;
+                const isPolarBear = m.type === 5;
+                const isCow = m.type === 3;
+                const hasMeleeCooldown = isPolarBear || isCow;
+                const meetsHealthGate = isPolarBear ? true : (mHealthRatio >= 0.6);
+                const now = performance.now();
+                const meleeReady = !hasMeleeCooldown || (now - (m.lastMeleeAttackTime || 0) >= 600);
 
-                if (m.isAlarmed && dataMap.MOBS[m.type].isNeutral && m.target?.id === this.id && !this.hasShield && !this.isHidden && !this.isInvisible && mHealthRatio >= 0.6) {
+                if (m.isAlarmed && dataMap.MOBS[m.type].isNeutral && m.target?.id === this.id && !this.hasShield && !this.isHidden && !this.isInvisible && meetsHealthGate && meleeReady) {
                     const tookDamage = this.damage(dataMap.MOBS[m.type].damage, m);
+                    if (tookDamage && hasMeleeCooldown) {
+                        m.lastMeleeAttackTime = now;
+                    }
                     if (tookDamage && ACCESSORY_KEYS[this.accessoryId] === 'bush-cloak') {
                         poison(m, 5, 750, 2000);
                     }
@@ -1168,12 +1253,13 @@ export class Player extends Entity {
     // --- Networking ---
 
     sendStatsUpdate() {
-        const ws = Array.from(wss.clients).find(c => c.id === this.id);
+        const ws = wsById.get(this.id);
         if (!ws) return;
 
         const weaponRank = this.weapon.rank || 1;
         const projDmg = dataMap.PROJECTILES[weaponRank]?.damage || 0;
-        const dmgHit = Math.round((this.strength + projDmg) * 1.15);
+        const damageScale = this.getCombatScale();
+        const dmgHit = Math.round((this.strength + projDmg) * 1.15 * damageScale);
         const inCombat = performance.now() - this.lastCombatTime < 10000;
         const abilityCooldownMs = Math.max(0, this.abilityCooldownMs || 0);
         const elapsedSinceAbilityUse = performance.now() - (this.lastAbilityUseTime || 0);
@@ -1204,7 +1290,7 @@ export class Player extends Entity {
     }
 
     sendInventoryUpdate() {
-        const ws = Array.from(wss.clients).find(c => c.id === this.id);
+        const ws = wsById.get(this.id);
         if (!ws) return;
 
         ws.packetWriter.reset();
