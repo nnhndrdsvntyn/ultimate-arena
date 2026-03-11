@@ -1,0 +1,3495 @@
+import { parsePacket } from './parser.js';
+import { LibCanvas, normalizeCanvasFont } from './libcanvas.js';
+import { ENTITIES, MAP_SIZE } from './game.js';
+import { dataMap, TPS, ACCESSORY_KEYS, isAccessoryItemType, accessoryIdFromItemType, accessoryItemTypeFromId, DEFAULT_VIEW_RANGE_MULT, isCoinObjectType, getCoinObjectType, isChestObjectType, xpForLevel, MAX_LEVEL, SWORD_IDS } from './shared/datamap.js';
+import {
+    initializeUI, updateShieldUI, updateHUDVisibility,
+    THROW_BTN_CONFIG, PICKUP_BTN_CONFIG, DROP_BTN_CONFIG, ATTACK_BTN_CONFIG,
+    isMobile, HOTBAR_CONFIG, INVENTORY_CONFIG, ACCESSORY_SLOT_CONFIG, uiState, closeHomeScreenBlockingUI
+} from './ui.js';
+import { BACK_BUFFER_QUALITIES, BACK_BUFFER_DEFAULT, BACK_BUFFER_STORAGE_KEY } from './ui/config.js';
+import { encodeUsername, sendTutorialEvent, sendUpgradePacket } from './helpers.js';
+import { uiInput } from './ui/context.js';
+
+// --- Configuration & Settings ---
+export const Settings = {
+    renderGrid: false,
+    _drawHitboxes: false,
+    get drawHitboxes() {
+        return this._drawHitboxes;
+    },
+    set drawHitboxes(value) {
+        this._drawHitboxes = Boolean(value);
+    },
+    get showHitboxes() {
+        return this._drawHitboxes;
+    },
+    set showHitboxes(value) {
+        this._drawHitboxes = Boolean(value);
+    },
+    showPlayerIds: false,
+    showChestIds: false,
+    showMobsOnMinimap: false,
+    showChestsOnMinimap: false,
+    showMinimap: true,
+};
+window.Settings = Settings;
+
+export const VIEW_RANGE_MIN = 0.5;
+export const VIEW_RANGE_MAX = 1.0;
+export const VIEW_RANGE_STEP = 0.01;
+export const VIEW_RANGE_MOBILE_DEFAULT = 0.7;
+export const VIEW_RANGE_PC_DEFAULT = 1.0;
+export const VIEW_RANGE_RECOMMENDED_MOBILE = 0.7;
+export const VIEW_RANGE_RECOMMENDED_DESKTOP = 1.0;
+// Must match server join cooldown in server/parser.js (handleJoinPacket).
+export const JOIN_ACTION_COOLDOWN_MS = 1000;
+const WORLD_STORAGE_KEY = 'ua_world';
+const TUTORIAL_COMPLETED_STORAGE_KEY = 'ua_tutorial_completed';
+const AUTO_JOIN_STORAGE_KEY = 'ua_auto_join_after_reload';
+const DEFAULT_WORLD = 'tutorial';
+const WORLD_MAIN = 'main';
+const WORLD_TUTORIAL = 'tutorial';
+
+function getPreferredWorld() {
+    try {
+        if (localStorage.getItem(TUTORIAL_COMPLETED_STORAGE_KEY) === '1') {
+            localStorage.setItem(WORLD_STORAGE_KEY, WORLD_MAIN);
+            return WORLD_MAIN;
+        }
+        const stored = localStorage.getItem(WORLD_STORAGE_KEY);
+        return stored === WORLD_MAIN ? WORLD_MAIN : WORLD_TUTORIAL;
+    } catch (e) {
+        return DEFAULT_WORLD;
+    }
+}
+
+export const CURRENT_WORLD = getPreferredWorld();
+const IS_FIRST_TUTORIAL_RUN = (() => {
+    if (CURRENT_WORLD !== WORLD_TUTORIAL) return false;
+    try {
+        return localStorage.getItem(TUTORIAL_COMPLETED_STORAGE_KEY) !== '1';
+    } catch (e) {
+        return true;
+    }
+})();
+
+const VIEW_RANGE_STORAGE_KEY = 'ua_view_range_multiplier';
+const KEY_HINT_NEVER_SHOW_STORAGE_KEY = 'ua_never_show_key_hints';
+
+const clampViewRange = (value) => Math.min(VIEW_RANGE_MAX, Math.max(VIEW_RANGE_MIN, value));
+
+const getStoredViewRange = () => {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return null;
+    try {
+        const raw = window.localStorage.getItem(VIEW_RANGE_STORAGE_KEY);
+        const parsed = parseFloat(raw);
+        return Number.isFinite(parsed) ? clampViewRange(parsed) : null;
+    } catch (e) {
+        return null;
+    }
+};
+
+const getStoredBoolean = (key) => {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return false;
+    try {
+        return window.localStorage.getItem(key) === '1';
+    } catch (e) {
+        return false;
+    }
+};
+
+const setStoredBoolean = (key, value) => {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, value ? '1' : '0');
+    } catch (e) {
+        // Ignore storage failures
+    }
+};
+
+const defaultDeviceViewRange = isMobile ? VIEW_RANGE_MOBILE_DEFAULT : VIEW_RANGE_PC_DEFAULT;
+const initialViewRange = getStoredViewRange() ?? defaultDeviceViewRange;
+
+const getStoredBackBufferQuality = () => {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return null;
+    try {
+        return window.localStorage.getItem(BACK_BUFFER_STORAGE_KEY);
+    } catch (error) {
+        return null;
+    }
+};
+
+const getBackBufferOption = (value) => BACK_BUFFER_QUALITIES.find(opt => opt.value === value);
+const defaultBackBufferOption = getBackBufferOption(BACK_BUFFER_DEFAULT) ?? BACK_BUFFER_QUALITIES[0];
+const initialBackBufferOption = getBackBufferOption(getStoredBackBufferQuality()) ?? defaultBackBufferOption;
+const initialBackBufferQuality = initialBackBufferOption?.value ?? defaultBackBufferOption?.value ?? (BACK_BUFFER_QUALITIES[0]?.value ?? BACK_BUFFER_DEFAULT);
+const initialNeverShowKeyHints = getStoredBoolean(KEY_HINT_NEVER_SHOW_STORAGE_KEY);
+
+export const Vars = {
+    lastDiedTime: 0,
+    myId: 0,
+    ping: 0,
+    lastSentPing: 0,
+    isAdmin: false,
+    viewRangeMult: initialViewRange,
+    myInventory: new Array(35).fill(0),
+    myInventoryCounts: new Array(35).fill(0),
+    selectedSlot: 0,
+    dragSlot: -1,
+    dragAccessory: false,
+    dragAccessoryId: 0,
+    creativeDragItemType: 0,
+    creativeDragAmount: 0,
+    lastSelectionTime: 0,
+    mouseX: 0,
+    mouseY: 0,
+    myStats: {
+        dmgHit: 0,
+        dmgThrow: 0,
+        speed: 0,
+        hp: 100,
+        maxHp: 100,
+        goldCoins: 0,
+        kills: 0,
+        level: 1,
+        availablePoints: 0,
+        buffStrength: 0,
+        buffMaxHealth: 0,
+        buffRegenSpeed: 0,
+        regenPerTick: 5
+    },
+    inCombat: false,
+    onlineCount: 0,
+    vikingComboCount: 0,
+    abilityCooldownMs: 0,
+    abilityCooldownRemainingMs: 0,
+    abilityCooldownEndsAt: 0,
+    backBufferQuality: initialBackBufferQuality,
+    joinActionLockedUntil: 0,
+    tutorialObjectiveVisible: false,
+    tutorialObjectiveStatus: 0,
+    tutorialObjectiveStep: -1,
+    tutorialObjectiveText: '',
+    tutorialObjectiveUpdatedAt: 0,
+    topLeader: {
+        id: 0,
+        x: 0,
+        y: 0,
+        score: 0
+    },
+    minimapPlayers: {},
+    disconnectMessage: '',
+    disableAutoReconnect: false,
+    structureSeed: null
+};
+
+export function isLocalPlayerInSnowBiome() {
+    if (CURRENT_WORLD === WORLD_TUTORIAL) return false;
+    const localPlayer = ENTITIES.PLAYERS[Vars.myId];
+    return !!localPlayer && localPlayer.x >= MAP_SIZE[0] * 0.53;
+}
+
+const DAMAGE_INDICATOR_DURATION = 800;
+const DAMAGE_INDICATOR_RISE = 28;
+const damageIndicators = [];
+const COIN_PICKUP_EFFECT_DURATION = 180;
+const COIN_PICKUP_EFFECT_MAX_DISTANCE = 140;
+const COIN_PICKUP_EFFECT_MAX_SPRITES = 5;
+const SEEDED_CHEST_COIN_CONSUME_RADIUS = 55;
+const coinPickupEffects = [];
+const seededChestCoins = [];
+const lightningShotEffects = [];
+const energyBurstEffects = [];
+const poisonAoeEffects = [];
+const mobDeathFades = [];
+const keyHintUi = {
+    visible: false,
+    neverShowAgain: initialNeverShowKeyHints,
+    wasAliveLastFrame: false,
+    containerEl: null,
+    neverShowCheckboxEl: null
+};
+const tutorialFocusUi = {
+    rootEl: null,
+    blocks: [],
+    ringEl: null,
+    hintEl: null,
+    closeAckSent: false
+};
+const tutorialIndicatorUi = {
+    canvasEl: null,
+    ctx: null,
+    dpr: 1,
+    width: 0,
+    height: 0
+};
+const TUTORIAL_DESKTOP_MOVEMENT_HOLD_MS = 2000;
+const TUTORIAL_DESKTOP_MOVEMENT_SEQUENCE = [
+    { key: 'w', text: 'Hold the "W" key on your keyboard for 2 seconds (your player will move NORTH)' },
+    { key: 'a', text: 'Hold the "A" key on your keyboard for 2 seconds (your player will move WEST)' },
+    { key: 's', text: 'Hold the "S" key on your keyboard for 2 seconds (your player will move SOUTH)' },
+    { key: 'd', text: 'Hold the "D" key on your keyboard for 2 seconds (your player will move EAST)' }
+];
+const tutorialMovementUi = {
+    stepIndex: -1,
+    holdStartedAt: 0
+};
+let worldChoiceInProgress = false;
+let lastUpgradeRequestAt = 0;
+const hudUpgradeHitboxes = [];
+let hudUpgradeHeaderHitbox = null;
+let hudUpgradesExpanded = true;
+let hudUpgradeSlideOffset = 0;
+const HUD_UPGRADE_LAYOUT = {
+    x: 20,
+    topY: 296,
+    rowHeight: 30,
+    rowGap: 10,
+    totalWidth: 330,
+    rightPad: 12,
+    segments: 10,
+    segmentGap: 2
+};
+const HUD_UPGRADE_SLIDE_LERP = 0.22;
+const HUD_SCORE_LERP = 0.15;
+let hudLevelBarProgress = 0;
+let hudLevelBarScore = 0;
+let hudLevelBarLevel = 1;
+let hudInfoBoxScore = 0;
+const ADMIN_CREATIVE_PANEL_GAP = 0;
+const ADMIN_CREATIVE_ITEMS = [
+    ...SWORD_IDS.map(type => ({ type, amount: 1 })),
+    { type: getCoinObjectType(), amount: 256 },
+    ...ACCESSORY_KEYS
+        .map((key, idx) => ({ key, idx }))
+        .filter(entry => entry.key !== 'none')
+        .map(entry => ({ type: accessoryItemTypeFromId(entry.idx), amount: 1 }))
+];
+
+export function addDamageIndicator(worldX, worldY, amount) {
+    if (!Number.isFinite(worldX) || !Number.isFinite(worldY)) return;
+    const rounded = Math.round(amount);
+    if (rounded <= 0) return;
+
+    damageIndicators.push({
+        text: `-${rounded}`,
+        x: worldX,
+        y: worldY,
+        start: performance.now(),
+        duration: DAMAGE_INDICATOR_DURATION,
+        font: 'bold 16px Inter',
+        color: '#ff0000',
+        rise: DAMAGE_INDICATOR_RISE
+    });
+}
+
+export function addCriticalHitIndicator(worldX, worldY) {
+    if (!Number.isFinite(worldX) || !Number.isFinite(worldY)) return;
+    damageIndicators.push({
+        text: 'CRITICAL HIT!',
+        x: worldX,
+        y: worldY - 18,
+        start: performance.now(),
+        duration: 900,
+        font: '900 18px Inter',
+        color: '#ffd166',
+        rise: DAMAGE_INDICATOR_RISE + 10
+    });
+}
+
+function getClosestCoinCollectorId(x, y) {
+    let bestId = null;
+    let bestDistSq = Infinity;
+
+    for (const p of Object.values(ENTITIES.PLAYERS)) {
+        if (!p?.isAlive) continue;
+        const dx = p.x - x;
+        const dy = p.y - y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < bestDistSq) {
+            bestDistSq = distSq;
+            bestId = p.id;
+        }
+    }
+
+    if (bestId === null) return null;
+    if (bestDistSq > COIN_PICKUP_EFFECT_MAX_DISTANCE * COIN_PICKUP_EFFECT_MAX_DISTANCE) return null;
+    return bestId;
+}
+
+export function spawnCoinPickupVfx(coinObj) {
+    if (!coinObj || !isCoinObjectType(coinObj.type)) return;
+
+    const startX = coinObj.newX ?? coinObj.x;
+    const startY = coinObj.newY ?? coinObj.y;
+    if (!Number.isFinite(startX) || !Number.isFinite(startY)) return;
+
+    const targetId = getClosestCoinCollectorId(startX, startY);
+    if (targetId === null) return;
+
+    const amount = Math.max(1, coinObj.amount || 1);
+    const spriteCount = Math.min(COIN_PICKUP_EFFECT_MAX_SPRITES, amount >= 5 ? 5 : amount);
+
+    coinPickupEffects.push({
+        startX,
+        startY,
+        targetId,
+        startTime: performance.now(),
+        spriteCount,
+        seed: Math.random() * Math.PI * 2
+    });
+}
+
+export function spawnCoinPickupVfxToPlayer(startX, startY, angle, targetX, targetY, amount = 1) {
+    if (!Number.isFinite(startX) || !Number.isFinite(startY)) return;
+    if (!Number.isFinite(angle)) return;
+    if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) return;
+
+    consumeSeededChestCoinsNear(startX, startY, Math.max(1, Math.floor(amount || 1)));
+
+    const spriteCount = Math.min(COIN_PICKUP_EFFECT_MAX_SPRITES, Math.max(1, amount >= 5 ? 5 : amount));
+    coinPickupEffects.push({
+        startX,
+        startY,
+        angle,
+        targetX,
+        targetY,
+        startTime: performance.now(),
+        spriteCount,
+        seed: Math.random() * Math.PI * 2
+    });
+}
+
+export function spawnSeededChestCoins(centerX, centerY, spread, totalCoins, seed, lifetimeMs = 10000) {
+    const safeTotal = Math.max(1, Math.min(65535, Math.floor(totalCoins || 0)));
+    const safeSpread = Math.max(1, Math.floor(spread || 1));
+    const coinRadius = dataMap.OBJECTS[getCoinObjectType()]?.radius || 15;
+    const expiresAt = performance.now() + Math.max(1, Math.floor(lifetimeMs || 10000));
+    let rngState = (seed >>> 0);
+    const nextRand = () => {
+        rngState = (Math.imul(1664525, rngState) + 1013904223) >>> 0;
+        return rngState / 4294967296;
+    };
+
+    for (let i = 0; i < safeTotal; i++) {
+        const angle = nextRand() * Math.PI * 2;
+        const distance = Math.sqrt(nextRand()) * safeSpread;
+        const x = Math.max(coinRadius, Math.min(MAP_SIZE[0] - coinRadius, centerX + Math.cos(angle) * distance));
+        const y = Math.max(coinRadius, Math.min(MAP_SIZE[1] - coinRadius, centerY + Math.sin(angle) * distance));
+        seededChestCoins.push({
+            x,
+            y,
+            expiresAt,
+            removed: false
+        });
+    }
+}
+
+function pruneSeededChestCoins(now = performance.now()) {
+    for (let i = seededChestCoins.length - 1; i >= 0; i--) {
+        const coin = seededChestCoins[i];
+        if (coin.removed || coin.expiresAt <= now) {
+            seededChestCoins.splice(i, 1);
+        }
+    }
+}
+
+function consumeSeededChestCoinsNear(x, y, amount = 1) {
+    if (!seededChestCoins.length || amount <= 0) return;
+    pruneSeededChestCoins();
+    const safeAmount = Math.max(1, Math.floor(amount));
+    const maxDistSq = SEEDED_CHEST_COIN_CONSUME_RADIUS * SEEDED_CHEST_COIN_CONSUME_RADIUS;
+    for (let n = 0; n < safeAmount; n++) {
+        let bestIndex = -1;
+        let bestDistSq = Infinity;
+        for (let i = 0; i < seededChestCoins.length; i++) {
+            const coin = seededChestCoins[i];
+            if (coin.removed) continue;
+            const dx = coin.x - x;
+            const dy = coin.y - y;
+            const distSq = dx * dx + dy * dy;
+            if (distSq < bestDistSq) {
+                bestDistSq = distSq;
+                bestIndex = i;
+            }
+        }
+        if (bestIndex < 0 || bestDistSq > maxDistSq) break;
+        seededChestCoins[bestIndex].removed = true;
+    }
+}
+
+export function spawnLightningShotFx(startX, startY, endX, endY, durationMs = 500) {
+    if (!Number.isFinite(startX) || !Number.isFinite(startY) || !Number.isFinite(endX) || !Number.isFinite(endY)) return;
+    const duration = Math.max(1, durationMs | 0);
+    const dx = endX - startX;
+    const dy = endY - startY;
+    const length = Math.sqrt(dx * dx + dy * dy);
+    if (length <= 0.001) return;
+
+    lightningShotEffects.push({
+        startX,
+        startY,
+        endX,
+        endY,
+        midX: (startX + endX) / 2,
+        midY: (startY + endY) / 2,
+        angle: Math.atan2(dy, dx),
+        length,
+        startTime: performance.now(),
+        duration,
+        seed: Math.random() * Math.PI * 2
+    });
+}
+
+export function spawnEnergyBurstFx(x, y, radius = 500, durationMs = 700, waves = 3) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const duration = Math.max(1, durationMs | 0);
+    energyBurstEffects.push({
+        x,
+        y,
+        radius: Math.max(1, radius),
+        duration,
+        waves: Math.max(1, Math.min(8, waves | 0)),
+        startTime: performance.now(),
+        seed: Math.random() * Math.PI * 2
+    });
+}
+
+export function spawnPoisonAoeFx(x, y, radius = 300, durationMs = 700, waves = 2) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const duration = Math.max(1, durationMs | 0);
+    poisonAoeEffects.push({
+        x,
+        y,
+        radius: Math.max(1, radius),
+        duration,
+        waves: Math.max(1, Math.min(8, waves | 0)),
+        startTime: performance.now()
+    });
+}
+
+export function spawnMobDeathFade(mob) {
+    if (!mob || mob.type !== 6) return; // Minotaur only
+    mobDeathFades.push({
+        x: mob.x,
+        y: mob.y,
+        angle: mob.angle || 0,
+        type: mob.type,
+        startTime: performance.now(),
+        duration: 750
+    });
+}
+
+export function setViewRangeMult(value, { persist = true } = {}) {
+    const clamped = clampViewRange(value);
+    Vars.viewRangeMult = clamped;
+    if (persist && typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+        try {
+            window.localStorage.setItem(VIEW_RANGE_STORAGE_KEY, clamped.toString());
+        } catch (error) {
+            // Ignore storage failures
+        }
+    }
+    return clamped;
+}
+
+export function setBackBufferQuality(value, { persist = true } = {}) {
+    const option = getBackBufferOption(value) ?? defaultBackBufferOption ?? BACK_BUFFER_QUALITIES[0];
+    if (!option) return null;
+
+    Vars.backBufferQuality = option.value;
+    LC.setBackBufferResolution(option.width, option.height);
+
+    if (persist && typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+        try {
+            window.localStorage.setItem(BACK_BUFFER_STORAGE_KEY, option.value);
+        } catch (error) {
+            // Ignore storage failures
+        }
+    }
+
+    return option;
+}
+
+export const camera = {
+    x: 0, y: 0,
+    target: { x: 0, y: 0 }
+};
+
+export const LC = new LibCanvas();
+LC.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+setBackBufferQuality(initialBackBufferQuality, { persist: false });
+
+// --- State Variables ---
+let cantJoin = false;
+let waterOffset = 0;
+const STATIC_WORLD_CULL_MARGIN_BASE = 220;
+
+const groundTextures = [];
+
+
+// const step = 300;
+// for (let x = 0; x < MAP_SIZE[0]; x += step) {
+//     for (let y = 0; y < MAP_SIZE[1]; y += step) {
+//         const tx = x + Math.floor(Math.random() * step);
+//         const ty = y + Math.floor(Math.random() * step);
+
+//         if (tx > MAP_SIZE[0] * 0.47 - 100 && tx < MAP_SIZE[0] * 0.53 + 100) continue;
+
+//         groundTextures.push({
+//             x: tx,
+//             y: ty,
+//             size: Math.floor(40 + Math.random() * 20),
+//             texture: 'ground-texture' + (Math.floor(Math.random() * 3) + 1)
+//         });
+//     }
+// }
+
+window.groundTextures = groundTextures;
+
+// --- Loading Screen Logic ---
+const loadingState = {
+    active: true,
+    progress: 0,
+    header: 'Initializing...',
+    subText: '',
+    totalAssets: 0,
+    loadedAssets: 0,
+    connected: false,
+    alpha: 1,
+    fadeOut: false
+};
+const disconnectedState = {
+    active: false,
+    header: 'Disconnected!',
+    subText: 'Attempting to reconnect...'
+};
+
+async function loadAssets() {
+    const assetCategories = [];
+    if (IS_FIRST_TUTORIAL_RUN) {
+        const tutorialObjects = {};
+        const coinType = getCoinObjectType();
+        if (dataMap.OBJECTS[coinType]) tutorialObjects[coinType] = dataMap.OBJECTS[coinType];
+        const tutorialChestId = (dataMap.CHEST_IDS || [])[0];
+        if (tutorialChestId && dataMap.OBJECTS[tutorialChestId]) tutorialObjects[tutorialChestId] = dataMap.OBJECTS[tutorialChestId];
+        const tutorialOtherImgs = {};
+        if (dataMap.otherImgs?.grass) tutorialOtherImgs.grass = dataMap.otherImgs.grass;
+        const tutorialSwords = Object.fromEntries(
+            Object.entries(dataMap.SWORDS.imgs || {}).filter(([, sword]) => (
+                sword?.name !== 'swords-wipsword' && sword?.name !== 'swords-sword9'
+            ))
+        );
+
+        // First tutorial load: keep asset set minimal for faster startup.
+        assetCategories.push(
+            { data: dataMap.UI, type: 'image' },
+            { data: dataMap.ACCESSORIES, type: 'image' },
+            { data: tutorialObjects, type: 'image', rename: true },
+            { data: tutorialOtherImgs, type: 'image' },
+            { data: dataMap.PLAYERS.imgs, type: 'image' },
+            { data: tutorialSwords, type: 'image' },
+            { data: { '2': dataMap.MOBS['2'] }, type: 'image', rename: true }
+        );
+    } else {
+        try {
+            const res = await fetch('./groundtextures.txt');
+            if (res.ok) {
+                const data = await res.json();
+                groundTextures.push(...data);
+            }
+        } catch (e) {
+            console.error('Failed to load ground textures:', e);
+        }
+
+        assetCategories.push(
+            { data: dataMap.AUDIO, type: 'audio' },
+            { data: dataMap.UI, type: 'image' },
+            { data: dataMap.ACCESSORIES, type: 'image' },
+            { data: dataMap.OBJECTS, type: 'image', rename: true },
+            { data: dataMap.otherImgs, type: 'image' },
+            { data: dataMap.PLAYERS.imgs, type: 'image' },
+            { data: dataMap.SWORDS.imgs, type: 'image' },
+            { data: dataMap.MOBS, type: 'image', rename: true },
+            { data: dataMap.STRUCTURES, type: 'image', rename: true },
+            { data: dataMap.PROJECTILES, type: 'image', rename: true }
+        );
+    }
+
+    const assets = assetCategories.flatMap(cat =>
+        Object.values(cat.data).map(item => ({
+            type: cat.type,
+            name: cat.rename ? item.imgName : item.name,
+            src: cat.rename ? item.imgSrc : item.src
+        }))
+    );
+    assets.push({ type: 'image', name: 'ui-skull', src: './images/ui/skull.png' });
+    assets.push({ type: 'image', name: 'ui-crown', src: './images/ui/crown.png' });
+
+    loadingState.totalAssets = assets.length;
+    loadingState.header = 'Loading Assets';
+
+    for (const asset of assets) {
+        if (asset.type === 'audio') {
+            await LC.loadAudio({ name: asset.name, src: asset.src });
+        } else {
+            await LC.loadImage({ name: asset.name, src: asset.src });
+        }
+        loadingState.loadedAssets++;
+        loadingState.progress = (loadingState.loadedAssets / loadingState.totalAssets) * 0.99;
+        await new Promise(r => r());
+    }
+
+    loadingState.progress = 0.99;
+}
+
+function drawLoadingScreen() {
+    if (!loadingState.active) return;
+
+    const scaleX = LC.scaleX ?? 1;
+    const scaleY = LC.scaleY ?? 1;
+
+    LC.ctx.save();
+    LC.ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+    LC.ctx.fillStyle = '#0f172a';
+    LC.ctx.fillRect(0, 0, LC.width, LC.height);
+    LC.ctx.fillStyle = 'rgba(15, 23, 42, 0.58)';
+    LC.ctx.fillRect(0, 0, LC.width, LC.height);
+
+    const barWidth = 400;
+    const barHeight = 8;
+    const x = LC.width / 2 - barWidth / 2;
+    const y = LC.height / 2 + 50;
+
+    drawFPS();
+
+    LC.drawRect({ pos: [x, y], size: [barWidth, barHeight], color: 'rgba(255, 255, 255, 0.05)', cornerRadius: 3 });
+    LC.drawRect({ pos: [x, y], size: [barWidth * loadingState.progress, barHeight], color: '#b79a6b', cornerRadius: 3 });
+
+    LC.drawText({ text: loadingState.header.toUpperCase(), pos: [LC.width / 2, y - 45], font: '900 32px Inter, sans-serif', color: 'white', textAlign: 'center' });
+    LC.drawText({
+        text: `${Math.min(loadingState.loadedAssets, loadingState.totalAssets)}/${Math.max(loadingState.totalAssets, 0)}`,
+        pos: [LC.width / 2, y - 15],
+        font: '400 13px Inter, sans-serif',
+        color: 'rgba(255, 255, 255, 0.35)',
+        textAlign: 'center'
+    });
+    LC.drawText({ text: `${Math.floor(loadingState.progress * 100)}%`, pos: [LC.width / 2, y + 25], font: '600 12px Inter, sans-serif', color: 'rgba(183, 154, 107, 0.6)', textAlign: 'center' });
+
+    if (loadingState.fadeOut) {
+        loadingState.alpha -= 0.05;
+        if (loadingState.alpha <= 0) loadingState.active = false;
+        LC.ctx.globalAlpha = loadingState.alpha;
+    }
+    LC.ctx.restore();
+}
+
+function drawDisconnectedScreen() {
+    if (!disconnectedState.active) return;
+
+    const scaleX = LC.scaleX ?? 1;
+    const scaleY = LC.scaleY ?? 1;
+
+    LC.ctx.save();
+    LC.ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+    LC.ctx.fillStyle = '#0f172a';
+    LC.ctx.fillRect(0, 0, LC.width, LC.height);
+    LC.ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
+    LC.ctx.fillRect(0, 0, LC.width, LC.height);
+
+    const y = LC.height / 2 + 50;
+
+    drawFPS();
+
+    LC.drawText({ text: disconnectedState.header.toUpperCase(), pos: [LC.width / 2, y - 20], font: '900 32px Inter, sans-serif', color: '#ef4444', textAlign: 'center' });
+    if (disconnectedState.subText) {
+        LC.drawText({ text: disconnectedState.subText, pos: [LC.width / 2, y + 14], font: '600 15px Inter, sans-serif', color: 'rgba(248, 113, 113, 0.92)', textAlign: 'center' });
+    }
+
+    LC.ctx.restore();
+}
+
+// --- WebSocket Setup ---
+const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
+const wsUrl = `${wsProtocol}${location.host}?world=${encodeURIComponent(CURRENT_WORLD)}`;
+let reconnectProbeTimer = null;
+let reconnectProbeInFlight = false;
+export const ws = new WebSocket(wsUrl);
+ws.binaryType = 'arraybuffer';
+window.ws = ws;
+
+ws.onopen = () => {
+    disconnectedState.active = false;
+    Vars.disconnectMessage = '';
+    Vars.disableAutoReconnect = false;
+    if (LC.container) LC.container.style.zIndex = '';
+    if (reconnectProbeTimer) {
+        clearInterval(reconnectProbeTimer);
+        reconnectProbeTimer = null;
+    }
+    if (loadingState.loadedAssets === loadingState.totalAssets) {
+        loadingState.header = 'Connected!';
+        loadingState.progress = 1;
+    }
+};
+
+ws.onmessage = (event) => {
+    if (!Vars.myId) {
+        if (typeof event.data === 'string') {
+            Vars.myId = parseInt(event.data);
+            loadingState.connected = true;
+            return;
+        }
+        parsePacket(event.data);
+        cantJoin = true;
+        return;
+    }
+    parsePacket(event.data);
+};
+
+function startReconnectProbeLoop() {
+    if (reconnectProbeTimer) return;
+    reconnectProbeTimer = setInterval(() => {
+        if (reconnectProbeInFlight) return;
+        reconnectProbeInFlight = true;
+        const probe = new WebSocket(wsUrl);
+        probe.onopen = () => {
+            try { probe.close(); } catch (e) {}
+            if (reconnectProbeTimer) {
+                clearInterval(reconnectProbeTimer);
+                reconnectProbeTimer = null;
+            }
+            window.location.reload();
+        };
+        probe.onerror = () => {
+            try { probe.close(); } catch (e) {}
+        };
+        probe.onclose = () => {
+            reconnectProbeInFlight = false;
+        };
+    }, 500);
+}
+
+ws.onclose = () => {
+    disconnectedState.active = true;
+    disconnectedState.subText = Vars.disconnectMessage || 'Attempting to reconnect...';
+    if (LC.container) LC.container.style.zIndex = '2147483647';
+    if (!Vars.disableAutoReconnect) {
+        startReconnectProbeLoop();
+    }
+};
+
+// --- Main Render Loop ---
+function updateCamera(localPlayer) {
+    if (!localPlayer) return;
+    camera.target.x = localPlayer.x;
+    camera.target.y = localPlayer.y;
+    camera.x = camera.target.x - (LC.width / 2);
+    camera.y = camera.target.y - (LC.height / 2);
+}
+
+function updateZoom(localPlayer) {
+    let targetZoom = 0.7;
+    if (localPlayer?.isAlive) {
+        targetZoom = 1.0;
+        const inWater = CURRENT_WORLD !== WORLD_TUTORIAL && localPlayer.x > MAP_SIZE[0] * 0.47 && localPlayer.x < MAP_SIZE[0] * 0.53;
+        if (inWater || localPlayer.hasShield) targetZoom = 1.3;
+    }
+
+    const zoomRefPlayer = getZoomReferencePlayer(localPlayer);
+    const accessoryKey = ACCESSORY_KEYS[zoomRefPlayer?.accessoryId || 0];
+    const accessoryMult = dataMap.ACCESSORIES[accessoryKey]?.viewRangeMult || 1;
+    const baseRadius = Math.max(1, dataMap.PLAYERS.baseRadius || 30);
+    const radiusScale = Math.max(0.1, (zoomRefPlayer?.radius || baseRadius) / baseRadius);
+    const baseViewRange = Vars.viewRangeMult || DEFAULT_VIEW_RANGE_MULT;
+    const viewRangeMult = Math.max(0.1, baseViewRange * accessoryMult * radiusScale);
+    targetZoom /= viewRangeMult;
+
+    const delta = targetZoom - LC.zoom;
+    if (Math.abs(delta) < 0.001) {
+        LC.zoom = targetZoom;
+    } else {
+        LC.zoom += delta * 0.18;
+    }
+}
+
+function getZoomReferencePlayer(localPlayer) {
+    if (!localPlayer) return null;
+    if (localPlayer.isAlive) return localPlayer;
+
+    const topLeaderId = ENTITIES.leaderboard?.[0]?.id;
+    const topLeader = topLeaderId ? ENTITIES.PLAYERS[topLeaderId] : null;
+    if (topLeader?.isAlive) return topLeader;
+
+    let closestAlive = null;
+    let bestDistSq = Infinity;
+    for (const id in ENTITIES.PLAYERS) {
+        const p = ENTITIES.PLAYERS[id];
+        if (!p || !p.isAlive) continue;
+        const dx = p.x - localPlayer.x;
+        const dy = p.y - localPlayer.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < bestDistSq) {
+            bestDistSq = distSq;
+            closestAlive = p;
+        }
+    }
+    return closestAlive || localPlayer;
+}
+
+function drawBackground() {
+    const staticViewRect = getCameraViewRect(getStaticWorldCullMargin());
+
+    const GRASS_TILE_SIZE = 250;
+
+    if (CURRENT_WORLD === WORLD_TUTORIAL) {
+        drawTiledImageInRect('grass', -MAP_SIZE[0] / 2, -MAP_SIZE[1] / 2, MAP_SIZE[0] * 2, MAP_SIZE[1] * 2 + 2500, GRASS_TILE_SIZE, staticViewRect, 0.95);
+        drawTiledImageInRect('grass', 0, 0, MAP_SIZE[0], MAP_SIZE[1], GRASS_TILE_SIZE, staticViewRect, 0.9);
+        drawOutsideMapOverlay(staticViewRect);
+        return;
+    }
+
+    // Ground and Biomes
+    drawTiledImageInRect('grass', -MAP_SIZE[0] / 2, -MAP_SIZE[1] / 2, MAP_SIZE[0] * 0.97, MAP_SIZE[1] * 2 + 2500, GRASS_TILE_SIZE, staticViewRect, 0.95);
+    LC.drawRect({ pos: [(MAP_SIZE[0] * 0.47) - camera.x, -(MAP_SIZE[1] * 0.5) - camera.y], size: [MAP_SIZE[0] * 0.06, MAP_SIZE[1] * 2 + 2500], color: 'rgba(20, 80, 150, 1)' });
+    drawTiledImageInRect('grass-snow', MAP_SIZE[0] * 0.53, -MAP_SIZE[1] / 2, MAP_SIZE[0] * 0.97, MAP_SIZE[1] * 2 + 2500, GRASS_TILE_SIZE, staticViewRect, 0.95);
+
+    // Inner Map
+    drawTiledImageInRect('grass', 0, 0, MAP_SIZE[0] * 0.47, MAP_SIZE[1], GRASS_TILE_SIZE, staticViewRect, 0.9);
+    drawTiledImageInRect('grass-snow', MAP_SIZE[0] * 0.53, 0, MAP_SIZE[0] * 0.47, MAP_SIZE[1], GRASS_TILE_SIZE, staticViewRect, 0.9);
+
+    groundTextures.forEach(gt => {
+        if (!isRectVisible(gt.x, gt.y, gt.size, gt.size, staticViewRect)) return;
+        LC.drawImage({
+            name: gt.texture,
+            pos: [gt.x - camera.x, gt.y - camera.y],
+            size: [gt.size, gt.size],
+            rotation: gt.rotation,
+            transparency: 0.6
+        });
+    });
+
+    // Animated Water
+    const waterWidth = MAP_SIZE[0] * 0.06;
+    const segmentH = 400;
+    waterOffset = (waterOffset + 2) % segmentH;
+    for (let i = -1; i <= Math.ceil((MAP_SIZE[1] + 2000) / segmentH); i++) {
+        const worldX = MAP_SIZE[0] * 0.47;
+        const worldY = -1000 + (i * segmentH) + waterOffset;
+        if (!isRectVisible(worldX, worldY, waterWidth, segmentH, staticViewRect)) continue;
+        LC.drawImage({
+            name: 'water',
+            pos: [worldX - camera.x, worldY - camera.y],
+            size: [waterWidth, segmentH],
+            transparency: 0.5
+        });
+    }
+
+    drawStaticRiverBridges(staticViewRect);
+    drawRiverShoreline(staticViewRect);
+    drawOutsideMapOverlay(staticViewRect);
+}
+
+function drawStaticRiverBridges(viewRect) {
+    const cfg = dataMap.STRUCTURES?.['1'] || {};
+    const bridgeHalfHeight = Math.max(10, Math.floor(cfg.bridgeHalfHeight || 70));
+    const bridgeCount = Math.max(1, Math.floor(cfg.bridgeCount || 5));
+    const centerBridgeIndex = Math.ceil(bridgeCount / 2);
+    const bridgeColor = cfg.bridgeColor || 'rgba(120, 85, 48, 0.96)';
+    const bridgeOutlineColor = 'rgba(70, 46, 24, 0.95)';
+    const riverStartX = MAP_SIZE[0] * 0.47;
+    const riverEndX = MAP_SIZE[0] * 0.53;
+    const bridgeWidth = riverEndX - riverStartX;
+    const bridgeHeight = bridgeHalfHeight * 2;
+    const segmentHeight = MAP_SIZE[1] / (bridgeCount + 1);
+
+    for (let i = 1; i <= bridgeCount; i++) {
+        if (i === centerBridgeIndex) continue;
+        const bridgeCenterY = segmentHeight * i;
+        const bridgeTop = bridgeCenterY - bridgeHalfHeight;
+        if (!isRectVisible(riverStartX, bridgeTop, bridgeWidth, bridgeHeight, viewRect)) continue;
+
+        LC.drawRect({
+            pos: [riverStartX - camera.x, bridgeTop - camera.y],
+            size: [bridgeWidth, bridgeHeight],
+            color: bridgeColor
+        });
+
+        LC.ctx.save();
+        LC.ctx.strokeStyle = bridgeOutlineColor;
+        LC.ctx.lineWidth = 3;
+        LC.ctx.beginPath();
+        LC.ctx.moveTo(riverStartX - camera.x, bridgeTop - camera.y);
+        LC.ctx.lineTo(riverEndX - camera.x, bridgeTop - camera.y);
+        LC.ctx.moveTo(riverStartX - camera.x, bridgeTop + bridgeHeight - camera.y);
+        LC.ctx.lineTo(riverEndX - camera.x, bridgeTop + bridgeHeight - camera.y);
+        LC.ctx.stroke();
+        LC.ctx.restore();
+    }
+}
+
+function drawRiverShoreline(viewRect) {
+    const riverLeft = MAP_SIZE[0] * 0.47;
+    const riverRight = MAP_SIZE[0] * 0.53;
+    const shoreWidth = 16;
+    const dirtY = -MAP_SIZE[1] / 2;
+    const dirtHeight = MAP_SIZE[1] * 2 + 2500;
+    if (!isRectVisible(riverLeft - shoreWidth, dirtY, (riverRight - riverLeft) + (shoreWidth * 2), dirtHeight, viewRect)) return;
+
+    const visibleTop = Math.max(dirtY, viewRect.top);
+    const visibleBottom = Math.min(dirtY + dirtHeight, viewRect.bottom);
+    if (visibleBottom <= visibleTop) return;
+
+    const leftScreenX = riverLeft - camera.x;
+    const rightScreenX = riverRight - camera.x;
+    const screenTop = visibleTop - camera.y;
+    const visibleHeight = visibleBottom - visibleTop;
+
+    LC.ctx.save();
+
+    LC.ctx.fillStyle = 'rgba(118, 83, 46, 0.97)';
+    LC.ctx.fillRect(leftScreenX - shoreWidth, screenTop, shoreWidth, visibleHeight);
+    LC.ctx.fillRect(rightScreenX, screenTop, shoreWidth, visibleHeight);
+
+    LC.ctx.strokeStyle = 'rgba(84, 57, 30, 1)';
+    LC.ctx.lineWidth = 2;
+    LC.ctx.beginPath();
+    LC.ctx.moveTo(leftScreenX - 1, screenTop);
+    LC.ctx.lineTo(leftScreenX - 1, screenTop + visibleHeight);
+    LC.ctx.moveTo(rightScreenX + 1, screenTop);
+    LC.ctx.lineTo(rightScreenX + 1, screenTop + visibleHeight);
+    LC.ctx.stroke();
+
+    // Dotted soil texture. Deterministic jitter keeps it natural without per-frame randomness.
+    const dotStep = 18;
+    for (let y = Math.floor(visibleTop / dotStep) * dotStep; y <= visibleBottom; y += dotStep) {
+        const t = y * 0.055;
+        const leftDotX = leftScreenX - shoreWidth + 3 + ((Math.sin(t) + 1) * 0.5 * (shoreWidth - 7));
+        const rightDotX = rightScreenX + 3 + ((Math.cos(t * 1.11) + 1) * 0.5 * (shoreWidth - 7));
+        const dotY = y - camera.y;
+
+        LC.ctx.fillStyle = 'rgba(96, 66, 35, 0.95)';
+        LC.ctx.beginPath();
+        LC.ctx.arc(leftDotX, dotY, 1.7, 0, Math.PI * 2);
+        LC.ctx.fill();
+
+        LC.ctx.fillStyle = 'rgba(146, 106, 66, 0.88)';
+        LC.ctx.beginPath();
+        LC.ctx.arc(rightDotX, dotY + 2, 1.7, 0, Math.PI * 2);
+        LC.ctx.fill();
+    }
+
+    LC.ctx.restore();
+}
+
+function drawOutsideMapOverlay(viewRect) {
+    const mapLeft = 0;
+    const mapTop = 0;
+    const mapRight = MAP_SIZE[0];
+    const mapBottom = MAP_SIZE[1];
+    const viewWidth = viewRect.right - viewRect.left;
+    const viewHeight = viewRect.bottom - viewRect.top;
+    if (viewWidth <= 0 || viewHeight <= 0) return;
+
+    const topH = Math.max(0, Math.min(mapTop, viewRect.bottom) - viewRect.top);
+    const bottomH = Math.max(0, viewRect.bottom - Math.max(mapBottom, viewRect.top));
+    const leftW = Math.max(0, Math.min(mapLeft, viewRect.right) - viewRect.left);
+    const rightW = Math.max(0, viewRect.right - Math.max(mapRight, viewRect.left));
+
+    if (topH <= 0 && bottomH <= 0 && leftW <= 0 && rightW <= 0) return;
+
+    LC.ctx.save();
+    LC.ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
+
+    if (topH > 0) LC.ctx.fillRect(viewRect.left - camera.x, viewRect.top - camera.y, viewWidth, topH);
+    if (bottomH > 0) LC.ctx.fillRect(viewRect.left - camera.x, Math.max(mapBottom, viewRect.top) - camera.y, viewWidth, bottomH);
+    if (leftW > 0) LC.ctx.fillRect(viewRect.left - camera.x, viewRect.top - camera.y, leftW, viewHeight);
+    if (rightW > 0) LC.ctx.fillRect(Math.max(mapRight, viewRect.left) - camera.x, viewRect.top - camera.y, rightW, viewHeight);
+
+    LC.ctx.restore();
+}
+
+function render() {
+    if (disconnectedState.active) {
+        LC.clearCanvas();
+        drawDisconnectedScreen();
+        requestAnimationFrame(render);
+        return;
+    }
+
+    if (loadingState.active) {
+        LC.clearCanvas();
+        drawLoadingScreen();
+        if (loadingState.connected && loadingState.loadedAssets === loadingState.totalAssets && !loadingState.fadeOut) {
+            setTimeout(() => loadingState.fadeOut = true, 500);
+        }
+        requestAnimationFrame(render);
+        return;
+    }
+
+    const localPlayer = ENTITIES.PLAYERS[Vars.myId];
+    document.getElementById('game-hud').style.display = 'block';
+
+    // Updates
+    Object.values(ENTITIES).forEach(group => {
+        if (typeof group === 'object') Object.values(group).forEach(e => e.update?.());
+    });
+    updateZoom(localPlayer);
+    updateCamera(localPlayer);
+    const staticViewRect = getCameraViewRect(getStaticWorldCullMargin());
+
+    // Drawing
+    LC.clearCanvas();
+    LC.ctx.save();
+    LC.ctx.translate(LC.width / 2, LC.height / 2);
+    LC.ctx.scale(LC.zoom, LC.zoom);
+    LC.ctx.translate(-LC.width / 2, -LC.height / 2);
+
+    drawBackground();
+    if (Settings.renderGrid) drawGrid(localPlayer);
+
+    // Entities (Z-ordering implied by draw order)
+    Object.values(ENTITIES.STRUCTURES).forEach(structure => {
+        if (!isCircleVisible(structure.x, structure.y, structure.radius || 0, staticViewRect)) return;
+        structure.draw();
+    });
+    drawSeededChestCoins();
+    [ENTITIES.OBJECTS, ENTITIES.MOBS, ENTITIES.PROJECTILES].forEach(group => {
+        Object.values(group).forEach(e => e.draw());
+    });
+    drawMobDeathFades();
+    drawPoisonAoeEffects();
+    drawEnergyBurstEffects();
+    drawLightningShotEffects();
+    drawCoinPickupEffects();
+    Object.values(ENTITIES.PLAYERS).forEach(e => e.draw());
+    drawDamageIndicators();
+
+    // Draw bushes with transparency layering (after players so they appear on top)
+    const bushes = Object.values(ENTITIES.STRUCTURES).filter(s => s.type === 3);
+    bushes.forEach(bush => {
+        if (!isCircleVisible(bush.x, bush.y, bush.radius || 0, staticViewRect)) return;
+        const screenPosX = bush.x - camera.x;
+        const screenPosY = bush.y - camera.y;
+
+        // Check if local player is colliding with this bush
+        const dx = localPlayer.x - bush.x;
+        const dy = localPlayer.y - bush.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const isPlayerInBush = dist < (localPlayer.radius + bush.radius);
+
+        LC.drawImage({
+            name: dataMap.STRUCTURES[3].imgName,
+            pos: [screenPosX - bush.radius, screenPosY - bush.radius],
+            size: [bush.radius * 2, bush.radius * 2],
+            transparency: isPlayerInBush ? 0.5 : 1
+        });
+    });
+
+    LC.ctx.restore();
+    // UI & Overlays
+    updateHUD(localPlayer);
+    drawFPS();
+
+    setTimeout(render, 1000 / TPS.clientCapped);
+}
+
+function drawTiledImageInRect(name, worldX, worldY, width, height, tileSize, viewRect, transparency = 1) {
+    if (tileSize <= 0 || width <= 0 || height <= 0) return;
+    if (!isRectVisible(worldX, worldY, width, height, viewRect)) return;
+
+    const startX = Math.max(worldX, Math.floor(viewRect.left / tileSize) * tileSize);
+    const startY = Math.max(worldY, Math.floor(viewRect.top / tileSize) * tileSize);
+    const endX = Math.min(worldX + width, viewRect.right + tileSize);
+    const endY = Math.min(worldY + height, viewRect.bottom + tileSize);
+
+    const screenX = worldX - camera.x;
+    const screenY = worldY - camera.y;
+    LC.ctx.save();
+    LC.ctx.beginPath();
+    LC.ctx.rect(screenX, screenY, width, height);
+    LC.ctx.clip();
+
+    for (let x = startX; x < endX; x += tileSize) {
+        for (let y = startY; y < endY; y += tileSize) {
+            LC.drawImage({
+                name,
+                pos: [x - camera.x, y - camera.y],
+                // Slight overlap hides texture seams from sub-pixel camera movement.
+                size: [tileSize + 1, tileSize + 1],
+                transparency
+            });
+        }
+    }
+    LC.ctx.restore();
+}
+
+function getCameraViewRect(margin = 0) {
+    const invZoom = 1 / Math.max(0.001, LC.zoom);
+    return {
+        left: camera.x - margin,
+        top: camera.y - margin,
+        right: camera.x + (LC.width * invZoom) + margin,
+        bottom: camera.y + (LC.height * invZoom) + margin
+    };
+}
+
+function getStaticWorldCullMargin() {
+    return Math.max(STATIC_WORLD_CULL_MARGIN_BASE, 700 / Math.max(0.001, LC.zoom));
+}
+
+function isRectVisible(x, y, width, height, viewRect) {
+    return x <= viewRect.right &&
+        (x + width) >= viewRect.left &&
+        y <= viewRect.bottom &&
+        (y + height) >= viewRect.top;
+}
+
+function isCircleVisible(x, y, radius, viewRect) {
+    return (x + radius) >= viewRect.left &&
+        (x - radius) <= viewRect.right &&
+        (y + radius) >= viewRect.top &&
+        (y - radius) <= viewRect.bottom;
+}
+
+function drawFPS() {
+    LC.drawText({
+        text: `${TPS.clientReal} FPS`,
+        pos: [15, LC.height - 15],
+        font: '600 14px Inter, sans-serif',
+        color: isLocalPlayerInSnowBiome() ? 'rgba(55, 65, 81, 0.82)' : 'rgba(255, 255, 255, 0.4)',
+        textAlign: 'left'
+    });
+}
+
+function drawDamageIndicators() {
+    const now = performance.now();
+    for (let i = damageIndicators.length - 1; i >= 0; i--) {
+        const indicator = damageIndicators[i];
+        const elapsed = now - indicator.start;
+        const progress = Math.min(1, elapsed / indicator.duration);
+        if (progress >= 1) {
+            damageIndicators.splice(i, 1);
+            continue;
+        }
+        const transparency = 1 - progress;
+        const rise = (indicator.rise || DAMAGE_INDICATOR_RISE) * progress;
+        const screenX = indicator.x - camera.x;
+        const screenY = indicator.y - camera.y - rise;
+        LC.drawText({
+            text: indicator.text,
+            pos: [screenX, screenY],
+            font: indicator.font || 'bold 16px Inter',
+            color: indicator.color || '#ff0000',
+            textAlign: 'center',
+            transparency
+        });
+    }
+}
+
+function drawGrid(lp) {
+    if (!lp) return;
+    const size = 100, range = 2500;
+    const startX = Math.floor(lp.x / size) * size - range;
+    const endX = startX + range * 2;
+    const startY = Math.floor(lp.y / size) * size - range;
+    const endY = startY + range * 2;
+
+    LC.ctx.strokeStyle = 'rgba(0, 0, 0, 0.1)';
+    for (let x = startX; x <= endX; x += size) {
+        LC.ctx.beginPath();
+        LC.ctx.moveTo(x - camera.x, startY - camera.y);
+        LC.ctx.lineTo(x - camera.x, endY - camera.y);
+        LC.ctx.stroke();
+    }
+    for (let y = startY; y <= endY; y += size) {
+        LC.ctx.beginPath();
+        LC.ctx.moveTo(startX - camera.x, y - camera.y);
+        LC.ctx.lineTo(endX - camera.x, y - camera.y);
+        LC.ctx.stroke();
+    }
+}
+
+function updateHUD(lp) {
+    const isAlive = lp?.isAlive;
+    updateKeyHintVisibility(isAlive);
+    updateHUDVisibility(isAlive);
+    updateShieldUI(lp?.hasShield);
+    const settingsBtn = document.getElementById('settingsBtn');
+    if (settingsBtn && CURRENT_WORLD === WORLD_TUTORIAL) settingsBtn.style.display = 'none';
+    const topLeftBar = document.getElementById('top-left-bar');
+    if (topLeftBar) topLeftBar.classList.remove('tutorial-flat');
+    const shopBtn = document.getElementById('shopBtn');
+    if (shopBtn && CURRENT_WORLD === WORLD_TUTORIAL) {
+        const shopUnlocked = Vars.tutorialObjectiveStep >= 5;
+        shopBtn.disabled = !shopUnlocked;
+        shopBtn.style.pointerEvents = shopUnlocked ? 'auto' : 'none';
+        shopBtn.style.opacity = shopUnlocked ? '1' : '0.45';
+    }
+
+    const homeScreen = document.getElementById('home-screen');
+    const respawnScreen = document.getElementById('respawn-screen');
+
+    if (uiState.forceHomeScreen) {
+        hudUpgradeHitboxes.length = 0;
+        hudUpgradeHeaderHitbox = null;
+        closeHomeScreenBlockingUI();
+        updateTutorialGuidedShopFocus();
+        if (homeScreen) homeScreen.style.display = 'flex';
+        if (respawnScreen) respawnScreen.style.display = 'none';
+        updateHomeOnlineCount(true);
+        updateJoinButton();
+        return;
+    }
+
+    if (!isAlive) {
+        hudUpgradeHitboxes.length = 0;
+        hudUpgradeHeaderHitbox = null;
+        updateTutorialGuidedShopFocus();
+        const shouldShowRespawn = !uiState.forceHomeScreen && (Vars.lastDiedTime > 0);
+        if (shouldShowRespawn) {
+            if (homeScreen) homeScreen.style.display = 'none';
+            if (respawnScreen) respawnScreen.style.display = 'flex';
+            updateHomeOnlineCount(false);
+            updateRespawnButton();
+        } else {
+            closeHomeScreenBlockingUI();
+            if (homeScreen) homeScreen.style.display = 'flex';
+            if (respawnScreen) respawnScreen.style.display = 'none';
+            updateHomeOnlineCount(true);
+            updateJoinButton();
+        }
+    } else {
+        if (homeScreen) homeScreen.style.display = 'none';
+        if (respawnScreen) respawnScreen.style.display = 'none';
+        uiState.forceHomeScreen = false;
+        updateHomeOnlineCount(false);
+        drawInfoBox(lp);
+        drawLeaderboard();
+        if (Settings.showMinimap) drawMinimap();
+        drawKillCounter();
+        drawUpgradeBars();
+        drawInCombatLabel();
+        drawTutorialObjective();
+        drawTutorialTargetIndicator();
+        drawHotbar();
+        drawInventory();
+        if (isMobile || Settings.forceMobileUI) drawMobileButtons(lp);
+        drawDraggedItem();
+        updateTutorialGuidedShopFocus();
+    }
+}
+
+function drawTutorialObjective() {
+    if (CURRENT_WORLD !== WORLD_TUTORIAL) return;
+    if (!Vars.tutorialObjectiveVisible || !Vars.tutorialObjectiveText) return;
+
+    const topBar = document.getElementById('top-left-bar');
+    const contentRect = LC.getContentDisplayRect();
+    const topBarBottom = topBar ? ((topBar.getBoundingClientRect().bottom - contentRect.top) * (LC.height / Math.max(1, contentRect.height))) : 0;
+    const panelHeight = isMobile ? 64 : 56;
+    let panelY = Math.max(18, Math.floor(topBarBottom + 10));
+    const mobileTextByStep = {
+        0: 'Use the joystick to move.',
+        1: 'Tap ATTACK.',
+        2: 'Tap THROW.',
+        3: 'Break this chest.',
+        4: 'Walk over the coins to collect them.',
+        5: 'Open shop and buy Branch Sword.',
+        6: 'Tap the slot with the new sword to equip it.',
+        7: 'Eliminate the pig.',
+        8: 'Tutorial complete.'
+    };
+    let desktopMovementProgress = null;
+    if (!isMobile && Vars.tutorialObjectiveStep === 0) {
+        const stepIndex = TUTORIAL_DESKTOP_MOVEMENT_SEQUENCE.findIndex(step => step.text === Vars.tutorialObjectiveText);
+        if (stepIndex >= 0) {
+            if (tutorialMovementUi.stepIndex !== stepIndex) {
+                tutorialMovementUi.stepIndex = stepIndex;
+                tutorialMovementUi.holdStartedAt = 0;
+            }
+            const targetKey = TUTORIAL_DESKTOP_MOVEMENT_SEQUENCE[stepIndex].key;
+            const isHoldingOnlyTarget = TUTORIAL_DESKTOP_MOVEMENT_SEQUENCE.every((step) => (
+                step.key === targetKey ? uiInput.keys.has(step.key) : !uiInput.keys.has(step.key)
+            ));
+            if (isHoldingOnlyTarget) {
+                if (!tutorialMovementUi.holdStartedAt) {
+                    tutorialMovementUi.holdStartedAt = performance.now();
+                }
+                desktopMovementProgress = Math.max(0, Math.min(1, (performance.now() - tutorialMovementUi.holdStartedAt) / TUTORIAL_DESKTOP_MOVEMENT_HOLD_MS));
+            } else {
+                tutorialMovementUi.holdStartedAt = 0;
+                desktopMovementProgress = 0;
+            }
+        } else {
+            tutorialMovementUi.stepIndex = -1;
+            tutorialMovementUi.holdStartedAt = 0;
+        }
+    } else {
+        tutorialMovementUi.stepIndex = -1;
+        tutorialMovementUi.holdStartedAt = 0;
+    }
+    const objectiveText = (isMobile && CURRENT_WORLD === WORLD_TUTORIAL)
+        ? (mobileTextByStep[Vars.tutorialObjectiveStep] || Vars.tutorialObjectiveText)
+        : Vars.tutorialObjectiveText;
+    const font = isMobile ? '700 20px Inter' : '700 22px Inter';
+    const textMetrics = LC.measureText({ text: objectiveText, font });
+    const horizontalPadding = isMobile ? 36 : 42;
+    const minPanelWidth = isMobile ? 280 : 320;
+    const maxPanelWidth = Math.max(minPanelWidth, LC.width - 40);
+    const panelWidth = Math.min(maxPanelWidth, Math.max(minPanelWidth, Math.ceil(textMetrics.width + horizontalPadding)));
+    const panelX = (LC.width - panelWidth) * 0.5;
+
+    const isComplete = Vars.tutorialObjectiveStatus === 1;
+    const borderColor = isComplete ? 'rgba(34, 197, 94, 0.95)' : 'rgba(255, 255, 255, 0.92)';
+    const textColor = isComplete ? '#34d399' : '#ffffff';
+    const bgColor = isComplete ? 'rgba(6, 40, 22, 0.55)' : 'rgba(255, 255, 255, 0.16)';
+
+    LC.drawRect({
+        pos: [panelX, panelY],
+        size: [panelWidth, panelHeight],
+        color: bgColor,
+        stroke: borderColor,
+        strokeWidth: 2,
+        cornerRadius: 10
+    });
+    if (desktopMovementProgress !== null && desktopMovementProgress > 0.001) {
+        LC.drawRect({
+            pos: [panelX, panelY],
+            size: [panelWidth * desktopMovementProgress, panelHeight],
+            color: 'rgba(21, 128, 61, 0.48)',
+            cornerRadius: 10
+        });
+        LC.drawRect({
+            pos: [panelX, panelY],
+            size: [panelWidth, panelHeight],
+            color: 'rgba(0, 0, 0, 0)',
+            stroke: borderColor,
+            strokeWidth: 2,
+            cornerRadius: 10
+        });
+    }
+    LC.drawText({
+        text: objectiveText,
+        pos: [LC.width / 2, panelY + (panelHeight / 2) + 6],
+        font,
+        color: textColor,
+        textAlign: 'center'
+    });
+}
+
+function worldToScreenPos(worldX, worldY) {
+    const logicalCenterX = LC.width / 2;
+    const logicalCenterY = LC.height / 2;
+    const unscaledX = worldX - camera.x;
+    const unscaledY = worldY - camera.y;
+    const logicalScreenX = ((unscaledX - logicalCenterX) * LC.zoom) + logicalCenterX;
+    const logicalScreenY = ((unscaledY - logicalCenterY) * LC.zoom) + logicalCenterY;
+    const clientPos = LC.logicalToClient(logicalScreenX, logicalScreenY);
+    return {
+        screenX: clientPos.x,
+        screenY: clientPos.y
+    };
+}
+
+function ensureTutorialIndicatorCanvas() {
+    if (typeof document === 'undefined') return null;
+    if (!tutorialIndicatorUi.canvasEl) {
+        const canvas = document.createElement('canvas');
+        canvas.id = 'tutorial-arrow-canvas';
+        Object.assign(canvas.style, {
+            position: 'fixed',
+            inset: '0',
+            width: '100vw',
+            height: '100vh',
+            pointerEvents: 'none',
+            zIndex: '100500'
+        });
+        document.body.appendChild(canvas);
+        tutorialIndicatorUi.canvasEl = canvas;
+        tutorialIndicatorUi.ctx = canvas.getContext('2d');
+    }
+
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    if (!tutorialIndicatorUi.canvasEl || !tutorialIndicatorUi.ctx) return null;
+    if (tutorialIndicatorUi.width !== w || tutorialIndicatorUi.height !== h || tutorialIndicatorUi.dpr !== dpr) {
+        tutorialIndicatorUi.width = w;
+        tutorialIndicatorUi.height = h;
+        tutorialIndicatorUi.dpr = dpr;
+        tutorialIndicatorUi.canvasEl.width = Math.max(1, Math.floor(w * dpr));
+        tutorialIndicatorUi.canvasEl.height = Math.max(1, Math.floor(h * dpr));
+        tutorialIndicatorUi.canvasEl.style.width = `${w}px`;
+        tutorialIndicatorUi.canvasEl.style.height = `${h}px`;
+        tutorialIndicatorUi.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    return tutorialIndicatorUi.ctx;
+}
+
+function clearTutorialIndicatorCanvas() {
+    const ctx = ensureTutorialIndicatorCanvas();
+    if (!ctx) return;
+    ctx.clearRect(0, 0, tutorialIndicatorUi.width, tutorialIndicatorUi.height);
+}
+
+function drawTutorialArrow(ctx, tipX, tipY, dirX, dirY) {
+    const len = Math.hypot(dirX, dirY);
+    if (len < 0.001) return;
+    const ux = dirX / len;
+    const uy = dirY / len;
+    const size = 16;
+    const halfBase = 8;
+    const baseX = tipX - ux * size;
+    const baseY = tipY - uy * size;
+    const perpX = -uy;
+    const perpY = ux;
+    const pulse = 0.78 + ((Math.sin(performance.now() * 0.009) + 1) * 0.1);
+
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(baseX + perpX * halfBase, baseY + perpY * halfBase);
+    ctx.lineTo(baseX - perpX * halfBase, baseY - perpY * halfBase);
+    ctx.closePath();
+    ctx.fillStyle = `rgba(255, 48, 48, ${pulse})`;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+    ctx.stroke();
+}
+
+function getHotbarLayout() {
+    const hb = HOTBAR_CONFIG;
+    const totalW = (hb.slotSize * 6) + (hb.gap * 5) + (hb.padding * 2);
+    return {
+        hb,
+        x: (LC.width / 2) - (totalW / 2),
+        y: LC.height - hb.marginBottom - hb.slotSize - hb.padding * 2,
+        totalW
+    };
+}
+
+function drawTutorialHotbarSlotIndicators(ctx) {
+    const { hb, x, y } = getHotbarLayout();
+    const now = performance.now();
+
+    for (let i = 0; i < 5; i++) {
+        const slotX = x + hb.padding + (i * (hb.slotSize + hb.gap));
+        const slotCenterX = slotX + (hb.slotSize / 2);
+        const slotTopY = y + hb.padding;
+        const clientCenter = LC.logicalToClient(slotCenterX, slotTopY);
+        const bounce = Math.sin((now * 0.012) + (i * 0.45)) * 7;
+        const tipY = clientCenter.y - 8 + bounce;
+
+        ctx.save();
+        ctx.font = normalizeCanvasFont('900 18px Inter');
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+        ctx.strokeText(String(i + 1), clientCenter.x, tipY - 28);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
+        ctx.fillText(String(i + 1), clientCenter.x, tipY - 28);
+        ctx.restore();
+
+        drawTutorialArrow(ctx, clientCenter.x, tipY, 0, 1);
+    }
+}
+
+function getTutorialWorldTarget(step) {
+    if (CURRENT_WORLD !== WORLD_TUTORIAL) return null;
+    const localPlayer = ENTITIES.PLAYERS[Vars.myId];
+    if (!localPlayer) return null;
+
+    if (step === 3) {
+        let best = null;
+        let bestDistSq = Infinity;
+        for (const o of Object.values(ENTITIES.OBJECTS)) {
+            if (!o || !isChestObjectType(o.type)) continue;
+            const dx = o.x - localPlayer.x;
+            const dy = o.y - localPlayer.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestDistSq) {
+                bestDistSq = d2;
+                best = o;
+            }
+        }
+        if (!best) return null;
+        const dx = best.x - localPlayer.x;
+        const dy = best.y - localPlayer.y;
+        if ((dx * dx + dy * dy) <= (300 * 300)) return null;
+        return { worldX: best.x, worldY: best.y };
+    }
+
+    if (step === 4) {
+        let best = null;
+        let bestDistSq = Infinity;
+        for (const o of Object.values(ENTITIES.OBJECTS)) {
+            if (!o || !isCoinObjectType(o.type)) continue;
+            const dx = o.x - localPlayer.x;
+            const dy = o.y - localPlayer.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestDistSq) {
+                bestDistSq = d2;
+                best = o;
+            }
+        }
+        if (!best) return null;
+        const dx = best.x - localPlayer.x;
+        const dy = best.y - localPlayer.y;
+        if ((dx * dx + dy * dy) <= (300 * 300)) return null;
+        return { worldX: best.x, worldY: best.y };
+    }
+
+    if (step === 7) {
+        let best = null;
+        let bestDistSq = Infinity;
+        for (const m of Object.values(ENTITIES.MOBS)) {
+            if (!m || m.type !== 2) continue; // pig
+            const dx = m.x - localPlayer.x;
+            const dy = m.y - localPlayer.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestDistSq) {
+                bestDistSq = d2;
+                best = m;
+            }
+        }
+        if (!best) return null;
+        const dx = best.x - localPlayer.x;
+        const dy = best.y - localPlayer.y;
+        if ((dx * dx + dy * dy) <= (300 * 300)) return null;
+        return { worldX: best.x, worldY: best.y };
+    }
+
+    return null;
+}
+
+function getTutorialUiTarget(step) {
+    if (CURRENT_WORLD !== WORLD_TUTORIAL) return null;
+    if (isMobile) {
+        const toScreen = (lx, ly) => LC.logicalToClient(lx, ly);
+        if (step === 1) {
+            const p = toScreen(LC.width - ATTACK_BTN_CONFIG.xOffset, LC.height - ATTACK_BTN_CONFIG.yOffset);
+            return { screenX: p.x, screenY: p.y, rectWidth: ATTACK_BTN_CONFIG.radius * 2, rectHeight: ATTACK_BTN_CONFIG.radius * 2 };
+        }
+        if (step === 2) {
+            const p = toScreen(LC.width - THROW_BTN_CONFIG.xOffset, LC.height - THROW_BTN_CONFIG.yOffset);
+            return { screenX: p.x, screenY: p.y, rectWidth: THROW_BTN_CONFIG.radius * 2, rectHeight: THROW_BTN_CONFIG.radius * 2 };
+        }
+    }
+    if (step !== 5) return null;
+
+    const hasRank2 = hasRank2SwordInInventory();
+    let targetEl = null;
+    if (!uiState.isShopOpen) {
+        if (!hasRank2) targetEl = document.getElementById('shopBtn');
+    } else if (!hasRank2) {
+        targetEl = document.querySelector('.shop-modal .buy-button[data-shop-item-type="2"]');
+    } else {
+        targetEl = document.getElementById('shopCloseBtn') || document.querySelector('.shop-modal .close-settings');
+    }
+    if (!targetEl) return null;
+    const rect = targetEl.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    if (isMobile) {
+        const viewportHeight = (window.visualViewport?.height || window.innerHeight || 0);
+        const margin = 12;
+        const isVerticallyVisible = rect.top >= margin && rect.bottom <= (viewportHeight - margin);
+        if (!isVerticallyVisible) return null;
+    }
+    return {
+        screenX: rect.left + rect.width / 2,
+        screenY: rect.top + rect.height / 2,
+        rectWidth: rect.width,
+        rectHeight: rect.height
+    };
+}
+
+function drawTutorialTargetIndicator() {
+    const ctx = ensureTutorialIndicatorCanvas();
+    if (!ctx) return;
+    ctx.clearRect(0, 0, tutorialIndicatorUi.width, tutorialIndicatorUi.height);
+
+    if (CURRENT_WORLD !== WORLD_TUTORIAL) return;
+    if (!Vars.tutorialObjectiveVisible) return;
+
+    const step = Vars.tutorialObjectiveStep;
+    if (!isMobile && step === 6) {
+        drawTutorialHotbarSlotIndicators(ctx);
+        return;
+    }
+    const centerX = tutorialIndicatorUi.width / 2;
+    const centerY = tutorialIndicatorUi.height / 2;
+    const uiTarget = getTutorialUiTarget(step);
+    if (uiTarget) {
+        const dx = uiTarget.screenX - centerX;
+        const dy = uiTarget.screenY - centerY;
+        const len = Math.hypot(dx, dy);
+        if (len >= 6) {
+            const ux = dx / len;
+            const uy = dy / len;
+            const outsideDist = (Math.hypot(uiTarget.rectWidth, uiTarget.rectHeight) * 0.5) + 10;
+            const nudge = Math.sin(performance.now() * 0.012) * 10;
+            const tipX = uiTarget.screenX - ux * (outsideDist + nudge);
+            const tipY = uiTarget.screenY - uy * (outsideDist + nudge);
+            drawTutorialArrow(ctx, tipX, tipY, ux, uy);
+        }
+        return;
+    }
+
+    const worldTarget = getTutorialWorldTarget(step);
+    if (!worldTarget) return;
+    const target = worldToScreenPos(worldTarget.worldX, worldTarget.worldY);
+    const dx = target.screenX - centerX;
+    const dy = target.screenY - centerY;
+    const toTargetLen = Math.hypot(dx, dy);
+    if (toTargetLen < 6) return;
+
+    const orbitRadius = 200;
+    const ux = dx / toTargetLen;
+    const uy = dy / toTargetLen;
+    const tipX = centerX + ux * orbitRadius;
+    const tipY = centerY + uy * orbitRadius;
+    drawTutorialArrow(ctx, tipX, tipY, ux, uy);
+}
+
+function ensureTutorialFocusUi() {
+    if (tutorialFocusUi.rootEl || typeof document === 'undefined') return;
+    const root = document.createElement('div');
+    root.id = 'tutorial-focus-overlay';
+    Object.assign(root.style, {
+        position: 'fixed',
+        inset: '0',
+        zIndex: '100350',
+        display: 'none',
+        pointerEvents: 'none'
+    });
+
+    const makeBlock = () => {
+        const block = document.createElement('div');
+        Object.assign(block.style, {
+            position: 'fixed',
+            background: 'rgba(0, 0, 0, 0.72)',
+            pointerEvents: 'none'
+        });
+        root.appendChild(block);
+        return block;
+    };
+
+    tutorialFocusUi.blocks = [makeBlock(), makeBlock(), makeBlock(), makeBlock()];
+    const ring = document.createElement('div');
+    Object.assign(ring.style, {
+        position: 'fixed',
+        border: '2px solid rgba(255,255,255,0.95)',
+        borderRadius: '10px',
+        boxShadow: '0 0 0 2px rgba(0,0,0,0.55), 0 0 24px rgba(255,255,255,0.35)',
+        pointerEvents: 'none'
+    });
+    root.appendChild(ring);
+
+    const hint = document.createElement('div');
+    Object.assign(hint.style, {
+        position: 'fixed',
+        left: '50%',
+        top: 'calc(env(safe-area-inset-top) + 56px)',
+        transform: 'translateX(-50%)',
+        maxWidth: 'min(92vw, 420px)',
+        padding: '10px 14px',
+        borderRadius: '10px',
+        border: '1px solid rgba(255,255,255,0.3)',
+        background: 'rgba(8, 15, 35, 0.82)',
+        color: 'white',
+        font: '700 13px Inter, sans-serif',
+        textAlign: 'center',
+        letterSpacing: '0.01rem',
+        pointerEvents: 'none',
+        display: 'none'
+    });
+    root.appendChild(hint);
+
+    tutorialFocusUi.ringEl = ring;
+    tutorialFocusUi.hintEl = hint;
+    tutorialFocusUi.rootEl = root;
+    document.body.appendChild(root);
+}
+
+function hideTutorialFocus() {
+    ensureTutorialFocusUi();
+    if (!tutorialFocusUi.rootEl) return;
+    tutorialFocusUi.rootEl.style.display = 'none';
+    if (tutorialFocusUi.hintEl) tutorialFocusUi.hintEl.style.display = 'none';
+}
+
+function showTutorialScrollHint(message) {
+    ensureTutorialFocusUi();
+    if (!tutorialFocusUi.rootEl || !tutorialFocusUi.hintEl) return;
+    for (const b of tutorialFocusUi.blocks) b.style.display = 'none';
+    if (tutorialFocusUi.ringEl) tutorialFocusUi.ringEl.style.display = 'none';
+    tutorialFocusUi.hintEl.textContent = message || '';
+    tutorialFocusUi.hintEl.style.display = message ? 'block' : 'none';
+    tutorialFocusUi.rootEl.style.display = 'block';
+}
+
+function setTutorialFocusTarget(targetEl) {
+    ensureTutorialFocusUi();
+    if (!tutorialFocusUi.rootEl || !targetEl) {
+        hideTutorialFocus();
+        return;
+    }
+    const rect = targetEl.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+        hideTutorialFocus();
+        return;
+    }
+
+    const pad = 8;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const left = Math.max(0, rect.left - pad);
+    const top = Math.max(0, rect.top - pad);
+    const right = Math.min(vw, rect.right + pad);
+    const bottom = Math.min(vh, rect.bottom + pad);
+
+    const [bTop, bLeft, bRight, bBottom] = tutorialFocusUi.blocks;
+    for (const b of tutorialFocusUi.blocks) b.style.display = 'block';
+    if (tutorialFocusUi.ringEl) tutorialFocusUi.ringEl.style.display = 'block';
+    Object.assign(bTop.style, { left: '0px', top: '0px', width: `${vw}px`, height: `${Math.max(0, top)}px` });
+    Object.assign(bLeft.style, { left: '0px', top: `${top}px`, width: `${Math.max(0, left)}px`, height: `${Math.max(0, bottom - top)}px` });
+    Object.assign(bRight.style, { left: `${right}px`, top: `${top}px`, width: `${Math.max(0, vw - right)}px`, height: `${Math.max(0, bottom - top)}px` });
+    Object.assign(bBottom.style, { left: '0px', top: `${bottom}px`, width: `${vw}px`, height: `${Math.max(0, vh - bottom)}px` });
+
+    Object.assign(tutorialFocusUi.ringEl.style, {
+        left: `${left}px`,
+        top: `${top}px`,
+        width: `${Math.max(0, right - left)}px`,
+        height: `${Math.max(0, bottom - top)}px`
+    });
+
+    tutorialFocusUi.rootEl.style.display = 'block';
+}
+
+function hasRank2SwordInInventory() {
+    return Vars.myInventory.some((itemType, idx) => ((itemType & 0x7F) === 2) && Vars.myInventoryCounts[idx] > 0);
+}
+
+function updateTutorialGuidedShopFocus() {
+    if (CURRENT_WORLD !== WORLD_TUTORIAL) {
+        tutorialFocusUi.closeAckSent = false;
+        hideTutorialFocus();
+        return;
+    }
+    if (!Vars.tutorialObjectiveVisible || Vars.tutorialObjectiveStep !== 5) {
+        tutorialFocusUi.closeAckSent = false;
+        const shopModalEl = document.querySelector('.shop-modal');
+        if (shopModalEl) shopModalEl.classList.remove('drag-disabled');
+        hideTutorialFocus();
+        return;
+    }
+
+    const hasRank2 = hasRank2SwordInInventory();
+    if (hasRank2 && !uiState.isShopOpen && !tutorialFocusUi.closeAckSent) {
+        sendTutorialEvent(1); // Shop closed after purchasing rank 2.
+        tutorialFocusUi.closeAckSent = true;
+    }
+
+    let targetEl = null;
+    if (!uiState.isShopOpen) {
+        if (!hasRank2) {
+            targetEl = document.getElementById('shopBtn');
+        }
+    } else if (!hasRank2) {
+        targetEl = document.querySelector('.shop-modal .buy-button[data-shop-item-type="2"]');
+    } else {
+        targetEl = document.getElementById('shopCloseBtn') || document.querySelector('.shop-modal .close-settings');
+    }
+
+    const shopModalEl = document.querySelector('.shop-modal');
+    if (shopModalEl) {
+        // During guided buy step, keep modal fixed for better mobile UX.
+        if (uiState.isShopOpen && !hasRank2) shopModalEl.classList.add('drag-disabled');
+        else shopModalEl.classList.remove('drag-disabled');
+    }
+
+    if (isMobile && uiState.isShopOpen && !hasRank2) {
+        const rect = targetEl?.getBoundingClientRect();
+        const viewportHeight = (window.visualViewport?.height || window.innerHeight || 0);
+        const margin = 12;
+        const targetVisible = !!rect && rect.width > 0 && rect.height > 0 && rect.top >= margin && rect.bottom <= (viewportHeight - margin);
+        if (!targetVisible) {
+            hideTutorialFocus(); // Do not block touches while user scrolls the shop.
+            showTutorialScrollHint('Scroll to find the Branch Sword, then tap Buy.');
+            return;
+        }
+    }
+
+    showTutorialScrollHint('');
+    if (targetEl) setTutorialFocusTarget(targetEl);
+    else hideTutorialFocus();
+}
+
+function updateKeyHintVisibility(isAlive) {
+    ensureKeyHintElement();
+
+    if (!isAlive || CURRENT_WORLD === WORLD_TUTORIAL) {
+        keyHintUi.wasAliveLastFrame = false;
+        keyHintUi.visible = false;
+        syncKeyHintElementVisibility();
+        return;
+    }
+
+    if (!keyHintUi.wasAliveLastFrame) {
+        keyHintUi.visible = !keyHintUi.neverShowAgain;
+    }
+    keyHintUi.wasAliveLastFrame = true;
+    syncKeyHintElementVisibility();
+}
+
+function ensureKeyHintElement() {
+    if (keyHintUi.containerEl || typeof document === 'undefined') return;
+
+    const container = document.createElement('div');
+    container.id = 'key-hint-overlay';
+    Object.assign(container.style, {
+        position: 'fixed',
+        inset: '0',
+        display: 'none',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: '100200',
+        pointerEvents: 'none'
+    });
+
+    const panel = document.createElement('div');
+    Object.assign(panel.style, {
+        width: '340px',
+        maxWidth: 'min(92vw, 340px)',
+        background: 'rgba(0, 0, 0, 0.76)',
+        border: '1px solid rgba(255,255,255,0.25)',
+        borderRadius: '12px',
+        boxSizing: 'border-box',
+        padding: '16px 16px 14px 16px',
+        color: 'white',
+        fontFamily: 'Inter, sans-serif',
+        pointerEvents: 'auto',
+        backdropFilter: 'blur(6px)'
+    });
+
+    const header = document.createElement('div');
+    Object.assign(header.style, {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: '12px'
+    });
+
+    const title = document.createElement('div');
+    title.textContent = 'Controls';
+    Object.assign(title.style, {
+        fontSize: '20px',
+        fontWeight: '700'
+    });
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = 'Close';
+    Object.assign(closeBtn.style, {
+        border: '1px solid rgba(255,255,255,0.28)',
+        borderRadius: '7px',
+        background: 'rgba(255,255,255,0.12)',
+        color: 'white',
+        font: '600 13px Inter, sans-serif',
+        padding: '6px 12px',
+        cursor: 'pointer'
+    });
+    closeBtn.onclick = () => {
+        keyHintUi.visible = false;
+        syncKeyHintElementVisibility();
+    };
+
+    const controlsList = document.createElement('div');
+    controlsList.innerHTML = `
+        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;">Left Click: Attack</div>
+        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;">E: Throw Weapon</div>
+        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;">Q: Drop Item</div>
+        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;">R: Pick Up Item</div>
+        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;">F: Activate Ability (Must be wearing an accessory that has an ability.)</div>
+        <div style="margin: 6px 0 10px 0; font: 600 15px Inter, sans-serif;">Enter: Chat</div>
+    `;
+
+    const checkboxWrap = document.createElement('label');
+    Object.assign(checkboxWrap.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        font: '600 13px Inter, sans-serif',
+        color: 'rgba(255,255,255,0.9)',
+        userSelect: 'none',
+        cursor: 'pointer'
+    });
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = !!keyHintUi.neverShowAgain;
+    checkbox.onchange = () => {
+        keyHintUi.neverShowAgain = !!checkbox.checked;
+        setStoredBoolean(KEY_HINT_NEVER_SHOW_STORAGE_KEY, keyHintUi.neverShowAgain);
+    };
+
+    const checkboxText = document.createElement('span');
+    checkboxText.textContent = 'Never show this again';
+
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    checkboxWrap.appendChild(checkbox);
+    checkboxWrap.appendChild(checkboxText);
+    panel.appendChild(header);
+    panel.appendChild(controlsList);
+    panel.appendChild(checkboxWrap);
+    container.appendChild(panel);
+    document.body.appendChild(container);
+
+    keyHintUi.containerEl = container;
+    keyHintUi.neverShowCheckboxEl = checkbox;
+}
+
+function syncKeyHintElementVisibility() {
+    if (!keyHintUi.containerEl) return;
+
+    const canShow = keyHintUi.visible && CURRENT_WORLD !== WORLD_TUTORIAL && !isMobile && !Settings.forceMobileUI;
+    keyHintUi.containerEl.style.display = canShow ? 'flex' : 'none';
+    if (keyHintUi.neverShowCheckboxEl) {
+        keyHintUi.neverShowCheckboxEl.checked = !!keyHintUi.neverShowAgain;
+    }
+}
+
+function drawCoinPickupEffects() {
+    const now = performance.now();
+    const radius = dataMap.OBJECTS[getCoinObjectType()]?.radius || 15;
+    const baseSize = radius * 2;
+
+    for (let i = coinPickupEffects.length - 1; i >= 0; i--) {
+        const effect = coinPickupEffects[i];
+
+        const elapsed = now - effect.startTime;
+        const t = Math.min(1, elapsed / COIN_PICKUP_EFFECT_DURATION);
+        if (t >= 1) {
+            coinPickupEffects.splice(i, 1);
+            continue;
+        }
+
+        const eased = 1 - Math.pow(1 - t, 3);
+        const x = effect.startX + (effect.targetX - effect.startX) * eased;
+        const y = effect.startY + (effect.targetY - effect.startY) * eased;
+        const spread = (1 - t) * 7;
+        const alpha = 1 - t * 0.8;
+        const perpAngle = effect.angle + (Math.PI / 2);
+        const px = Math.cos(perpAngle);
+        const py = Math.sin(perpAngle);
+
+        for (let j = 0; j < effect.spriteCount; j++) {
+            const angle = effect.seed + ((j / effect.spriteCount) * Math.PI * 2);
+            const ox = Math.cos(angle) * spread;
+            const oy = Math.sin(angle) * spread;
+            const size = baseSize * (1 - t * 0.2);
+            const sx = x - camera.x + (ox * px) - size / 2;
+            const sy = y - camera.y + (oy * py) - size / 2;
+
+            LC.drawImage({
+                name: 'gold-coin',
+                pos: [sx, sy],
+                size: [size, size],
+                transparency: alpha
+            });
+        }
+    }
+}
+
+function drawSeededChestCoins() {
+    if (!seededChestCoins.length) return;
+    const now = performance.now();
+    pruneSeededChestCoins(now);
+    if (!seededChestCoins.length) return;
+    const radius = dataMap.OBJECTS[getCoinObjectType()]?.radius || 15;
+    const size = radius * 2;
+    for (let i = 0; i < seededChestCoins.length; i++) {
+        const coin = seededChestCoins[i];
+        if (coin.removed || coin.expiresAt <= now) continue;
+        LC.drawImage({
+            name: 'gold-coin',
+            pos: [coin.x - camera.x - size / 2, coin.y - camera.y - size / 2],
+            size: [size, size]
+        });
+    }
+}
+
+function drawLightningShotEffects() {
+    const now = performance.now();
+
+    for (let i = lightningShotEffects.length - 1; i >= 0; i--) {
+        const fx = lightningShotEffects[i];
+        const t = (now - fx.startTime) / fx.duration;
+        if (t >= 1) {
+            lightningShotEffects.splice(i, 1);
+            continue;
+        }
+
+        const phase = Math.floor((now - fx.startTime) / 100);
+        const mirrored = (phase % 2) === 1 ? -1 : 1;
+        const segCount = Math.max(8, Math.min(48, Math.floor(fx.length / 30)));
+        const jitter = Math.max(6, Math.min(26, fx.length * 0.035));
+        const waveCycles = Math.max(1.25, Math.min(8, 900 / Math.max(80, fx.length)));
+        const baseFreq = waveCycles * Math.PI * 2;
+        const branchChance = 0.22;
+        const baseX = fx.startX - camera.x;
+        const baseY = fx.startY - camera.y;
+
+        LC.ctx.save();
+        LC.ctx.translate(baseX, baseY);
+        LC.ctx.rotate(fx.angle);
+
+        // Outer glow stroke
+        LC.ctx.beginPath();
+        LC.ctx.moveTo(0, 0);
+        for (let s = 1; s <= segCount; s++) {
+            const x = (s / segCount) * fx.length;
+            const wave = Math.sin(((s / segCount) * baseFreq) + fx.seed + phase * 0.8);
+            const y = mirrored * wave * jitter;
+            LC.ctx.lineTo(x, y);
+        }
+        LC.ctx.strokeStyle = 'rgba(68, 0, 0, 0.8)';
+        LC.ctx.lineWidth = 12;
+        LC.ctx.lineCap = 'round';
+        LC.ctx.lineJoin = 'round';
+        LC.ctx.stroke();
+
+        // Main bolt
+        LC.ctx.beginPath();
+        LC.ctx.moveTo(0, 0);
+        for (let s = 1; s <= segCount; s++) {
+            const x = (s / segCount) * fx.length;
+            const wave = Math.sin(((s / segCount) * baseFreq * 1.08) + fx.seed + phase);
+            const y = mirrored * wave * jitter * 0.75;
+            LC.ctx.lineTo(x, y);
+
+            // Small side branches for a more natural lightning look
+            if (s < segCount && Math.random() < branchChance) {
+                const branchLen = 14 + Math.random() * 26;
+                const branchAng = (mirrored * 0.8) + ((Math.random() - 0.5) * 0.5);
+                LC.ctx.beginPath();
+                LC.ctx.moveTo(x, y);
+                LC.ctx.lineTo(x + Math.cos(branchAng) * branchLen, y + Math.sin(branchAng) * branchLen);
+                LC.ctx.strokeStyle = 'rgba(255, 210, 210, 0.9)';
+                LC.ctx.lineWidth = 2;
+                LC.ctx.stroke();
+            }
+        }
+        LC.ctx.strokeStyle = 'rgba(255, 80, 80, 1)';
+        LC.ctx.lineWidth = 6;
+        LC.ctx.lineCap = 'round';
+        LC.ctx.lineJoin = 'round';
+        LC.ctx.stroke();
+
+        // Core highlight
+        LC.ctx.beginPath();
+        LC.ctx.moveTo(0, 0);
+        for (let s = 1; s <= segCount; s++) {
+            const x = (s / segCount) * fx.length;
+            const wave = Math.sin(((s / segCount) * baseFreq * 1.08) + fx.seed + phase);
+            const y = mirrored * wave * jitter * 0.55;
+            LC.ctx.lineTo(x, y);
+        }
+        LC.ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+        LC.ctx.lineWidth = 2.5;
+        LC.ctx.lineCap = 'round';
+        LC.ctx.lineJoin = 'round';
+        LC.ctx.stroke();
+
+        LC.ctx.restore();
+    }
+}
+
+function drawEnergyBurstEffects() {
+    const now = performance.now();
+
+    for (let i = energyBurstEffects.length - 1; i >= 0; i--) {
+        const fx = energyBurstEffects[i];
+        const t = (now - fx.startTime) / fx.duration;
+        if (t >= 1) {
+            energyBurstEffects.splice(i, 1);
+            continue;
+        }
+
+        const baseAlpha = 1 - t;
+        const centerX = fx.x - camera.x;
+        const centerY = fx.y - camera.y;
+        const waveDelay = 0.14; // stagger waves so they begin from center over time
+
+        LC.ctx.save();
+        for (let w = 0; w < fx.waves; w++) {
+            const waveStart = w * waveDelay;
+            if (t < waveStart) continue;
+            const localT = Math.min(1, (t - waveStart) / Math.max(0.001, 1 - waveStart));
+            const r = fx.radius * localT;
+            const alpha = baseAlpha * (1 - localT * 0.7);
+            if (r <= 0 || alpha <= 0.01) continue;
+
+            LC.ctx.beginPath();
+            LC.ctx.arc(centerX, centerY, r, 0, Math.PI * 2);
+            LC.ctx.strokeStyle = `rgba(255, 70, 70, ${Math.min(0.85, alpha)})`;
+            LC.ctx.lineWidth = 6;
+            LC.ctx.stroke();
+
+            LC.ctx.beginPath();
+            LC.ctx.arc(centerX, centerY, r, 0, Math.PI * 2);
+            LC.ctx.strokeStyle = `rgba(255, 255, 255, ${Math.min(0.55, alpha * 0.8)})`;
+            LC.ctx.lineWidth = 2;
+            LC.ctx.stroke();
+
+            const boltCount = 8;
+            const boltLen = Math.max(40, Math.min(180, 48 + fx.radius * 0.14));
+            if (localT < 0.04) continue; // avoid immediate outer-looking streaks at spawn
+            for (let b = 0; b < boltCount; b++) {
+                const angle = ((b / boltCount) * Math.PI * 2) + fx.seed;
+                drawBurstLightningBolt(
+                    centerX,
+                    centerY,
+                    fx.x,
+                    fx.y,
+                    angle,
+                    Math.max(0, r - 18),
+                    boltLen,
+                    fx.seed + b * 1.37,
+                    alpha,
+                    now,
+                    null
+                );
+            }
+        }
+        LC.ctx.restore();
+    }
+}
+
+function drawPoisonAoeEffects() {
+    const now = performance.now();
+    for (let i = poisonAoeEffects.length - 1; i >= 0; i--) {
+        const fx = poisonAoeEffects[i];
+        const t = (now - fx.startTime) / fx.duration;
+        if (t >= 1) {
+            poisonAoeEffects.splice(i, 1);
+            continue;
+        }
+
+        const centerX = fx.x - camera.x;
+        const centerY = fx.y - camera.y;
+        const currentRadius = fx.radius * Math.max(0, Math.min(1, t));
+        const baseAlpha = Math.max(0, 1 - t);
+        const fillAlpha = Math.min(0.24, 0.24 * baseAlpha);
+        const strokeAlpha = Math.min(0.75, 0.75 * baseAlpha);
+
+        LC.ctx.save();
+        LC.ctx.beginPath();
+        LC.ctx.arc(centerX, centerY, currentRadius, 0, Math.PI * 2);
+        LC.ctx.fillStyle = `rgba(70, 220, 90, ${fillAlpha})`;
+        LC.ctx.fill();
+
+        LC.ctx.beginPath();
+        LC.ctx.arc(centerX, centerY, currentRadius, 0, Math.PI * 2);
+        LC.ctx.strokeStyle = `rgba(80, 255, 110, ${strokeAlpha})`;
+        LC.ctx.lineWidth = 3;
+        LC.ctx.stroke();
+        LC.ctx.restore();
+    }
+}
+
+function drawMobDeathFades() {
+    const now = performance.now();
+    for (let i = mobDeathFades.length - 1; i >= 0; i--) {
+        const fx = mobDeathFades[i];
+        const t = (now - fx.startTime) / fx.duration;
+        if (t >= 1) {
+            mobDeathFades.splice(i, 1);
+            continue;
+        }
+
+        const cfg = dataMap.MOBS[fx.type];
+        if (!cfg) continue;
+        const alpha = 1 - t;
+        const radius = cfg.radius;
+        const proportions = cfg.imgProportions || [2, 2];
+        const width = proportions[0] * radius;
+        const height = proportions[1] * radius;
+        const screenX = fx.x - camera.x;
+        const screenY = fx.y - camera.y;
+
+        LC.drawImage({
+            name: cfg.imgName,
+            pos: [screenX - width / 2, screenY - height / 2],
+            size: [width, height],
+            rotation: fx.angle || 0,
+            transparency: alpha
+        });
+    }
+}
+
+function collectEnergyBurstColliders() {
+    const colliders = [];
+
+    Object.values(ENTITIES.STRUCTURES).forEach(s => {
+        if (!s?.radius) return;
+        if (dataMap.STRUCTURES[s.type]?.noCollisions) return;
+        colliders.push({ x: s.x, y: s.y, r: s.radius });
+    });
+
+    Object.values(ENTITIES.OBJECTS).forEach(o => {
+        if (!o?.radius) return;
+        if (!isChestObjectType(o.type)) return;
+        colliders.push({ x: o.x, y: o.y, r: o.radius });
+    });
+
+    Object.values(ENTITIES.MOBS).forEach(m => {
+        if (!m?.radius) return;
+        colliders.push({ x: m.x, y: m.y, r: m.radius });
+    });
+
+    Object.values(ENTITIES.PLAYERS).forEach(p => {
+        if (!p?.isAlive || !p.radius) return;
+        colliders.push({ x: p.x, y: p.y, r: p.radius });
+    });
+
+    return colliders;
+}
+
+function rayCircleHitDistance(originX, originY, dirX, dirY, cx, cy, radius, minDist, maxDist) {
+    const ox = originX - cx;
+    const oy = originY - cy;
+    const b = 2 * (dirX * ox + dirY * oy);
+    const c = (ox * ox + oy * oy) - (radius * radius);
+    const disc = (b * b) - (4 * c);
+    if (disc < 0) return null;
+
+    const sqrtDisc = Math.sqrt(disc);
+    const t1 = (-b - sqrtDisc) * 0.5;
+    const t2 = (-b + sqrtDisc) * 0.5;
+
+    let hit = Infinity;
+    if (t1 >= minDist && t1 <= maxDist) hit = t1;
+    if (t2 >= minDist && t2 <= maxDist) hit = Math.min(hit, t2);
+    return Number.isFinite(hit) ? hit : null;
+}
+
+function getBurstBoltClampedLength(worldX, worldY, angle, startRadius, length, colliders) {
+    const dirX = Math.cos(angle);
+    const dirY = Math.sin(angle);
+    const minDist = Math.max(0, startRadius);
+    const maxDist = minDist + Math.max(0, length);
+    let nearestHit = Infinity;
+
+    for (let i = 0; i < colliders.length; i++) {
+        const c = colliders[i];
+        // If burst originates inside this collider, skip clipping to avoid zero-length bolts.
+        const dx = worldX - c.x;
+        const dy = worldY - c.y;
+        if ((dx * dx + dy * dy) <= (c.r * c.r)) continue;
+
+        const hit = rayCircleHitDistance(worldX, worldY, dirX, dirY, c.x, c.y, c.r, minDist, maxDist);
+        if (hit !== null && hit < nearestHit) nearestHit = hit;
+    }
+
+    if (!Number.isFinite(nearestHit)) return length;
+    return Math.max(0, (nearestHit - minDist) - 2);
+}
+
+function drawBurstLightningBolt(centerX, centerY, worldX, worldY, angle, startRadius, length, seed, alpha, now, colliders) {
+    const clampedLength = Array.isArray(colliders) && colliders.length
+        ? getBurstBoltClampedLength(worldX, worldY, angle, startRadius, length, colliders)
+        : length;
+    if (clampedLength <= 1) return;
+
+    const segCount = Math.max(6, Math.min(14, Math.floor(clampedLength / 7)));
+    const jitter = Math.max(1.8, Math.min(6.2, clampedLength * 0.09));
+    const phase = Math.floor(now / 90);
+    const mirrored = (phase % 2) === 1 ? -1 : 1;
+    const glowAlpha = Math.min(0.75, alpha * 0.95);
+    const mainAlpha = Math.min(0.95, alpha);
+    const coreAlpha = Math.min(0.9, alpha * 0.85);
+
+    LC.ctx.save();
+    LC.ctx.translate(centerX, centerY);
+    LC.ctx.rotate(angle);
+
+    LC.ctx.beginPath();
+    LC.ctx.moveTo(startRadius, 0);
+    for (let s = 1; s <= segCount; s++) {
+        const p = s / segCount;
+        const x = startRadius + p * clampedLength;
+        const wave = Math.sin((p * Math.PI * 2.4) + seed + phase * 0.55);
+        const y = mirrored * wave * jitter * (1 - p * 0.35);
+        LC.ctx.lineTo(x, y);
+    }
+    LC.ctx.strokeStyle = `rgba(68, 0, 0, ${glowAlpha})`;
+    LC.ctx.lineWidth = 8;
+    LC.ctx.lineCap = 'round';
+    LC.ctx.lineJoin = 'round';
+    LC.ctx.stroke();
+
+    LC.ctx.beginPath();
+    LC.ctx.moveTo(startRadius, 0);
+    for (let s = 1; s <= segCount; s++) {
+        const p = s / segCount;
+        const x = startRadius + p * clampedLength;
+        const wave = Math.sin((p * Math.PI * 2.4) + seed + phase * 0.65);
+        const y = mirrored * wave * jitter * (1 - p * 0.35);
+        LC.ctx.lineTo(x, y);
+    }
+    LC.ctx.strokeStyle = `rgba(255, 80, 80, ${mainAlpha})`;
+    LC.ctx.lineWidth = 4;
+    LC.ctx.lineCap = 'round';
+    LC.ctx.lineJoin = 'round';
+    LC.ctx.stroke();
+
+    LC.ctx.beginPath();
+    LC.ctx.moveTo(startRadius, 0);
+    for (let s = 1; s <= segCount; s++) {
+        const p = s / segCount;
+        const x = startRadius + p * clampedLength;
+        const wave = Math.sin((p * Math.PI * 2.4) + seed + phase * 0.65);
+        const y = mirrored * wave * jitter * 0.65 * (1 - p * 0.35);
+        LC.ctx.lineTo(x, y);
+    }
+    LC.ctx.strokeStyle = `rgba(255, 255, 255, ${coreAlpha})`;
+    LC.ctx.lineWidth = 1.8;
+    LC.ctx.lineCap = 'round';
+    LC.ctx.lineJoin = 'round';
+    LC.ctx.stroke();
+
+    LC.ctx.restore();
+}
+
+function drawInfoBox(lp) {
+    const font = '16px Inter';
+    const paddingX = 10;
+    const boxHeight = 110;
+    const minBoxWidth = 155;
+    const targetScore = Math.max(0, Math.floor(lp.score || 0));
+    if (targetScore <= hudInfoBoxScore) {
+        hudInfoBoxScore = targetScore;
+    } else {
+        hudInfoBoxScore += (targetScore - hudInfoBoxScore) * HUD_SCORE_LERP;
+        if (Math.abs(targetScore - hudInfoBoxScore) < 1) {
+            hudInfoBoxScore = targetScore;
+        }
+    }
+    const scoreText = Math.floor(hudInfoBoxScore).toLocaleString();
+    const text = [`x: ${lp.x.toFixed(0)}`, `y: ${lp.y.toFixed(0)}`, `score: ${scoreText}`, `ping: ${Vars.ping}`];
+    const contentWidth = text.reduce((maxWidth, line) => {
+        const { width } = LC.measureText({ text: line, font });
+        return Math.max(maxWidth, width);
+    }, 0);
+    const boxWidth = Math.max(minBoxWidth, Math.ceil(contentWidth + paddingX * 2));
+    const boxX = LC.width - 265 - boxWidth;
+    const textX = boxX + paddingX;
+
+    LC.drawRect({ pos: [boxX, 5], size: [boxWidth, boxHeight], color: 'rgba(0, 0, 0, 0.4)', cornerRadius: 5 });
+    text.forEach((t, i) => LC.drawText({ text: t, pos: [textX, 25 + i * 25], font, color: 'white' }));
+}
+
+function updateHomeOnlineCount(shouldShow) {
+    const countEl = document.getElementById('home-online-count');
+    if (!countEl) return;
+    if (!shouldShow) {
+        countEl.style.display = 'none';
+        return;
+    }
+    const count = Math.max(0, Vars.onlineCount || 0);
+    countEl.textContent = `${count} player${count === 1 ? '' : 's'} online`;
+    countEl.style.display = 'block';
+}
+
+function drawLeaderboard() {
+    const lb = ENTITIES.leaderboard || [];
+    const h = 50 + lb.length * 25;
+    LC.drawRect({ pos: [LC.width - 260, 10], size: [250, h], color: 'rgba(0,0,0,0.6)', cornerRadius: 8 });
+    LC.drawText({ text: 'LEADERBOARD', pos: [LC.width - 135, 35], font: 'bold 16px Inter', color: 'white', textAlign: 'center' });
+
+    lb.forEach((p, i) => {
+        const color = p.id === Vars.myId ? 'white' : 'lightgray';
+        const rawName = String(p.username || '');
+        const shortName = rawName.length > 12 ? `${rawName.slice(0, 12)}...` : rawName;
+        LC.drawText({ text: `${i + 1}. ${shortName}`, pos: [LC.width - 250, 65 + i * 25], font: '14px Inter', color });
+        LC.drawText({ text: formatScore(p.score), pos: [LC.width - 20, 65 + i * 25], font: '14px Inter', color, textAlign: 'right' });
+    });
+}
+
+function formatScore(s) {
+    const truncateCompact = (value, divisor, suffix) => `${(Math.floor((value / divisor) * 10) / 10).toFixed(1)}${suffix}`;
+    if (s >= 1e9) return truncateCompact(s, 1e9, 'B');
+    if (s >= 1e6) return truncateCompact(s, 1e6, 'M');
+    if (s >= 1e3) return truncateCompact(s, 1e3, 'k');
+    return Math.floor(s).toString();
+}
+
+function drawMinimap() {
+    const size = 180, x = 20, y = 20;
+    LC.drawRect({ pos: [x - 5, y - 5], size: [size + 10, size + 10], color: 'rgba(0,0,0,0.4)', cornerRadius: 5 });
+
+    if (CURRENT_WORLD === WORLD_TUTORIAL) {
+        LC.drawRect({ pos: [x, y], size: [size, size], color: '#21ae2fb3' });
+    } else {
+        // Main world biomes
+        LC.drawRect({ pos: [x, y], size: [size * 0.47, size], color: '#21ae2fb3' });
+        LC.drawRect({ pos: [x + size * 0.47, y], size: [size * 0.06, size], color: '#3b82f6' });
+        LC.drawRect({ pos: [x + size * 0.53, y], size: [size * 0.47, size], color: '#a3a3a3' });
+    }
+
+    const drawDot = (e, color) => {
+        const dx = (e.x / MAP_SIZE[0]) * size;
+        const dy = (e.y / MAP_SIZE[1]) * size;
+        LC.drawCircle({ pos: [x + dx, y + dy], radius: 2, color });
+    };
+
+    if (Settings.showMobsOnMinimap) Object.values(ENTITIES.MOBS).forEach(m => drawDot(m, 'orange'));
+    if (Settings.showChestsOnMinimap) Object.values(ENTITIES.OBJECTS).filter(o => isChestObjectType(o.type)).forEach(o => drawDot(o, '#b45309'));
+    Object.values(Vars.minimapPlayers || {}).forEach(p => {
+        if (!p || p.id === Vars.myId) return;
+        drawDot(p, 'red');
+    });
+    const lp = ENTITIES.PLAYERS[Vars.myId];
+    if (lp) drawDot(lp, 'white');
+
+    const top = Vars.topLeader;
+    if (top?.id > 0 && Number.isFinite(top.x) && Number.isFinite(top.y) && LC.images?.['ui-crown']) {
+        const dx = (top.x / MAP_SIZE[0]) * size;
+        const dy = (top.y / MAP_SIZE[1]) * size;
+        LC.drawImage({
+            name: 'ui-crown',
+            pos: [x + dx - 10, y + dy - 10],
+            size: [20, 20]
+        });
+    }
+}
+
+function drawKillCounter() {
+    const x = 20;
+    const y = 208;
+    const width = 84;
+    const height = 30;
+    const kills = Math.max(0, Vars.myStats.kills || 0);
+
+    LC.drawRect({
+        pos: [x - 2, y - 2],
+        size: [width, height],
+        color: 'rgba(0,0,0,0.45)',
+        cornerRadius: 6
+    });
+
+    if (LC.images?.['ui-skull']) {
+        LC.drawImage({
+            name: 'ui-skull',
+            pos: [x + 6, y + 5],
+            size: [20, 20]
+        });
+    }
+
+    LC.drawText({
+        text: String(kills),
+        pos: [x + 34, y + 21],
+        font: 'bold 16px Inter',
+        color: 'white',
+        textAlign: 'left'
+    });
+}
+
+function drawUpgradeBars() {
+    hudUpgradeHitboxes.length = 0;
+    const points = Math.max(0, Vars.myStats.availablePoints || 0);
+    const rows = [
+        { name: 'STRENGTH', level: Math.max(0, Math.min(10, Vars.myStats.buffStrength || 0)), color: '#ef6b6b', attrType: 1 },
+        { name: 'MAX HEALTH', level: Math.max(0, Math.min(10, Vars.myStats.buffMaxHealth || 0)), color: '#f0b27a', attrType: 2 },
+        { name: 'REGENERATION', level: Math.max(0, Math.min(10, Vars.myStats.buffRegenSpeed || 0)), color: '#d06de6', attrType: 3 }
+    ];
+
+    const x = HUD_UPGRADE_LAYOUT.x;
+    const y = HUD_UPGRADE_LAYOUT.topY;
+    const rowH = HUD_UPGRADE_LAYOUT.rowHeight;
+    const rowGap = HUD_UPGRADE_LAYOUT.rowGap;
+    const width = HUD_UPGRADE_LAYOUT.totalWidth;
+    const barW = width - HUD_UPGRADE_LAYOUT.rightPad;
+    const rowCornerRadius = 14;
+    const segmentInset = 4;
+    const segmentTrackW = barW - (segmentInset * 2);
+    const segmentW = (segmentTrackW - (HUD_UPGRADE_LAYOUT.segmentGap * (HUD_UPGRADE_LAYOUT.segments - 1))) / HUD_UPGRADE_LAYOUT.segments;
+    const edgeSegmentRadius = Math.max(2, rowCornerRadius - segmentInset);
+    const drawUpgradeSegment = ({ x, y, width, height, color, roundLeft = false, roundRight = false, radius = 0 }) => {
+        const r = Math.max(0, Math.min(radius, width * 0.5, height * 0.5));
+        const ctx = LC.ctx;
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(x + (roundLeft ? r : 0), y);
+        ctx.lineTo(x + width - (roundRight ? r : 0), y);
+        if (roundRight) {
+            ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+        }
+        ctx.lineTo(x + width, y + height - (roundRight ? r : 0));
+        if (roundRight) {
+            ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+        }
+        ctx.lineTo(x + (roundLeft ? r : 0), y + height);
+        if (roundLeft) {
+            ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+        }
+        ctx.lineTo(x, y + (roundLeft ? r : 0));
+        if (roundLeft) {
+            ctx.quadraticCurveTo(x, y, x + r, y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    };
+    const hiddenOffset = -(barW + 24);
+    const targetOffset = hudUpgradesExpanded ? 0 : hiddenOffset;
+    hudUpgradeSlideOffset += (targetOffset - hudUpgradeSlideOffset) * HUD_UPGRADE_SLIDE_LERP;
+    if (Math.abs(targetOffset - hudUpgradeSlideOffset) < 0.25) {
+        hudUpgradeSlideOffset = targetOffset;
+    }
+    const headerText = `UPGRADES (${points}) ${hudUpgradesExpanded ? '◀' : '▶'}`;
+
+    hudUpgradeHeaderHitbox = {
+        x: x,
+        y: y - 24,
+        width: 175,
+        height: 24
+    };
+
+    LC.drawText({
+        text: headerText,
+        pos: [x + 6, y - 8],
+        font: '900 16px Inter',
+        color: isLocalPlayerInSnowBiome() ? '#4b5563' : 'white',
+        textAlign: 'left'
+    });
+
+    rows.forEach((row, idx) => {
+        const rowY = y + (idx * (rowH + rowGap));
+        const rowX = x + hudUpgradeSlideOffset;
+        const canUpgrade = points > 0 && row.level < 10;
+
+        LC.drawRect({
+            pos: [rowX, rowY],
+            size: [barW, rowH],
+            color: 'rgba(0,0,0,0.52)',
+            stroke: canUpgrade ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.2)',
+            strokeWidth: 2,
+            cornerRadius: rowCornerRadius
+        });
+
+        const segStartX = rowX + segmentInset;
+        for (let i = 0; i < HUD_UPGRADE_LAYOUT.segments; i++) {
+            const segX = segStartX + i * (segmentW + HUD_UPGRADE_LAYOUT.segmentGap);
+            drawUpgradeSegment({
+                x: segX,
+                y: rowY + 4,
+                width: segmentW,
+                height: rowH - 8,
+                color: i < row.level ? row.color : 'rgba(150, 170, 170, 0.38)',
+                roundLeft: i === 0,
+                roundRight: i === HUD_UPGRADE_LAYOUT.segments - 1,
+                radius: edgeSegmentRadius
+            });
+        }
+
+        LC.drawText({
+            text: row.name,
+            pos: [rowX + 10, rowY + 20],
+            font: 'bold 14px Inter',
+            color: 'white',
+            textAlign: 'left',
+            stroke: 'rgba(0,0,0,0.75)',
+            strokeWidth: 2
+        });
+
+        hudUpgradeHitboxes.push({
+            x: rowX,
+            y: rowY,
+            width: barW,
+            height: rowH,
+            attrType: row.attrType
+        });
+    });
+}
+
+function clientToHud(clientX, clientY) {
+    return LC.clientToLogical(clientX, clientY);
+}
+
+export function getHudUpgradeTypeAtClientPos(clientX, clientY) {
+    const pos = clientToHud(clientX, clientY);
+    const hit = hudUpgradeHitboxes.find(h =>
+        pos.x >= h.x &&
+        pos.x <= h.x + h.width &&
+        pos.y >= h.y &&
+        pos.y <= h.y + h.height
+    );
+    return hit?.attrType || 0;
+}
+
+export function isHudUpgradeHeaderAtClientPos(clientX, clientY) {
+    if (!hudUpgradeHeaderHitbox) return false;
+    const pos = clientToHud(clientX, clientY);
+    return pos.x >= hudUpgradeHeaderHitbox.x &&
+        pos.x <= hudUpgradeHeaderHitbox.x + hudUpgradeHeaderHitbox.width &&
+        pos.y >= hudUpgradeHeaderHitbox.y &&
+        pos.y <= hudUpgradeHeaderHitbox.y + hudUpgradeHeaderHitbox.height;
+}
+
+export function toggleHudUpgradeBars() {
+    hudUpgradesExpanded = !hudUpgradesExpanded;
+}
+
+export function onHudUpgradePointsChanged(prevPoints, nextPoints) {
+    const prev = Math.max(0, Math.floor(Number.isFinite(prevPoints) ? prevPoints : 0));
+    const next = Math.max(0, Math.floor(Number.isFinite(nextPoints) ? nextPoints : 0));
+
+    // Auto-open when points increase (e.g. level-up grant).
+    if (next > prev) {
+        hudUpgradesExpanded = true;
+        return;
+    }
+
+    // Auto-close when everything is spent.
+    if (next === 0 && prev > 0) {
+        hudUpgradesExpanded = false;
+    }
+}
+
+export function tryUseHudUpgradeAtClientPos(clientX, clientY) {
+    if (isHudUpgradeHeaderAtClientPos(clientX, clientY)) {
+        toggleHudUpgradeBars();
+        return true;
+    }
+    const attrType = getHudUpgradeTypeAtClientPos(clientX, clientY);
+    if (!attrType) return false;
+    if ((Vars.myStats.availablePoints || 0) <= 0) return true;
+    const now = performance.now();
+    if (now - lastUpgradeRequestAt < 80) return true;
+    lastUpgradeRequestAt = now;
+    sendUpgradePacket(attrType);
+    return true;
+}
+
+function drawInCombatLabel() {
+    if (!Vars.inCombat) return;
+    LC.drawText({
+        text: 'In Combat',
+        pos: [LC.width / 2, LC.height - 170],
+        font: 'bold 24px Inter',
+        color: '#ff4d4d',
+        textAlign: 'center'
+    });
+}
+
+function drawDraggedItem() {
+    if (Vars.creativeDragItemType > 0) {
+        const { imgName, rotation, aspect } = getItemIconInfo(Vars.creativeDragItemType);
+        const hb = HOTBAR_CONFIG;
+        const maxIconSize = hb.slotSize * 1.1;
+        const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
+        const { x, y } = LC.clientToLogical(Vars.mouseX, Vars.mouseY);
+
+        LC.drawImage({
+            name: imgName,
+            pos: [x - iconW / 2, y - iconH / 2],
+            size: [iconW, iconH],
+            rotation,
+            transparency: 0.78
+        });
+
+        if (Vars.creativeDragAmount > 1) {
+            LC.drawText({
+                text: Vars.creativeDragAmount.toLocaleString(),
+                pos: [x + iconW / 2 - 5, y + iconH / 2 - 5],
+                font: 'bold 16px Inter',
+                color: 'white',
+                textAlign: 'right',
+                stroke: 'black',
+                strokeWidth: 2
+            });
+        }
+        return;
+    }
+
+    if (Vars.dragAccessory) {
+        const accessoryKey = ACCESSORY_KEYS[Vars.dragAccessoryId];
+        const accessory = accessoryKey ? dataMap.ACCESSORIES[accessoryKey] : null;
+        if (!accessory) return;
+
+        const hb = HOTBAR_CONFIG;
+        const maxIconSize = hb.slotSize * 0.9;
+        const aspect = (accessory.size?.[0] || 1) / (accessory.size?.[1] || 1);
+        const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
+
+        const { x, y } = LC.clientToLogical(Vars.mouseX, Vars.mouseY);
+
+        LC.drawImage({
+            name: accessory.name,
+            pos: [x - iconW / 2, y - iconH / 2],
+            size: [iconW, iconH],
+            rotation: 0,
+            transparency: 0.75
+        });
+        return;
+    }
+
+    if (Vars.dragSlot === -1 || uiState.itemsInSellQueue.includes(Vars.dragSlot)) return;
+
+    let rank = Vars.myInventory[Vars.dragSlot];
+    if (rank > 0) {
+        const isThrown = rank > 127;
+        const lookupType = isThrown ? rank & 0x7F : rank;
+        const count = Vars.myInventoryCounts[Vars.dragSlot];
+
+        const { imgName, rotation, aspect } = getItemIconInfo(lookupType);
+
+        const hb = HOTBAR_CONFIG;
+        const maxIconSize = hb.slotSize * 1.1;
+        const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
+
+        const { x, y } = LC.clientToLogical(Vars.mouseX, Vars.mouseY);
+
+        LC.drawImage({
+            name: imgName,
+            pos: [x - iconW / 2, y - iconH / 2],
+            size: [iconW, iconH],
+            rotation: rotation,
+            transparency: 0.7
+        });
+
+        if (count > 1) {
+            LC.drawText({
+                text: count.toLocaleString(),
+                pos: [x + iconW / 2 - 5, y + iconH / 2 - 5],
+                font: 'bold 16px Inter',
+                color: 'white',
+                textAlign: 'right',
+                stroke: 'black',
+                strokeWidth: 2
+            });
+        }
+    }
+}
+
+function drawHotbar() {
+    const hb = HOTBAR_CONFIG, totalW = (hb.slotSize * 6) + (hb.gap * 5) + (hb.padding * 2);
+    const x = (LC.width / 2) - (totalW / 2), y = LC.height - hb.marginBottom - hb.slotSize - hb.padding * 2;
+
+    LC.drawRect({ pos: [x, y], size: [totalW, hb.slotSize + hb.padding * 2], color: 'rgba(0,0,0,0.5)', cornerRadius: 12 });
+
+    for (let i = 0; i < 5; i++) {
+        const sx = x + hb.padding + (i * (hb.slotSize + hb.gap)), sy = y + hb.padding;
+        const selected = Vars.selectedSlot === i;
+        LC.drawRect({ pos: [sx, sy], size: [hb.slotSize, hb.slotSize], color: selected ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.2)', cornerRadius: 8, stroke: selected ? 'white' : 'rgba(255,255,255,0.1)', strokeWidth: selected ? 2 : 1 });
+
+        let rank = Vars.myInventory[i];
+        if (rank > 0 && i !== Vars.dragSlot && !uiState.itemsInSellQueue.includes(i)) {
+            const isThrown = rank > 127;
+            const lookupType = isThrown ? rank & 0x7F : rank;
+            const count = Vars.myInventoryCounts[i];
+
+            const { imgName, rotation, aspect } = getItemIconInfo(lookupType);
+
+            const maxIconSize = hb.slotSize - 20;
+            const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
+
+            LC.drawImage({
+                name: imgName,
+                pos: [sx + hb.slotSize / 2 - iconW / 2, sy + hb.slotSize / 2 - iconH / 2],
+                size: [iconW, iconH],
+                rotation: rotation,
+                transparency: isThrown ? 0.4 : 1
+            });
+
+            if (count > 1) {
+                LC.drawText({
+                    text: count.toLocaleString(),
+                    pos: [sx + hb.slotSize - 5, sy + hb.slotSize - 5],
+                    font: 'bold 12px Inter',
+                    color: 'white',
+                    textAlign: 'right',
+                    stroke: 'black',
+                    strokeWidth: 2
+                });
+            }
+        }
+    }
+
+    // Draw the "..." button slot
+    const sx_more = x + hb.padding + (5 * (hb.slotSize + hb.gap)), sy_more = y + hb.padding;
+    LC.drawRect({ pos: [sx_more, sy_more], size: [hb.slotSize, hb.slotSize], color: 'rgba(0,0,0,0.2)', cornerRadius: 8, stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 });
+    LC.drawText({ text: '...', pos: [sx_more + hb.slotSize / 2, sy_more + hb.slotSize / 2 + 5], font: 'bold 24px Inter', color: 'white', textAlign: 'center' });
+
+    drawAccessorySlot(x, y, totalW);
+    drawLevelProgressBar(x, y, totalW);
+    drawAbilityCooldownBar(x, y, totalW);
+}
+
+function drawLevelProgressBar(hotbarX, hotbarY, hotbarWidth) {
+    const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+    if (!myPlayer) return;
+    const score = Math.max(0, Math.floor(myPlayer.score || 0));
+    const level = Math.max(1, Math.min(MAX_LEVEL, Math.floor(Vars.myStats.level || 1)));
+    let levelXp = score;
+    for (let l = 1; l < level; l++) {
+        levelXp -= xpForLevel(l);
+        if (levelXp <= 0) {
+            levelXp = 0;
+            break;
+        }
+    }
+    const atLevelCap = level >= MAX_LEVEL;
+    const xpNeeded = Math.max(1, xpForLevel(Math.min(level, MAX_LEVEL)));
+    const targetProgress = atLevelCap ? 1 : Math.max(0, Math.min(1, levelXp / xpNeeded));
+    const levelChanged = level !== hudLevelBarLevel;
+    const movedBackward = score < hudLevelBarScore || targetProgress < hudLevelBarProgress;
+    const shouldInterpolate = !levelChanged && !movedBackward && targetProgress > hudLevelBarProgress;
+
+    if (!shouldInterpolate) {
+        hudLevelBarProgress = targetProgress;
+    } else {
+        hudLevelBarProgress += (targetProgress - hudLevelBarProgress) * HUD_SCORE_LERP;
+        if (Math.abs(targetProgress - hudLevelBarProgress) < 0.002) {
+            hudLevelBarProgress = targetProgress;
+        }
+    }
+
+    hudLevelBarScore = score;
+    hudLevelBarLevel = level;
+    const progress = Math.max(0, Math.min(1, hudLevelBarProgress));
+
+    const barWidth = Math.round(hotbarWidth * 0.42);
+    const barHeight = 8;
+    const x = hotbarX + (hotbarWidth - barWidth) / 2;
+    const y = hotbarY - 56;
+
+    LC.drawRect({
+        pos: [x, y],
+        size: [barWidth, barHeight],
+        color: 'rgba(130, 130, 130, 0.45)',
+        cornerRadius: 6
+    });
+    if (progress > 0.001) {
+        LC.drawRect({
+            pos: [x, y],
+            size: [barWidth * progress, barHeight],
+            color: 'rgba(59, 130, 246, 0.95)',
+            cornerRadius: 6
+        });
+    }
+    LC.drawText({
+        text: `LVL ${level}  (${Math.round(progress * 100)}%)`,
+        pos: [x + (barWidth / 2), y - 6],
+        font: 'bold 12px Inter',
+        color: isLocalPlayerInSnowBiome() ? '#4b5563' : 'white',
+        textAlign: 'center'
+    });
+}
+
+function drawAbilityCooldownBar(hotbarX, hotbarY, hotbarWidth) {
+    const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+    const accessoryKey = ACCESSORY_KEYS[myPlayer?.accessoryId || 0];
+    if (accessoryKey !== 'minotaur-hat' && accessoryKey !== 'pirate-hat' && accessoryKey !== 'bush-cloak') return;
+
+    const cooldownMs = Math.max(0, Vars.abilityCooldownMs || 0);
+    if (cooldownMs <= 0) return;
+    const remainingMs = Math.max(0, (Vars.abilityCooldownEndsAt || 0) - performance.now());
+    const fillRatio = Math.max(0, Math.min(1, 1 - (remainingMs / cooldownMs)));
+
+    const barWidth = Math.round(hotbarWidth * 0.42);
+    const barHeight = 10;
+    const x = hotbarX + (hotbarWidth - barWidth) / 2;
+    const y = hotbarY - 18;
+
+    LC.drawRect({
+        pos: [x, y],
+        size: [barWidth, barHeight],
+        color: 'rgba(130, 130, 130, 0.45)',
+        cornerRadius: 6
+    });
+    LC.drawRect({
+        pos: [x, y],
+        size: [barWidth * fillRatio, barHeight],
+        color: 'rgba(220, 38, 38, 0.95)',
+        cornerRadius: 6
+    });
+
+    if (fillRatio >= 0.999) {
+        LC.drawText({
+            text: (isMobile || Settings.forceMobileUI) ? 'Tap ability to activate!' : 'Press F to activate your ability!',
+            pos: [x + (barWidth / 2), y - 8],
+            font: 'bold 14px Inter',
+            color: isLocalPlayerInSnowBiome() ? '#4b5563' : 'white',
+            textAlign: 'center'
+        });
+    }
+}
+
+function drawInventory() {
+    if (!uiState.isInventoryOpen) return;
+
+    const inv = INVENTORY_CONFIG;
+    const totalW = (inv.slotSize * inv.cols) + (inv.gap * (inv.cols - 1)) + (inv.padding * 2);
+    const totalH = (inv.slotSize * inv.rows) + (inv.gap * (inv.rows - 1)) + (inv.padding * 2);
+
+    const { inventoryX: x, inventoryY: y, creativeX, creativeY } = getAdminInventoryPanelPositions(totalW, totalH);
+
+    LC.drawRect({ pos: [x, y], size: [totalW, totalH], color: inv.background, cornerRadius: inv.cornerRadius });
+
+    for (let i = 0; i < 30; i++) {
+        const col = i % inv.cols;
+        const row = Math.floor(i / inv.cols);
+        const slotIndex = i + 5;
+
+        const sx = x + inv.padding + (col * (inv.slotSize + inv.gap));
+        const sy = y + inv.padding + (row * (inv.slotSize + inv.gap));
+
+        LC.drawRect({ pos: [sx, sy], size: [inv.slotSize, inv.slotSize], color: 'rgba(0,0,0,0.2)', cornerRadius: 8, stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 });
+
+        let rank = Vars.myInventory[slotIndex];
+        if (rank > 0 && slotIndex !== Vars.dragSlot && !uiState.itemsInSellQueue.includes(slotIndex)) {
+            const isThrown = rank > 127;
+            const lookupType = isThrown ? rank & 0x7F : rank;
+            const count = Vars.myInventoryCounts[slotIndex];
+
+            const { imgName, rotation, aspect } = getItemIconInfo(lookupType);
+
+            const maxIconSize = inv.slotSize - 20;
+            const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
+
+            LC.drawImage({
+                name: imgName,
+                pos: [sx + inv.slotSize / 2 - iconW / 2, sy + inv.slotSize / 2 - iconH / 2],
+                size: [iconW, iconH],
+                rotation: rotation,
+                transparency: isThrown ? 0.4 : 1
+            });
+
+            if (count > 1) {
+                LC.drawText({
+                    text: count.toLocaleString(),
+                    pos: [sx + inv.slotSize - 5, sy + inv.slotSize - 5],
+                    font: 'bold 12px Inter',
+                    color: 'white',
+                    textAlign: 'right',
+                    stroke: 'black',
+                    strokeWidth: 2
+                });
+            }
+        }
+    }
+
+    if (Vars.isAdmin) {
+        drawCreativeInventoryPanel(creativeX, creativeY, totalW, totalH);
+    }
+}
+
+export function getAdminInventoryPanelPositions(totalW, totalH) {
+    const centerX = LC.width / 2;
+    const centerY = LC.height / 2;
+    const inventoryY = centerY - (totalH / 2);
+    if (!Vars.isAdmin) {
+        return {
+            inventoryX: centerX - (totalW / 2),
+            inventoryY,
+            creativeX: centerX - (totalW / 2),
+            creativeY: inventoryY
+        };
+    }
+    return {
+        inventoryX: centerX - ADMIN_CREATIVE_PANEL_GAP - totalW,
+        inventoryY,
+        creativeX: centerX + ADMIN_CREATIVE_PANEL_GAP,
+        creativeY: inventoryY
+    };
+}
+
+function drawCreativeInventoryPanel(x, y, totalW, totalH) {
+    const inv = INVENTORY_CONFIG;
+    LC.drawRect({ pos: [x, y], size: [totalW, totalH], color: 'rgba(0,0,0,0.45)', cornerRadius: inv.cornerRadius });
+    LC.drawText({
+        text: 'ADMIN',
+        pos: [x + 14, y - 8],
+        font: 'bold 14px Inter',
+        color: 'rgba(255,255,255,0.92)'
+    });
+
+    for (let i = 0; i < inv.cols * inv.rows; i++) {
+        const col = i % inv.cols;
+        const row = Math.floor(i / inv.cols);
+        const sx = x + inv.padding + (col * (inv.slotSize + inv.gap));
+        const sy = y + inv.padding + (row * (inv.slotSize + inv.gap));
+        const item = ADMIN_CREATIVE_ITEMS[i] || null;
+
+        LC.drawRect({ pos: [sx, sy], size: [inv.slotSize, inv.slotSize], color: 'rgba(0,0,0,0.18)', cornerRadius: 8, stroke: 'rgba(255,255,255,0.12)', strokeWidth: 1 });
+        if (!item) continue;
+
+        const { imgName, rotation, aspect } = getItemIconInfo(item.type);
+        const maxIconSize = inv.slotSize - 20;
+        const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
+        LC.drawImage({
+            name: imgName,
+            pos: [sx + inv.slotSize / 2 - iconW / 2, sy + inv.slotSize / 2 - iconH / 2],
+            size: [iconW, iconH],
+            rotation,
+            transparency: Vars.creativeDragItemType === item.type ? 0.4 : 1
+        });
+
+        if (item.amount > 1) {
+            LC.drawText({
+                text: item.amount.toLocaleString(),
+                pos: [sx + inv.slotSize - 5, sy + inv.slotSize - 5],
+                font: 'bold 12px Inter',
+                color: 'white',
+                textAlign: 'right',
+                stroke: 'black',
+                strokeWidth: 2
+            });
+        }
+    }
+}
+
+export function getCreativeInventorySlotAtLogicalPos(x, y) {
+    if (!uiState.isInventoryOpen || !Vars.isAdmin) return -1;
+    const inv = INVENTORY_CONFIG;
+    const totalW = (inv.slotSize * inv.cols) + (inv.gap * (inv.cols - 1)) + (inv.padding * 2);
+    const totalH = (inv.slotSize * inv.rows) + (inv.gap * (inv.rows - 1)) + (inv.padding * 2);
+    const { creativeX, creativeY } = getAdminInventoryPanelPositions(totalW, totalH);
+
+    if (x < creativeX || x > creativeX + totalW || y < creativeY || y > creativeY + totalH) return -1;
+    const relX = x - creativeX - inv.padding;
+    const relY = y - creativeY - inv.padding;
+    if (relX < 0 || relY < 0) return -1;
+    const col = Math.floor(relX / (inv.slotSize + inv.gap));
+    const row = Math.floor(relY / (inv.slotSize + inv.gap));
+    if (col < 0 || col >= inv.cols || row < 0 || row >= inv.rows) return -1;
+    const slotRelX = relX % (inv.slotSize + inv.gap);
+    const slotRelY = relY % (inv.slotSize + inv.gap);
+    if (slotRelX > inv.slotSize || slotRelY > inv.slotSize) return -1;
+    const slot = (row * inv.cols) + col;
+    return ADMIN_CREATIVE_ITEMS[slot] ? slot : -1;
+}
+
+export function getCreativeInventoryItemBySlot(slot) {
+    return ADMIN_CREATIVE_ITEMS[slot] || null;
+}
+
+function fitIconSize(maxSize, aspect) {
+    if (!aspect || aspect <= 0) return [maxSize, maxSize];
+    if (aspect >= 1) {
+        return [maxSize, maxSize / aspect];
+    }
+    return [maxSize * aspect, maxSize];
+}
+
+function getItemIconInfo(lookupType) {
+    if (isCoinObjectType(lookupType)) {
+        return { imgName: 'gold-coin', rotation: 0, aspect: 1 };
+    }
+    if (isAccessoryItemType(lookupType)) {
+        const accessoryId = accessoryIdFromItemType(lookupType);
+        const accessoryKey = ACCESSORY_KEYS[accessoryId];
+        const accessory = accessoryKey ? dataMap.ACCESSORIES[accessoryKey] : null;
+        if (accessory) {
+            const aspect = (accessory.size?.[0] || 1) / (accessory.size?.[1] || 1);
+            return { imgName: accessory.name, rotation: 0, aspect };
+        }
+    }
+    const sword = dataMap.SWORDS.imgs[lookupType] || dataMap.SWORDS.imgs[1];
+    const aspect = (sword.swordWidth || 100) / (sword.swordHeight || 50);
+    return { imgName: sword.name, rotation: -Math.PI / 4, aspect };
+}
+
+function drawAccessorySlot(hotbarX, hotbarY, hotbarWidth) {
+    const hb = HOTBAR_CONFIG;
+    const as = ACCESSORY_SLOT_CONFIG;
+    const slotX = hotbarX - as.gap - as.size;
+    const slotY = hotbarY + hb.padding + (hb.slotSize - as.size) / 2;
+
+    LC.drawRect({
+        pos: [slotX - hb.padding, hotbarY],
+        size: [as.size + hb.padding * 2, hb.slotSize + hb.padding * 2],
+        color: 'rgba(0,0,0,0.5)',
+        cornerRadius: 12
+    });
+
+    LC.drawRect({
+        pos: [slotX, slotY],
+        size: [as.size, as.size],
+        color: 'rgba(0,0,0,0.2)',
+        cornerRadius: 7,
+        stroke: 'rgba(255,255,255,0.2)',
+        strokeWidth: 1
+    });
+
+    const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+    const accessoryId = myPlayer?.accessoryId || 0;
+    const accessoryKey = ACCESSORY_KEYS[accessoryId];
+    const accessory = accessoryKey ? dataMap.ACCESSORIES[accessoryKey] : null;
+    if (!accessory) return;
+    if (Vars.dragAccessory && Vars.dragAccessoryId === accessoryId) return;
+
+    const maxIconSize = as.size - 10;
+    const aspect = (accessory.size?.[0] || 1) / (accessory.size?.[1] || 1);
+    const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
+
+    LC.drawImage({
+        name: accessory.name,
+        pos: [slotX + as.size / 2 - iconW / 2, slotY + as.size / 2 - iconH / 2],
+        size: [iconW, iconH],
+        rotation: 0
+    });
+}
+
+function drawMobileButtons(lp) {
+    const drawBtn = (config, label, active) => {
+        const bx = LC.width - config.xOffset;
+        const by = LC.height - config.yOffset;
+        const alpha = active ? 0.6 : 0.2;
+        LC.drawCircle({
+            pos: [bx, by],
+            radius: config.radius,
+            color: `rgba(0,0,0,${alpha})`,
+            stroke: active ? 'white' : 'rgba(255,255,255,0.2)',
+            strokeWidth: 2
+        });
+        LC.drawText({
+            text: label,
+            pos: [bx, by + 5],
+            font: `bold ${config.radius * 0.4}px Inter`,
+            color: active ? 'white' : 'rgba(255,255,255,0.2)',
+            textAlign: 'center'
+        });
+    };
+
+    drawBtn(THROW_BTN_CONFIG, 'THROW', lp.hasWeapon && isTutorialMobileActionEnabled('throw'));
+    drawBtn(ATTACK_BTN_CONFIG, 'ATTACK', lp.hasWeapon && isTutorialMobileActionEnabled('attack'));
+    drawBtn(PICKUP_BTN_CONFIG, 'PICKUP', isTutorialMobileActionEnabled('pickup'));
+    drawBtn(DROP_BTN_CONFIG, 'DROP', isTutorialMobileActionEnabled('drop'));
+}
+
+export function isTutorialMobileActionEnabled(action) {
+    if (!isMobile || CURRENT_WORLD !== WORLD_TUTORIAL || !Vars.tutorialObjectiveVisible) return true;
+    const step = Vars.tutorialObjectiveStep;
+    if (action === 'attack') return step >= 1;
+    if (action === 'throw') return step >= 2;
+    if (action === 'pickup') return step >= 4;
+    if (action === 'drop') return step >= 6;
+    return true;
+}
+
+function updateJoinButton() {
+    const btn = document.getElementById('joinBtn');
+    if (!btn) return;
+    const cooldown = isJoinActionOnCooldown();
+    btn.disabled = cooldown;
+    btn.style.opacity = cooldown ? '0.5' : '1';
+    btn.style.pointerEvents = cooldown ? 'none' : 'auto';
+}
+
+function updateRespawnButton() {
+    const btn = document.getElementById('respawnBtn');
+    if (!btn) return;
+    const cooldown = isJoinActionOnCooldown();
+    btn.disabled = cooldown;
+    btn.style.opacity = cooldown ? '0.5' : '1';
+    btn.style.pointerEvents = cooldown ? 'none' : 'auto';
+}
+
+// --- Initialization ---
+const joinBtn = document.getElementById('joinBtn');
+const usernameInput = document.getElementById('homeUsrnInput');
+if (usernameInput) usernameInput.value = localStorage.username || '';
+
+const respawnBtn = document.getElementById('respawnBtn');
+const respawnHomeBtn = document.getElementById('respawnHomeBtn');
+
+export function startJoinActionCooldown(ms = JOIN_ACTION_COOLDOWN_MS) {
+    const until = performance.now() + Math.max(0, ms);
+    Vars.joinActionLockedUntil = Math.max(Vars.joinActionLockedUntil || 0, until);
+}
+
+function isJoinActionOnCooldown() {
+    return performance.now() < (Vars.joinActionLockedUntil || 0);
+}
+
+const tryJoin = () => {
+    if (uiState.isPaused) return;
+    if (isJoinActionOnCooldown()) return;
+    if (!ws || ws.readyState !== ws.OPEN) return;
+
+    startJoinActionCooldown();
+    const username = usernameInput?.value || localStorage.username || '';
+    ws.send(encodeUsername(username));
+    LC.zoomIn();
+    updateJoinButton();
+    updateRespawnButton();
+};
+
+function chooseWorldForJoin() {
+    return chooseWorldForJoinAsync();
+}
+
+function showTutorialChoicePrompt() {
+    return new Promise((resolve) => {
+        const existing = document.getElementById('tutorial-choice-canvas');
+        if (existing) existing.remove();
+
+        const canvas = document.createElement('canvas');
+        canvas.id = 'tutorial-choice-canvas';
+        Object.assign(canvas.style, {
+            position: 'fixed',
+            inset: '0',
+            width: '100vw',
+            height: '100dvh',
+            zIndex: '100500',
+            pointerEvents: 'auto',
+            backdropFilter: 'blur(8px)',
+            WebkitBackdropFilter: 'blur(8px)'
+        });
+        document.body.appendChild(canvas);
+
+        const ctx = canvas.getContext('2d');
+        const state = { hover: '' };
+        let uiW = window.visualViewport?.width || window.innerWidth;
+        let uiH = window.visualViewport?.height || window.innerHeight;
+
+        const getRects = () => {
+            const w = uiW;
+            const h = uiH;
+            const isCompact = w <= 520;
+            const panelW = Math.min(700, Math.max(isCompact ? 250 : 340, Math.floor(w * (isCompact ? 0.9 : 0.6))));
+            const panelH = isCompact ? 210 : 250;
+            const panelX = Math.floor((w - panelW) / 2);
+            const panelY = Math.floor((h - panelH) / 2);
+            const btnGap = isCompact ? 12 : 20;
+            const btnPad = isCompact ? 14 : 20;
+            const btnW = Math.floor((panelW - (btnPad * 2) - btnGap) / 2);
+            const btnH = isCompact ? 54 : 70;
+            const yes = { x: panelX + btnPad, y: panelY + panelH - btnH - btnPad, w: btnW, h: btnH };
+            const no = { x: panelX + panelW - btnW - btnPad, y: panelY + panelH - btnH - btnPad, w: btnW, h: btnH };
+            return { panelX, panelY, panelW, panelH, yes, no, isCompact };
+        };
+
+        const draw = () => {
+            const w = uiW;
+            const h = uiH;
+            const { panelX, panelY, panelW, panelH, yes, no, isCompact } = getRects();
+
+            ctx.clearRect(0, 0, w, h);
+            ctx.fillStyle = 'rgba(5, 7, 12, 0.4)';
+            ctx.fillRect(0, 0, w, h);
+
+            ctx.fillStyle = 'rgba(12, 45, 110, 1)';
+            ctx.strokeStyle = 'rgba(255,255,255,1)';
+            ctx.lineWidth = 2;
+            roundRect(ctx, panelX, panelY, panelW, panelH, 16);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = '#ffffff';
+            ctx.font = normalizeCanvasFont(isCompact ? '900 20px Inter' : '900 34px Inter');
+            ctx.textAlign = 'center';
+            if (isCompact || panelW < 520) {
+                ctx.fillText('Would You Like', panelX + panelW / 2, panelY + 70);
+                ctx.fillText('A Tutorial?', panelX + panelW / 2, panelY + 96);
+            } else {
+                ctx.fillText('Would You Like A Tutorial?', panelX + panelW / 2, panelY + 75);
+            }
+
+            drawButton(ctx, yes, state.hover === 'yes', 'YES');
+            drawButton(ctx, no, state.hover === 'no', 'NO');
+        };
+
+        const inside = (r, x, y) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+        const fromEvent = (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const sx = e.clientX - rect.left;
+            const sy = e.clientY - rect.top;
+            return { sx, sy };
+        };
+
+        const resize = () => {
+            const dpr = Math.max(1, window.devicePixelRatio || 1);
+            uiW = window.visualViewport?.width || window.innerWidth;
+            uiH = window.visualViewport?.height || window.innerHeight;
+            canvas.width = Math.floor(uiW * dpr);
+            canvas.height = Math.floor(uiH * dpr);
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            draw();
+        };
+        const onViewportResize = () => resize();
+
+        const cleanup = () => {
+            window.removeEventListener('resize', resize);
+            if (window.visualViewport) window.visualViewport.removeEventListener('resize', onViewportResize);
+            canvas.remove();
+        };
+
+        const onMove = (e) => {
+            const { yes, no } = getRects();
+            const { sx, sy } = fromEvent(e);
+            if (inside(yes, sx, sy)) state.hover = 'yes';
+            else if (inside(no, sx, sy)) state.hover = 'no';
+            else state.hover = '';
+            draw();
+        };
+
+        const onClick = (e) => {
+            const { yes, no } = getRects();
+            const { sx, sy } = fromEvent(e);
+            if (inside(yes, sx, sy)) {
+                cleanup();
+                resolve(true);
+                return;
+            }
+            if (inside(no, sx, sy)) {
+                cleanup();
+                resolve(false);
+            }
+        };
+
+        window.addEventListener('resize', resize);
+        if (window.visualViewport) window.visualViewport.addEventListener('resize', onViewportResize);
+        canvas.addEventListener('mousemove', onMove);
+        canvas.addEventListener('click', onClick);
+        canvas.addEventListener('touchstart', (e) => {
+            const touch = e.changedTouches?.[0];
+            if (!touch) return;
+            onClick({ clientX: touch.clientX, clientY: touch.clientY });
+        }, { passive: true });
+        resize();
+    });
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w * 0.5, h * 0.5);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+}
+
+function drawButton(ctx, rect, hover, label) {
+    ctx.fillStyle = hover ? 'rgba(46, 204, 113, 0.95)' : 'rgba(255,255,255,0.2)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = 2;
+    roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 12);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    const fontSize = Math.max(16, Math.min(30, Math.floor(rect.h * 0.45)));
+    ctx.font = normalizeCanvasFont(`900 ${fontSize}px Inter`);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2);
+    ctx.textBaseline = 'alphabetic';
+}
+
+async function chooseWorldForJoinAsync() {
+    try {
+        if (localStorage.getItem(TUTORIAL_COMPLETED_STORAGE_KEY) === '1') {
+            localStorage.setItem(WORLD_STORAGE_KEY, WORLD_MAIN);
+            return true;
+        }
+
+        const wantsTutorial = await showTutorialChoicePrompt();
+        const desiredWorld = wantsTutorial ? WORLD_TUTORIAL : WORLD_MAIN;
+        localStorage.setItem(WORLD_STORAGE_KEY, desiredWorld);
+
+        if (desiredWorld !== CURRENT_WORLD) {
+            localStorage.setItem(AUTO_JOIN_STORAGE_KEY, '1');
+            location.reload();
+            return false;
+        }
+    } catch (e) {
+        // Ignore storage or dialog failures and continue with current world.
+    }
+    return true;
+}
+
+if (joinBtn) {
+    joinBtn.onclick = async () => {
+        if (worldChoiceInProgress) return;
+        if (isJoinActionOnCooldown()) {
+            updateJoinButton();
+            return;
+        }
+        localStorage.username = usernameInput.value;
+        worldChoiceInProgress = true;
+        const canJoin = await chooseWorldForJoin();
+        worldChoiceInProgress = false;
+        if (!canJoin) return;
+        uiState.forceHomeScreen = false;
+        uiState.isPaused = false;
+        tryJoin();
+    };
+}
+
+if (respawnBtn) {
+    respawnBtn.onclick = () => {
+        if (isJoinActionOnCooldown()) {
+            updateRespawnButton();
+            return;
+        }
+        if (usernameInput) {
+            localStorage.username = usernameInput.value || localStorage.username || '';
+        }
+        uiState.forceHomeScreen = false;
+        uiState.isPaused = false;
+        tryJoin();
+    };
+}
+
+if (respawnHomeBtn) {
+    respawnHomeBtn.onclick = () => {
+        const homeScreen = document.getElementById('home-screen');
+        const respawnScreen = document.getElementById('respawn-screen');
+        closeHomeScreenBlockingUI();
+        if (homeScreen) homeScreen.style.display = 'flex';
+        if (respawnScreen) respawnScreen.style.display = 'none';
+        uiState.forceHomeScreen = true;
+    };
+}
+
+(async () => {
+    initializeUI();
+    ensureKeyHintElement();
+    requestAnimationFrame(render);
+    await loadAssets();
+
+    // FPS Tracker
+    let frames = 0;
+    setInterval(() => { TPS.clientReal = frames; frames = 0; }, 1000);
+    const countFps = () => { frames++; requestAnimationFrame(countFps); };
+    requestAnimationFrame(countFps);
+
+    try {
+        if (localStorage.getItem(AUTO_JOIN_STORAGE_KEY) === '1') {
+            localStorage.removeItem(AUTO_JOIN_STORAGE_KEY);
+            const performAutoJoin = () => {
+                uiState.forceHomeScreen = false;
+                uiState.isPaused = false;
+                tryJoin();
+            };
+            if (ws.readyState === ws.OPEN) {
+                performAutoJoin();
+            } else {
+                ws.addEventListener('open', performAutoJoin, { once: true });
+            }
+        }
+    } catch (e) {
+        // Ignore storage errors.
+    }
+})();
