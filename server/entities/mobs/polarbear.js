@@ -23,7 +23,8 @@ export class PolarBear extends Mob {
                 const distanceSq = (t.x - this.x) ** 2 + (t.y - this.y) ** 2;
                 const wasHitTarget = this.alarmReason === 'hit' && this.lastHitById === t.id;
                 const inRange = wasHitTarget ? (distanceSq < hitRange ** 2) : (distanceSq < detectRange ** 2);
-                if (inRange && this.x > MAP_SIZE[0] * 0.47 && !t.hasShield) {
+                const canIgnoreShield = wasHitTarget && t.progressShieldActive && !t.touchingSafeZone;
+                if (inRange && this.x > MAP_SIZE[0] * 0.47 && (!t.hasShield || canIgnoreShield)) {
                     this.angle = Math.atan2(t.y - this.y, t.x - this.x);
                 } else {
                     this.resetAlarmState();

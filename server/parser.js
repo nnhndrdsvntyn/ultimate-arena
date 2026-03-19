@@ -186,6 +186,7 @@ function handleJoinPacket(reader, ws) {
     ws.seenEntities = new Set();
     ENTITIES.PLAYERS[ws.id].isAlive = true;
     ENTITIES.PLAYERS[ws.id].sendInventoryUpdate();
+    ENTITIES.PLAYERS[ws.id].updateProgressShield();
 }
 
 function handleAnglePacket(reader, player) {
@@ -213,7 +214,7 @@ function handleChatPacket(reader, player, buffer) {
 }
 
 function handlePausePacket(player) {
-    if (player.hasShield) {
+    if (player.hasShield && player.touchingSafeZone) {
         player.isAlive = false;
         player.lastDiedTime = performance.now();
     }
@@ -262,9 +263,7 @@ function handleCommandPacket(reader, ws, buffer) {
                 const player = ENTITIES.PLAYERS[ws.id];
                 if (player && player.isAlive) {
                     const inCombat = performance.now() - player.lastCombatTime < 10000;
-                    const killer = inCombat && player.lastDamager && ENTITIES.PLAYERS[player.lastDamager.id]
-                        ? player.lastDamager
-                        : null;
+                    const killer = inCombat && player.lastDamager ? player.lastDamager : null;
                     player.die(killer);
                 }
             }
@@ -407,7 +406,12 @@ function handleCommandPacket(reader, ws, buffer) {
             break;
         }
         case 15: { // Reset server
-            cmdRun.resetServer();
+            let seed = null;
+            if (reader.offset + 4 <= buffer.length) {
+                seed = buffer.readUint32BE(reader.offset);
+                reader.offset += 4;
+            }
+            cmdRun.resetServer(seed);
             break;
         }
         case 16: { // Give accessory
@@ -456,6 +460,30 @@ function handleCommandPacket(reader, ws, buffer) {
             const slot = reader.readU8();
             const drop = reader.readU8() === 1;
             cmdRun.creativeItem(ws.id, itemType, amount, slot, drop);
+            break;
+        }
+        case 22: { // Spawn mob/structure
+            const entityKey = reader.readString();
+            let x = null;
+            let y = null;
+            if (reader.offset + 4 <= buffer.length) {
+                x = reader.readU16();
+                y = reader.readU16();
+            }
+            const player = ENTITIES.PLAYERS[ws.id];
+            const fallbackX = Math.max(0, Math.min(MAP_SIZE[0], Math.round(player?.x ?? MAP_SIZE[0] / 2)));
+            const fallbackY = Math.max(0, Math.min(MAP_SIZE[1], Math.round(player?.y ?? MAP_SIZE[1] / 2)));
+            cmdRun.spawn(
+                entityKey,
+                Number.isFinite(x) ? x : fallbackX,
+                Number.isFinite(y) ? y : fallbackY,
+                player?.world || 'main'
+            );
+            break;
+        }
+        case 23: { // Break structures (non-natural)
+            const structType = reader.readU8();
+            cmdRun.breakStructures(structType || 0);
             break;
         }
     }

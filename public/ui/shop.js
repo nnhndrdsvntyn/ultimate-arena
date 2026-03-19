@@ -1,6 +1,6 @@
 import { Vars, CURRENT_WORLD } from '../client.js';
 import { sendBuyPacket, sendSellAllPacket } from '../helpers.js';
-import { dataMap, isSellableItem, ACCESSORY_KEYS, ACCESSORY_DESCRIPTIONS, accessoryItemTypeFromId } from '../shared/datamap.js';
+import { dataMap, isSellableItem, isSwordRank, ACCESSORY_KEYS, ACCESSORY_DESCRIPTIONS, accessoryItemTypeFromId } from '../shared/datamap.js';
 import { createEl, makeDraggable } from './dom.js';
 import { uiRefs, uiState } from './context.js';
 import { resetInputs } from './input.js';
@@ -11,9 +11,25 @@ export function createShopButton(parent) {
         backgroundSize: '100%',
         backgroundRepeat: 'no-repeat',
         backgroundPosition: 'center',
+        position: 'relative'
     }, parent, {
         id: 'shopBtn'
     });
+
+    createEl('div', {
+        position: 'absolute',
+        top: '-6px',
+        right: '-6px',
+        width: '18px',
+        height: '18px',
+        borderRadius: '50%',
+        background: 'rgba(47,196,196,0.9)',
+        boxShadow: '0 0 0 0 rgba(47,196,196,0.7)',
+        transformOrigin: 'center',
+        animation: 'shop-ping 1.2s infinite',
+        display: 'none',
+        pointerEvents: 'none'
+    }, btn, { id: 'shop-alert-dot' });
 
     btn.onclick = () => {
         toggleShopModal(true);
@@ -41,6 +57,7 @@ export function createShopModal(parent) {
 
 export function updateShopBody() {
     if (!uiRefs.shopBody) return;
+    updateShopAttentionIndicator();
     uiRefs.shopBody.innerHTML = '';
 
     // Gold Coin Counter at the top
@@ -108,6 +125,95 @@ export function toggleShopModal(show) {
     }
 }
 
+let activeInfoTip = null;
+let infoTipScrollBound = false;
+
+function hideInfoTip(tipEl) {
+    if (!tipEl) return;
+    tipEl.classList.remove('visible');
+    if (activeInfoTip === tipEl) activeInfoTip = null;
+}
+
+function positionInfoTip(tipEl, anchorEl) {
+    const rect = anchorEl.getBoundingClientRect();
+    const padding = 8;
+    const gap = 8;
+    tipEl.style.left = '0px';
+    tipEl.style.top = '0px';
+    const tipRect = tipEl.getBoundingClientRect();
+    let left = rect.left + (rect.width / 2) - (tipRect.width / 2);
+    left = Math.max(padding, Math.min(left, window.innerWidth - tipRect.width - padding));
+    let top = rect.top - tipRect.height - gap;
+    if (top < padding) {
+        top = rect.bottom + gap;
+    }
+    tipEl.style.left = `${left}px`;
+    tipEl.style.top = `${top}px`;
+}
+
+function showInfoTip(tipEl, anchorEl) {
+    if (activeInfoTip && activeInfoTip !== tipEl) {
+        hideInfoTip(activeInfoTip);
+    }
+    tipEl.classList.add('visible');
+    positionInfoTip(tipEl, anchorEl);
+    activeInfoTip = tipEl;
+}
+
+function bindInfoTipEvents(infoEl, tipEl) {
+    infoEl.addEventListener('pointerenter', () => {
+        showInfoTip(tipEl, infoEl);
+    });
+    infoEl.addEventListener('pointerleave', () => {
+        hideInfoTip(tipEl);
+    });
+    infoEl.addEventListener('pointerdown', (e) => {
+        if (e.pointerType !== 'touch') return;
+        e.preventDefault();
+        if (tipEl.classList.contains('visible')) {
+            hideInfoTip(tipEl);
+        } else {
+            showInfoTip(tipEl, infoEl);
+        }
+    });
+}
+
+function getBestSwordRank() {
+    let best = 0;
+    for (let i = 0; i < Vars.myInventory.length; i++) {
+        if (Vars.myInventoryCounts[i] <= 0) continue;
+        const rank = Vars.myInventory[i] & 0x7F;
+        if (isSwordRank(rank) && rank > best) best = rank;
+    }
+    return best;
+}
+
+function getSwordSellPrice(rank) {
+    const shopItem = dataMap.SHOP_ITEMS.find(item => item.id === rank);
+    if (shopItem) return Math.floor(shopItem.price * 0.5);
+    if (rank === 9) return 500;
+    return 0;
+}
+
+function getAffordableBetterSwordRank() {
+    const bestRank = getBestSwordRank();
+    const coins = Vars.myStats.goldCoins || 0;
+    let bestAffordable = null;
+    for (const item of dataMap.SHOP_ITEMS) {
+        if (item.id <= bestRank) continue;
+        if (coins < item.price) continue;
+        if (!bestAffordable || item.id > bestAffordable) bestAffordable = item.id;
+    }
+    return bestAffordable;
+}
+
+export function updateShopAttentionIndicator() {
+    const targetRank = getAffordableBetterSwordRank();
+    uiState.shopAttentionRank = targetRank;
+    const dot = document.getElementById('shop-alert-dot');
+    if (dot) dot.style.display = targetRank ? 'block' : 'none';
+}
+
 function renderSellTab() {
     const container = createEl('div', {
         display: 'flex',
@@ -151,7 +257,7 @@ function renderSellTab() {
             const rank = Vars.myInventory[slotIdx] & 0x7F;
             const count = Vars.myInventoryCounts[slotIdx];
             const sword = dataMap.SWORDS.imgs[rank] || dataMap.SWORDS.imgs[1];
-            const price = Math.floor((dataMap.SHOP_ITEMS.find(i => i.id === rank)?.price || 0) * 0.5) * count;
+            const price = getSwordSellPrice(rank) * count;
             totalPrice += price;
 
             const itemPreview = createEl('div', {
@@ -256,6 +362,10 @@ function renderSellTab() {
 
 function renderShopTab() {
     const tutorialBranchSwordOnly = isTutorialBranchSwordOnlyStep();
+    if (!infoTipScrollBound && uiRefs.shopBody) {
+        uiRefs.shopBody.addEventListener('scroll', () => hideInfoTip(activeInfoTip));
+        infoTipScrollBound = true;
+    }
 
     const weaponTitle = createEl('div', {}, uiRefs.shopBody, { className: 'shop-section-title', textContent: 'Weapons' });
     weaponTitle.classList.add('no-select');
@@ -264,6 +374,12 @@ function renderShopTab() {
 
     dataMap.SHOP_ITEMS.forEach(itemConfig => {
         const item = createEl('div', {}, grid, { className: 'shop-item' });
+        if (uiState.shopAttentionRank === itemConfig.id) {
+            item.classList.add('shop-item-attention');
+            createEl('div', {
+                className: 'shop-item-alert'
+            }, item);
+        }
 
         // Icon
         createEl('img', {}, item, {
@@ -319,10 +435,11 @@ function renderShopTab() {
 
         const info = createEl('div', {}, item, { className: 'shop-item-info' });
         createEl('span', {}, info, { className: 'shop-item-info-icon', textContent: 'i' });
-        createEl('div', {}, info, {
+        const infoTip = createEl('div', {}, document.body, {
             className: 'shop-item-info-tip',
             textContent: ACCESSORY_DESCRIPTIONS[key] || 'Coming Soon'
         });
+        bindInfoTipEvents(info, infoTip);
 
         const priceContainer = createEl('div', {}, item, { className: 'shop-item-price' });
         createEl('img', {}, priceContainer, {

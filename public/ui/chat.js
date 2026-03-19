@@ -11,6 +11,8 @@ import {
     sendRovCommand,
     sendAgroCommand,
     sendMobTypeCommand,
+    sendSpawnCommand,
+    sendBreakStructureCommand,
     sendResetCommand,
     sendGiveAccessoryCommand,
     sendGrantAdminCommand,
@@ -89,7 +91,7 @@ const COMMANDS = [{
     },
     {
         name: '/tppos',
-        params: '<@p[id|range|all]|@m[id|range|all]|@s> <[x, y]>'
+        params: '<@p[id|range|all]|@m[id|range|all]|@s> <x y>'
     },
     {
         name: '/give',
@@ -98,6 +100,10 @@ const COMMANDS = [{
     {
         name: '/kill',
         params: '<@p[id|range|all]|@m[id|range|all]|@s>'
+    },
+    {
+        name: '/spawn',
+        params: '<entity> [x y]'
     },
     {
         name: '/break',
@@ -129,7 +135,7 @@ const COMMANDS = [{
     },
     {
         name: '/reset',
-        params: ''
+        params: '[seed]'
     },
     {
         name: '/admin',
@@ -145,7 +151,7 @@ const COMMANDS = [{
     },
     {
         name: '/activateability',
-        params: '<energy_burst|lightning_shot|poison_blast|stamina_boost|speed_boost> [durationSec]'
+        params: '<energy_burst|lightning_shot|poison_blast|stamina_boost|speed_boost|smoke_blast> [durationSec]'
     },
     {
         name: '/debug',
@@ -165,6 +171,8 @@ const MOB_TYPE_SUGGESTIONS = [
     '@m[type=polar-bear]',
     '@m[type=minotaur]'
 ];
+const STRUCTURE_SUGGESTIONS = ['@s[tree]', '@s[rock]'];
+const SPAWN_ENTITY_SUGGESTIONS = ['chick', 'pig', 'cow', 'hearty', 'minotaur', 'polar_bear', 'polar-bear', 'tree', 'rock'];
 const ACCESSORY_SUGGESTIONS = ACCESSORY_KEYS.filter(k => k !== 'none');
 const SETATTR_SUGGESTIONS = ['invincible', 'speed', 'damage', 'strength', 'maxhealth', 'score', 'radius'];
 const INVINCIBLE_VALUE_SUGGESTIONS = ['true', 'false'];
@@ -174,7 +182,7 @@ const ITEM_SUGGESTIONS = [
     'gold-coin',
     ...ACCESSORY_SUGGESTIONS
 ];
-const ABILITY_SUGGESTIONS = ['energy_burst', 'lightning_shot', 'poison_blast', 'stamina_boost', 'speed_boost'];
+const ABILITY_SUGGESTIONS = ['energy_burst', 'lightning_shot', 'poison_blast', 'stamina_boost', 'speed_boost', 'smoke_blast', 'growth_spurt', 'invisibility'];
 const DEBUG_SETTING_SUGGESTIONS = ['showHitboxes', 'showPlayerIds', 'showChestIds'];
 const BOOLEAN_SUGGESTIONS = ['true', 'false'];
 const CHAT_AUTOCOMPLETE_DEBUG = false;
@@ -182,12 +190,34 @@ let activeAutocompleteItems = [];
 let activeAutocompleteIndex = -1;
 let activeAutocompleteListEl = null;
 let commandAutocompletePrefix = '';
+const CHAT_HISTORY_LIMIT = 50;
+const chatHistory = [];
+let chatHistoryIndex = chatHistory.length;
 
 function resetAutocompleteSelection() {
     activeAutocompleteItems = [];
     activeAutocompleteIndex = -1;
     activeAutocompleteListEl = null;
     commandAutocompletePrefix = '';
+}
+
+function resetChatHistoryNavigation() {
+    chatHistoryIndex = chatHistory.length;
+}
+
+function pushChatHistory(entry) {
+    const trimmed = (entry || '').trim();
+    if (!trimmed) return;
+    const last = chatHistory[chatHistory.length - 1];
+    if (last === trimmed) {
+        resetChatHistoryNavigation();
+        return;
+    }
+    chatHistory.push(trimmed);
+    if (chatHistory.length > CHAT_HISTORY_LIMIT) {
+        chatHistory.shift();
+    }
+    resetChatHistoryNavigation();
 }
 
 function resetCommandAutocompleteSelection() {
@@ -310,6 +340,14 @@ function updateCommandUI() {
 function updateSuggestions(raw, activeCommand) {
     const suggestEl = uiRefs.chatSuggestList;
     if (!suggestEl) return;
+    if (!activeCommand) {
+        suggestEl.innerHTML = '';
+        suggestEl.style.display = 'none';
+        if (activeAutocompleteListEl === suggestEl) {
+            resetAutocompleteSelection();
+        }
+        return;
+    }
 
     const current = getCurrentToken(raw);
     const currentLower = current.toLowerCase();
@@ -354,11 +392,22 @@ function updateSuggestions(raw, activeCommand) {
         }
     } else if (activeCommand?.name === '/tpent') {
         if (tokenIndex === 1 || tokenIndex === 2) {
-            if (currentLower.startsWith('@m[')) {
-                suggestions = filterSuggestionPool(MOB_TYPE_SUGGESTIONS, currentLower);
-            } else {
-                suggestions = filterSuggestionPool(ENTITY_SUGGESTIONS_PM_S, currentLower);
+            if (currentLower.startsWith('@')) {
+                if (currentLower.startsWith('@m[')) {
+                    suggestions = filterSuggestionPool(MOB_TYPE_SUGGESTIONS, currentLower);
+                } else {
+                    suggestions = filterSuggestionPool(ENTITY_SUGGESTIONS_PM_S, currentLower);
+                }
             }
+        }
+    } else if (activeCommand?.name === '/spawn') {
+        if (tokenIndex === 1) {
+            suggestions = filterSuggestionPool(SPAWN_ENTITY_SUGGESTIONS, currentLower);
+        }
+    } else if (activeCommand?.name === '/break') {
+        if (tokenIndex === 1) {
+            const pool = [...STRUCTURE_SUGGESTIONS, '@o[chest]'];
+            suggestions = filterSuggestionPool(pool, currentLower);
         }
     } else if (['/tppos', '/kill', '/heal', '/damage', '/invis', '/uninvis'].includes(activeCommand?.name)) {
         if (tokenIndex === 1) {
@@ -676,6 +725,7 @@ function openChatInput() {
     uiRefs.chatInput.focus();
     updateCommandUI();
     hideMobileChatButton();
+    resetChatHistoryNavigation();
 }
 
 export function closeChatInput() {
@@ -689,6 +739,7 @@ export function closeChatInput() {
     uiRefs.chatInput.blur();
     uiState.isChatOpen = false;
     uiState.lastChatCloseTime = performance.now();
+    resetChatHistoryNavigation();
     updateCommandUI();
     showMobileChatButton();
 }
@@ -823,8 +874,32 @@ function handleKill(raw) {
     return true;
 }
 
+function handleSpawn(raw) {
+    const spawnMatch = raw.match(/^\/spawn\s+([a-z_\-]+)(?:\s+(-?\d+)\s+(-?\d+))?$/i);
+    if (!spawnMatch) return false;
+
+    if (!Vars.isAdmin) return true;
+
+    const entityKey = spawnMatch[1].toLowerCase();
+    const isSpawnable = SPAWN_ENTITY_SUGGESTIONS.some(s => s.toLowerCase() === entityKey);
+    if (!isSpawnable) {
+        showChatParamError();
+        return true;
+    }
+
+    const x = spawnMatch[2] !== undefined ? parseInt(spawnMatch[2], 10) : null;
+    const y = spawnMatch[3] !== undefined ? parseInt(spawnMatch[3], 10) : null;
+
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+        sendSpawnCommand(entityKey, x, y);
+    } else {
+        sendSpawnCommand(entityKey);
+    }
+    return true;
+}
+
 function handleTpPos(raw) {
-    const tpposMatch = raw.match(new RegExp(`^\\/tppos\\s+(${ENTITY_TOKEN_RE})\\s*\\[\\s*(\\-?\\d+)\\s*,\\s*(\\-?\\d+)\\s*\\]$`, 'i'));
+    const tpposMatch = raw.match(new RegExp(`^\\/tppos\\s+(${ENTITY_TOKEN_RE})\\s+(\\-?\\d+)\\s+(\\-?\\d+)$`, 'i'));
     if (!tpposMatch) return false;
 
     const parsed = parseEntityRange(tpposMatch[1]);
@@ -922,12 +997,22 @@ function handleTpEnt(raw) {
 }
 
 function handleBreak(raw) {
-    const breakMatch = raw.match(/^\/break\s+@o\[(\w+)\]\s+\[([\d\-]+|all)\](?:\s+(dropLoot))?$/i);
-    if (!breakMatch) return false;
+    const chestMatch = raw.match(/^\/break\s+@o\[(\w+)\]\s+\[([\d\-]+|all)\](?:\s+(dropLoot))?$/i);
+    const structMatch = raw.match(/^\/break\s+@s\[(tree|rock)\]$/i);
+    if (!chestMatch && !structMatch) return false;
 
-    const chestType = breakMatch[1].toLowerCase();
-    const rangeStr = breakMatch[2];
-    const dropLoot = !!breakMatch[3];
+    if (structMatch) {
+        if (!Vars.isAdmin) return true;
+        const key = structMatch[1].toLowerCase();
+        const structTypeMap = { rock: 2, tree: 3 };
+        sendBreakStructureCommand(structTypeMap[key] || 0);
+        return true;
+    }
+
+    // chest path
+    const chestType = chestMatch[1].toLowerCase();
+    const rangeStr = chestMatch[2];
+    const dropLoot = !!chestMatch[3];
     const typeMap = {
         chest: 10
     };
@@ -1196,18 +1281,36 @@ function handleAgro(raw) {
     return true;
 }
 
-function handleReset(rawLower) {
-    if (rawLower !== '/reset') return false;
+function handleReset(raw) {
+    const match = raw.match(/^\/reset(?:\s+(\d+))?$/i);
+    if (!match) return false;
 
-    if (Vars.isAdmin) {
-        const now = performance.now();
-        if (now < (uiState.resetConfirmUntil || 0)) {
-            uiState.resetConfirmUntil = 0;
-            sendResetCommand();
-        } else {
-            uiState.resetConfirmUntil = now + 5000;
-            showNotification("Type /reset again within 5s to confirm server restart.", 'red');
+    if (!Vars.isAdmin) return true;
+
+    const seedStr = match[1];
+    let seed = null;
+    if (seedStr !== undefined) {
+        seed = parseInt(seedStr, 10);
+        const valid = Number.isFinite(seed) && seed >= 0 && seed <= 0xFFFFFFFF;
+        if (!valid) {
+            showNotification('Invalid seed. Use a number between 0 and 4294967295.', 'red');
+            return true;
         }
+    }
+
+    const now = performance.now();
+    if (now < (uiState.resetConfirmUntil || 0)) {
+        const finalSeed = seed !== null ? seed : uiState.resetPendingSeed;
+        uiState.resetConfirmUntil = 0;
+        uiState.resetPendingSeed = null;
+        sendResetCommand(finalSeed);
+    } else {
+        uiState.resetConfirmUntil = now + 5000;
+        uiState.resetPendingSeed = seed !== null ? seed : uiState.resetPendingSeed;
+        const message = seed !== null
+            ? `Type /reset again within 5s to confirm restart with seed ${seed}.`
+            : 'Type /reset again within 5s to confirm server restart.';
+        showNotification(message, 'red');
     }
     return true;
 }
@@ -1228,6 +1331,7 @@ function executeChatInput(raw, rawLower, isCommand) {
     if (handleDebug(raw)) return;
     if (handleGive(raw)) return;
     if (handleKill(raw)) return;
+    if (handleSpawn(raw)) return;
     if (handleTpPos(raw)) return;
     if (handleTpEnt(raw)) return;
     if (handleBreak(raw)) return;
@@ -1245,7 +1349,7 @@ function executeChatInput(raw, rawLower, isCommand) {
         return;
     }
 
-    if (handleReset(rawLower)) return;
+    if (handleReset(raw)) return;
 
     if (raw.startsWith('/')) {
         showNotification(isCommand ? "Make sure to write the parameters properly." : "Invalid command.", 'red');
@@ -1281,6 +1385,34 @@ export function handleChatToggle(myPlayer, homeUsrnInput) {
         return;
     }
 
+    if (raw) {
+        pushChatHistory(raw);
+    }
+
     executeChatInput(raw, rawLower, isCommand);
     closeChatInput();
+}
+
+export function handleChatHistoryNavigate(goUp = true) {
+    const input = uiRefs.chatInput;
+    if (!input || !uiState.isChatOpen) return false;
+
+    const trimmed = input.value.trim();
+    const isBrowsingHistory = chatHistoryIndex !== chatHistory.length;
+    const canStartBrowsing = trimmed === '' && chatHistory.length > 0;
+
+    if (!isBrowsingHistory && !canStartBrowsing) return false;
+
+    let nextIndex = isBrowsingHistory ? chatHistoryIndex : chatHistory.length;
+    nextIndex += goUp ? -1 : 1;
+    nextIndex = Math.max(0, Math.min(chatHistory.length, nextIndex));
+    if (nextIndex === chatHistoryIndex) return false;
+
+    chatHistoryIndex = nextIndex;
+    const nextValue = chatHistoryIndex === chatHistory.length ? '' : chatHistory[chatHistoryIndex];
+    input.value = nextValue;
+    const end = input.value.length;
+    input.setSelectionRange(end, end);
+    updateCommandUI();
+    return true;
 }

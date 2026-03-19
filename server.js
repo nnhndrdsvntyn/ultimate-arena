@@ -8,12 +8,21 @@ import { dataMap } from './public/shared/datamap.js';
 import { TPS } from './public/shared/datamap.js';
 import { sendUpdates, saveHistory, sendPlayerCount } from './server/network.js';
 import { updateGame } from './server/loop.js';
-import { spawnBotPlayers, updateBotPlayers } from './server/bots.js';
+import { spawnBotPlayers, updateBotPlayers, BOT_POPULATION_TARGET } from './server/bots.js';
 import { startHunterDebugInterval } from './server/debug.js';
 
 const app = express();
 const PORT = 3000;
 const ipTracker = new Map();
+
+function getRealPlayerCount() {
+    let count = 0;
+    for (const id in ENTITIES.PLAYERS) {
+        const p = ENTITIES.PLAYERS[id];
+        if (p && !p.isBot) count++;
+    }
+    return count;
+}
 
 // --- Express & Static Hosting ---
 app.use(express.static('public', { maxAge: 1000 * 60 * 60, immutable: true }));
@@ -27,7 +36,7 @@ export const wsById = new Map();
 server.on('upgrade', (req, socket, head) => {
     const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
 
-    if (ENTITIES.playerIds.size >= 50) {
+    if (getRealPlayerCount() >= 50) {
         socket.write('HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nConnection: close\r\nRetry-After: 5\r\n\r\nServer is full.');
         socket.destroy();
         return;
@@ -55,7 +64,7 @@ wss.on('connection', (ws, req) => {
     // Connection Limiting
     const currentIps = ipTracker.get(ip) || 0;
     if (currentIps >= 3) return ws.kick('You cannot have more than 3 connections on one IP!');
-    if (ENTITIES.playerIds.size >= 50) return ws.kick('Server is full.');
+    if (getRealPlayerCount() >= 50) return ws.kick('Server is full.');
 
     ipTracker.set(ip, currentIps + 1);
     ws.ip = ip;
@@ -146,7 +155,7 @@ wss.on('connection', (ws, req) => {
 const lbWriter = new PacketWriter();
 const countWriter = new PacketWriter(16);
 
-spawnBotPlayers(15);
+spawnBotPlayers(BOT_POPULATION_TARGET);
 startHunterDebugInterval();
 
 setInterval(() => {

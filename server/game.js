@@ -55,6 +55,31 @@ import {
     resolveObjectType
 } from '../public/shared/datamap.js';
 import { generateSeededStructureLayout } from '../public/shared/structure-layout.js';
+import fs from 'fs';
+
+const PERSISTED_SEED_PATH = './profile-runtime/last-seed.txt';
+let persistedMainSeed = null;
+try {
+    if (fs.existsSync(PERSISTED_SEED_PATH)) {
+        const parsed = parseInt(fs.readFileSync(PERSISTED_SEED_PATH, 'utf8'), 10);
+        if (Number.isFinite(parsed) && parsed >= 0) {
+            persistedMainSeed = parsed >>> 0;
+        }
+    }
+} catch (e) {
+    console.error('Failed to load persisted seed:', e);
+}
+
+function consumePersistedMainSeed() {
+    const seed = persistedMainSeed;
+    persistedMainSeed = null;
+    try {
+        fs.unlinkSync(PERSISTED_SEED_PATH);
+    } catch (_e) {
+        // ignore
+    }
+    return seed;
+}
 
 const initWriter = new PacketWriter(1024 * 512);
 export const MAP_SIZE = [15000, 15000];
@@ -192,7 +217,9 @@ export const ENTITIES = {
 };
 // create some structures
 function spawnSeededStructuresForWorld(world = 'main') {
-    const seed = ((Math.random() * 0x100000000) >>> 0);
+    const seed = (world === 'main' && persistedMainSeed !== null)
+        ? consumePersistedMainSeed()
+        : ((Math.random() * 0x100000000) >>> 0);
     WORLD_STRUCTURE_SEEDS.set(world, seed);
 
     const layout = generateSeededStructureLayout(seed, MAP_SIZE, {
@@ -211,7 +238,10 @@ function spawnSeededStructuresForWorld(world = 'main') {
             continue;
         }
         const spawned = ENTITIES.STRUCTURES[structure.id];
-        if (spawned) spawned.world = world;
+        if (spawned) {
+            spawned.world = world;
+            spawned.isNatural = true;
+        }
     }
 
     console.log(`[WORLD ${world}] structure seed=${seed} structures=${layout.length}`);

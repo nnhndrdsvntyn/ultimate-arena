@@ -7,10 +7,14 @@ import {
     getRandomMobPosition
 } from './game.js';
 import { dataMap, isChestObjectType, isCoinObjectType } from '../public/shared/datamap.js';
-import { isBotNearAnyRealPlayer, processOffscreenBot, processOffscreenHunterBot } from './bots.js';
+import { isBotNearAnyRealPlayer, processOffscreenBot, processOffscreenHunterBot, updateBotPlayers } from './bots.js';
 import { recordCollisionFrame } from './debug.js';
 let npcLogicTick = 0;
 const SPECTATOR_PROXIMITY_RANGE_DIVISOR = 1.5;
+const BOT_STILL_DEBUG = true;
+const BOT_STILL_LOG_MS = 5000;
+const BOT_STILL_POS_EPS_SQ = 0.01;
+const BOT_STILL_ANGLE_EPS = 0.001;
 
 /**
  * Main game logic update loop.
@@ -19,6 +23,10 @@ export function updateGame(now = performance.now()) {
     recordCollisionFrame();
     npcLogicTick = (npcLogicTick + 1) % 3;
     const runNpcLogicThisFrame = npcLogicTick === 0;
+
+    if (runNpcLogicThisFrame) {
+        updateBotPlayers(now);
+    }
 
     const activeWorlds = new Set();
     const players = [];
@@ -39,6 +47,10 @@ export function updateGame(now = performance.now()) {
             y: p.y,
             rangeMult: (p.viewRangeMult || 1) * spectatorRangeMult
         });
+    }
+
+    if (BOT_STILL_DEBUG) {
+        debugLogStillBots(players, now);
     }
     const mobsByWorld = new Map();
     for (const id in ENTITIES.MOBS) {
@@ -100,8 +112,11 @@ export function updateGame(now = performance.now()) {
 
     // 1. Process active entities
     processPlayers(players, now, objectBucketsByWorld, playersByWorld, mobsByWorld);
+
     processProximityProcessables(mobsByWorld, proximity1500, (mob) => mob.process(runNpcLogicThisFrame));
+
     processProcessables(ENTITIES.PROJECTILES);
+
     processProximityProcessables(objectsByWorld, proximity1000, undefined, true);
 
     // 2. Resolve structure collisions
@@ -121,6 +136,61 @@ export function updateGame(now = performance.now()) {
     handleRespawns(brokenObjects, (obj) => {
         spawnObject(obj.type, undefined, undefined, 1, null, obj.world || 'main');
     }, 3000);
+}
+
+function debugLogStillBots(players, now) {
+    for (let i = 0; i < players.length; i++) {
+        const p = players[i];
+        if (!p || !p.isBot) continue;
+
+        const last = p._botStillDebug || null;
+        if (!last) {
+            p._botStillDebug = {
+                lastX: p.x,
+                lastY: p.y,
+                lastAngle: p.angle,
+                posStillSince: now,
+                angleStillSince: now,
+                lastLogAt: 0
+            };
+            continue;
+        }
+
+        const dx = p.x - last.lastX;
+        const dy = p.y - last.lastY;
+        const posUnchanged = (dx * dx + dy * dy) <= BOT_STILL_POS_EPS_SQ;
+        const angleUnchanged = Math.abs((p.angle || 0) - (last.lastAngle || 0)) <= BOT_STILL_ANGLE_EPS;
+
+        if (!posUnchanged) last.posStillSince = now;
+        if (!angleUnchanged) last.angleStillSince = now;
+
+        const posStillMs = now - (last.posStillSince || now);
+        const angleStillMs = now - (last.angleStillSince || now);
+        const shouldLog = (posStillMs >= BOT_STILL_LOG_MS) || (angleStillMs >= BOT_STILL_LOG_MS);
+        const canLog = now - (last.lastLogAt || 0) >= BOT_STILL_LOG_MS;
+
+        const speed = Math.round(p.speed || 0);
+        // if (shouldLog && canLog && speed < 17) {
+        //     last.lastLogAt = now;
+        //     const world = p.world || 'main';
+        //     const keys = p.keys || { w: 0, a: 0, s: 0, d: 0 };
+        //     console.warn(
+        //         `[BOT STILL] id=${p.id} name=${p.username || 'Bot'} world=${world} ` +
+        //         `pos=(${Math.round(p.x)},${Math.round(p.y)}) angle=${(p.angle || 0).toFixed(3)} ` +
+        //         `posStillMs=${Math.floor(posStillMs)} angleStillMs=${Math.floor(angleStillMs)} ` +
+        //         `alive=${p.isAlive} keys=${keys.w}${keys.a}${keys.s}${keys.d} speed=${speed} ` +
+        //         `nextDecisionInMs=${Math.max(0, Math.floor((p._botNextDecisionAt || 0) - now))} ` +
+        //         `nextMoveInMs=${Math.max(0, Math.floor((p._botNextMoveAt || 0) - now))} ` +
+        //         `hunterTarget=${p._botHunterTargetId || 0} assistTarget=${p._botAssistTargetId || 0} ` +
+        //         `blinded=${typeof p.isBlinded === 'function' ? p.isBlinded(now) : false} ` +
+        //         `swing=${p.swingState || 0} attacking=${p.attacking ? 1 : 0}`
+        //     );
+        // }
+
+        last.lastX = p.x;
+        last.lastY = p.y;
+        last.lastAngle = p.angle;
+    }
 }
 
 function processProcessables(entities) {

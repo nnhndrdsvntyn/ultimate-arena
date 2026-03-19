@@ -3,7 +3,8 @@ import {
     brokenObjects
 } from '../../game.js';
 import {
-    dataMap
+    dataMap,
+    isSwordRank
 } from '../../../public/shared/datamap.js';
 import {
     colliding
@@ -32,6 +33,16 @@ export class GameObject extends Entity {
     }
 
     process() {
+        // Auto-despawn generic drops after a TTL to avoid clutter.
+        const config = dataMap.OBJECTS[this.type] || {};
+        const now = performance.now();
+        const dropTtlMs = config.dropTtlMs ||
+            (isSwordRank(this.type & 0x7F) ? 120000 : 0); // 2 minutes for swords by default
+        if (dropTtlMs > 0 && now - this.spawnTime >= dropTtlMs) {
+            this.die(null);
+            return;
+        }
+
         this.updateTeleport();
         this.resolveCollisions();
     }

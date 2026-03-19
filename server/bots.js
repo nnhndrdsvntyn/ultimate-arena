@@ -1,8 +1,9 @@
+import fs from 'fs';
 import { ENTITIES, MAP_SIZE } from './game.js';
 import { getId, cmdRun } from './helpers.js';
 import { dataMap, TPS, ACCESSORY_KEYS, accessoryItemTypeFromId, isAccessoryItemType, isChestObjectType, isCoinObjectType, isSwordRank } from '../public/shared/datamap.js';
 
-const DEFAULT_BOT_COUNT = 5;
+export const BOT_POPULATION_TARGET = 20;
 const BOT_RESPAWN_DELAY_MS = 3000;
 const BOT_EDGE_PUSH_BUFFER = 2;
 const BOT_CENTER_X = MAP_SIZE[0] / 2;
@@ -19,6 +20,8 @@ const BOT_MOB_ATTACK_RANGE = 180;
 const BOT_CHEST_ATTACK_RANGE = 190;
 const BOT_POISON_AOE_RANGE = 300;
 const BOT_ENERGY_BURST_RANGE = 500;
+const BOT_SMOKE_AOE_RANGE = 320;
+const BOT_LIGHTNING_RANGE = 500;
 const MINOTAUR_MOB_TYPE = 6;
 const POLAR_BEAR_MOB_TYPE = 5;
 const BOT_POLAR_BEAR_AVOID_RANGE = 380;
@@ -35,6 +38,9 @@ const BOT_ROLE_NOOB = 'noob';
 const BOT_ROLE_POOL = [BOT_ROLE_PRO, BOT_ROLE_CASUAL, BOT_ROLE_NOOB];
 const BOT_RETALIATE_WINDOW_MS = 12000;
 const BOT_KILL_TARGET_COOLDOWN_MS = 3 * 60 * 1000;
+const BOT_IDLE_DESPAWN_SCORE = 1_000_000;
+const BOT_IDLE_DESPAWN_RANGE = 2000;
+const BOT_IDLE_DESPAWN_MS = 30 * 1000;
 const TEAMER_TARGET_COUNT = 4;
 const TEAM_GROUP_COUNT = 2;
 const TEAM_GROUP_SIZE = 2;
@@ -45,46 +51,21 @@ const PRO_HUNTER_MIN_SWORD_RANK = 3;
 const PRO_HUNTER_TARGET_MIN_SCORE = 3000;
 const PRO_TARGET_SWORD_MAX_GAP = 2;
 const HUNTER_TEAMUP_SCORE_MULT = 1.5;
-const BOT_USERNAMES = [
-    '𝓩ombie🥀',
-    'xXVoidSlayerXx',
-    'Ƭhunder⚡Boi',
-    '꧁FrostByte꧂',
-    'sammy',
-    'salmon',
-    'el',
-    'b0i',
-    'Aurora',
-    '._.',
-    'buddy',
-    'rack',
-    'ℓ_Hero哦',
-    'Σternal',
-    '𝕹ight🩸Crawler',
-    'xXPizzaGoblinXx',
-    'VΛMPIRE💀',
-    '๖ۣۜPixelGhost',
-    'Ŧornado🌪',
-    'Cr@bNebula69',
-    '⚡M0nster',
-    'bruh',
-    '=)',
-    'real',
-    'ez',
-    'nnhn71',
-    'Br0ther',
-    'gaming',
-    'indefinite',
-    'T-T',
-    '...',
-    '!?',
-    'MrBeast',
-    'Adrian',
-    'Dieg0 :)',
-    'ru serious',
-    'эта игра легкая'
-];
-let botTargetPopulation = DEFAULT_BOT_COUNT;
+const BOT_NAMES_FILE = new URL('./bot-names.txt', import.meta.url);
+
+function loadBotNames() {
+    try {
+        const content = fs.readFileSync(BOT_NAMES_FILE, 'utf8');
+        const names = content.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+        if (names.length) return names;
+    } catch (err) {
+        // fall through to fallback
+    }
+    return [];
+}
+
+const BOT_USERNAMES = loadBotNames();
+let botTargetPopulation = BOT_POPULATION_TARGET;
 const teamGroupByBotId = new Map();
 let lastTeamShuffleAt = 0;
 let lastHunterAssignmentAt = 0;
@@ -137,7 +118,12 @@ function randomRangeInt(min, max) {
     return min + Math.floor(Math.random() * Math.max(1, (max - min + 1)));
 }
 
+function degToRad(deg) {
+    return (deg * Math.PI) / 180;
+}
+
 function getRandomBotUsername() {
+    if (BOT_USERNAMES.length === 0) return 'Bot';
     return BOT_USERNAMES[Math.floor(Math.random() * BOT_USERNAMES.length)] || 'Bot';
 }
 
@@ -223,12 +209,10 @@ const ACCESSORY_ID_BY_KEY = ACCESSORY_KEYS.reduce((acc, key, idx) => {
     if (key) acc[key] = idx;
     return acc;
 }, {});
-const PRO_ACCESSORY_IDS = new Set(['bush-cloak', 'viking-hat', 'pirate-hat']
+const BOT_ALLOWED_ACCESSORY_KEYS = ['bush-cloak', 'pirate-hat', 'viking-hat', 'alien-antennas', 'dark-cloak'];
+const BOT_ALLOWED_ACCESSORY_IDS = BOT_ALLOWED_ACCESSORY_KEYS
     .map(key => ACCESSORY_ID_BY_KEY[key])
-    .filter(id => Number.isInteger(id) && id > 0));
-const CASUAL_BIASED_ACCESSORY_IDS = new Set(['sunglasses', 'bush-cloak', 'pirate-hat', 'viking-hat', 'alien-antennas', 'dark-cloak']
-    .map(key => ACCESSORY_ID_BY_KEY[key])
-    .filter(id => Number.isInteger(id) && id > 0));
+    .filter(id => Number.isInteger(id) && id > 0);
 const XP_SHOP_ITEMS = Array.isArray(dataMap.XP_SHOP_ITEMS)
     ? dataMap.XP_SHOP_ITEMS
         .map(item => ({
@@ -246,6 +230,16 @@ function getBotRole(bot) {
     const role = BOT_ROLE_POOL[Math.floor(Math.random() * BOT_ROLE_POOL.length)] || BOT_ROLE_CASUAL;
     bot._botRole = role;
     return role;
+}
+
+function assignBotPreferredAccessory(bot) {
+    if (!BOT_ALLOWED_ACCESSORY_IDS.length) {
+        bot._botPreferredAccessoryId = 0;
+        return 0;
+    }
+    const pick = BOT_ALLOWED_ACCESSORY_IDS[Math.floor(Math.random() * BOT_ALLOWED_ACCESSORY_IDS.length)];
+    bot._botPreferredAccessoryId = pick || 0;
+    return bot._botPreferredAccessoryId;
 }
 
 function clearExpiredBotKillImmunities(bot, now = performance.now()) {
@@ -270,6 +264,7 @@ function isBotTargetTemporarilyIgnored(bot, target, now = performance.now()) {
     const role = getBotRole(bot);
     if (!bot?.isBot || (role !== BOT_ROLE_PRO && role !== BOT_ROLE_CASUAL)) return false;
     if (!target || target.isBot || !target.isAlive) return false;
+    if (typeof target.isPvpProtected === 'function' && target.isPvpProtected()) return true;
     if (hasRecentAggroFromTarget(bot, target, now)) {
         bot._botKillTargetCooldowns?.delete(target.id);
         return false;
@@ -287,6 +282,37 @@ function getBotSwordCap(bot) {
     return 8;
 }
 
+function hasBotMaxSword(bot) {
+    return getBestSwordRank(bot) >= getBotSwordCap(bot);
+}
+
+function getBotScoreCap(bot) {
+    const role = getBotRole(bot);
+    if (role === BOT_ROLE_NOOB) return 10000;
+    if (role === BOT_ROLE_CASUAL) return 25000;
+    return 50000;
+}
+
+function hasReachedScoreCap(bot) {
+    const cap = getBotScoreCap(bot);
+    const score = Math.max(0, bot?.score || 0);
+    return score >= cap;
+}
+
+function shouldEngagePlayer(bot, target, now = performance.now()) {
+    if (!bot || !target || !target.isAlive) return false;
+    if (typeof bot.isPvpProtected === 'function' && bot.isPvpProtected()) return false;
+    if (typeof target.isPvpProtected === 'function' && target.isPvpProtected()) return false;
+    if (shouldIgnoreCombatBetween(bot, target)) return false;
+    if (hasRecentAggroFromTarget(bot, target, now)) return true;
+    const role = getBotRole(bot);
+    if (role !== BOT_ROLE_PRO && role !== BOT_ROLE_CASUAL) return true;
+    const botScore = Math.max(0, bot.score || 0);
+    if (botScore <= 0) return true;
+    const targetScore = Math.max(0, target.score || 0);
+    return targetScore >= botScore * 0.5;
+}
+
 function hasEquippedAccessory(bot) {
     return (bot.accessoryId || 0) > 0 || (bot.equippedAccessoryItemType || 0) > 0;
 }
@@ -301,22 +327,10 @@ function isInventoryFillingUp(bot) {
 }
 
 function chooseAccessoryForRole(bot, affordableAccessoryIds) {
-    const role = getBotRole(bot);
     if (!affordableAccessoryIds.length) return null;
-
-    if (role === BOT_ROLE_PRO) {
-        const allowed = affordableAccessoryIds.filter(id => PRO_ACCESSORY_IDS.has(id));
-        if (!allowed.length) return null;
-        return allowed[Math.floor(Math.random() * allowed.length)];
-    }
-
-    if (role === BOT_ROLE_CASUAL) {
-        const biased = affordableAccessoryIds.filter(id => CASUAL_BIASED_ACCESSORY_IDS.has(id));
-        const pool = (biased.length && Math.random() < 0.75) ? biased : affordableAccessoryIds;
-        return pool[Math.floor(Math.random() * pool.length)];
-    }
-
-    return affordableAccessoryIds[Math.floor(Math.random() * affordableAccessoryIds.length)];
+    const preferred = bot?._botPreferredAccessoryId || 0;
+    if (preferred > 0 && affordableAccessoryIds.includes(preferred)) return preferred;
+    return null;
 }
 
 function getBotTeamGroup(bot) {
@@ -324,10 +338,31 @@ function getBotTeamGroup(bot) {
 }
 
 function shouldIgnoreCombatBetween(bot, other) {
-    if (!bot || !other || !bot.isBot || !other.isBot) return false;
+    if (!bot || !other) return false;
+    // Never fight protected entities.
+    if (typeof bot.isPvpProtected === 'function' && bot.isPvpProtected()) return true;
+    if (typeof other.isPvpProtected === 'function' && other.isPvpProtected()) return true;
+    if (!bot.isBot || !other.isBot) return false;
     const myGroup = getBotTeamGroup(bot);
     const otherGroup = getBotTeamGroup(other);
     return myGroup > 0 && myGroup === otherGroup;
+}
+
+function isBotPossiblySpectated(bot) {
+    if (!bot) return false;
+    const worldId = bot.world || 'main';
+    let hasDeadSpectator = false;
+    let topPlayer = null;
+    for (const id in ENTITIES.PLAYERS) {
+        const p = ENTITIES.PLAYERS[id];
+        if (!p || (p.world || 'main') !== worldId) continue;
+        if (!p.isBot && !p.isAlive) hasDeadSpectator = true;
+        if (p.isAlive) {
+            if (!topPlayer || (p.score || 0) > (topPlayer.score || 0)) topPlayer = p;
+        }
+    }
+    if (!hasDeadSpectator) return false;
+    return topPlayer && topPlayer.id === bot.id;
 }
 
 function getTargetSwordRankForHunt(target) {
@@ -338,6 +373,8 @@ function getTargetSwordRankForHunt(target) {
 
 function canHunterEngageTarget(bot, target) {
     if (!bot || !target) return false;
+    if (typeof bot.isPvpProtected === 'function' && bot.isPvpProtected()) return false;
+    if (typeof target.isPvpProtected === 'function' && target.isPvpProtected()) return false;
     if (isBotTargetTemporarilyIgnored(bot, target)) return false;
     const hunterRank = getBestSwordRank(bot);
     if (hunterRank < PRO_HUNTER_MIN_SWORD_RANK) return false;
@@ -352,6 +389,8 @@ function getRetaliationTarget(bot) {
     const attacker = bot.lastDamager;
     if (!attacker || attacker.id === bot.id || !attacker.isAlive) return null;
     if ((attacker.world || 'main') !== (bot.world || 'main')) return null;
+    if (typeof attacker.isPvpProtected === 'function' && attacker.isPvpProtected()) return null;
+    if (typeof bot.isPvpProtected === 'function' && bot.isPvpProtected()) return null;
 
     const dx = attacker.x - bot.x;
     const dy = attacker.y - bot.y;
@@ -473,7 +512,7 @@ function refreshHunterAssignments(realPlayers, now = performance.now(), context 
     const realIds = new Set();
     for (let i = 0; i < realPlayers.length; i++) {
         const p = realPlayers[i];
-        if (!p || !p.isAlive || p.isBot || p.hasShield || (p.world || 'main') !== 'main') continue;
+        if (!p || !p.isAlive || p.isBot || p.hasShield || (p.world || 'main') !== 'main' || (typeof p.isPvpProtected === 'function' && p.isPvpProtected())) continue;
         aliveRealPlayers.push(p);
         realIds.add(p.id);
     }
@@ -633,6 +672,33 @@ function refreshHunterAssignments(realPlayers, now = performance.now(), context 
     }
 }
 
+function ensureTopPlayerHasHunter(allBots = []) {
+    if (!allBots.length) return;
+    let topPlayer = null;
+    for (const id in ENTITIES.PLAYERS) {
+        const p = ENTITIES.PLAYERS[id];
+        if (!p || !p.isAlive) continue;
+        if ((p.world || 'main') !== 'main') continue;
+        if (!topPlayer || (p.score || 0) > (topPlayer.score || 0)) topPlayer = p;
+    }
+    if (!topPlayer) return;
+    const topId = topPlayer.id;
+    const alreadyTargeted = allBots.some(b => b && b.isAlive && b._botHunterTargetId === topId);
+    if (alreadyTargeted) return;
+
+    let candidate = null;
+    for (const bot of allBots) {
+        if (!bot || !bot.isAlive || (bot.world || 'main') !== (topPlayer.world || 'main')) continue;
+        const role = getBotRole(bot);
+        if (role === BOT_ROLE_PRO) {
+            candidate = bot;
+            break;
+        }
+        if (!candidate && role === BOT_ROLE_CASUAL) candidate = bot;
+    }
+    if (candidate) candidate._botHunterTargetId = topId;
+}
+
 function collectBotTickState() {
     const realPlayers = [];
     const allBots = [];
@@ -693,7 +759,8 @@ function buildWorldMobBuckets() {
 }
 
 function getHunterTarget(bot) {
-    if (!bot || !bot.isBot || getBotRole(bot) !== BOT_ROLE_PRO) return null;
+    const role = getBotRole(bot);
+    if (!bot || !bot.isBot || (role !== BOT_ROLE_PRO && role !== BOT_ROLE_CASUAL)) return null;
     const targetId = bot._botHunterTargetId || 0;
     if (!targetId) return null;
     const target = ENTITIES.PLAYERS[targetId];
@@ -702,6 +769,7 @@ function getHunterTarget(bot) {
         target.isAlive &&
         !target.isBot &&
         !target.hasShield &&
+        !(typeof target.isPvpProtected === 'function' && target.isPvpProtected()) &&
         (target.world || 'main') === (bot.world || 'main') &&
         !isBotTargetTemporarilyIgnored(bot, target);
     if (!validTarget) {
@@ -813,21 +881,13 @@ function tryBotShopUpgrade(bot, now = performance.now()) {
     if (BOT_DEBUG_SHOP) {
         console.log(`[BOT ${bot.id}] shop-tick coins=${coins} selectedSlot=${bot.selectedSlot} selectedRank=${(bot.inventory[bot.selectedSlot] || 0) & 0x7F} best=${getBestSwordRank(bot)}`);
     }
-    const boughtSword = tryBotBuyNextSwordUpgrade(bot, getBotSwordCap(bot));
-    if (boughtSword) {
-        equipBestSword(bot);
-        bot.sendInventoryUpdate();
-        bot.sendStatsUpdate();
-        return;
-    }
-
     const canConsiderAccessory =
         !bot._botBoughtAccessoryThisLife &&
-        BUYABLE_ACCESSORY_IDS.length > 0 &&
+        BOT_ALLOWED_ACCESSORY_IDS.length > 0 &&
         getBestSwordRank(bot) >= 2;
     let affordableAccessoryIds = [];
     if (canConsiderAccessory) {
-        affordableAccessoryIds = BUYABLE_ACCESSORY_IDS.filter(id => {
+        affordableAccessoryIds = BOT_ALLOWED_ACCESSORY_IDS.filter(id => {
             const key = ACCESSORY_KEYS[id];
             const price = dataMap.ACCESSORY_PRICES?.[key] || dataMap.ACCESSORY_PRICE || 30;
             return coins >= price;
@@ -864,7 +924,20 @@ function tryBotShopUpgrade(bot, now = performance.now()) {
 
     if (boughtSomething) {
         equipBestSword(bot);
-    } else if (BOT_DEBUG_SHOP) {
+        bot.sendInventoryUpdate();
+        bot.sendStatsUpdate();
+        return;
+    }
+
+    const boughtSword = tryBotBuyNextSwordUpgrade(bot, getBotSwordCap(bot));
+    if (boughtSword) {
+        equipBestSword(bot);
+        bot.sendInventoryUpdate();
+        bot.sendStatsUpdate();
+        return;
+    }
+
+    if (BOT_DEBUG_SHOP) {
         console.log(`[BOT ${bot.id}] shop-no-purchase coins=${coins} best=${getBestSwordRank(bot)} canBuyAccessory=${canBuyAccessory}`);
     }
 
@@ -988,12 +1061,17 @@ function canBotStoreMoreCoins(bot) {
 
 function maybeEquipAccessoryFromInventory(bot) {
     if ((bot.accessoryId || 0) > 0 || (bot.equippedAccessoryItemType || 0) > 0) return false;
-    for (let i = 0; i < bot.inventory.length; i++) {
-        if (bot.inventoryCounts[i] <= 0) continue;
-        const type = bot.inventory[i] & 0x7F;
-        if (!isAccessoryItemType(type)) continue;
-        bot.equipAccessoryFromItemType(type, i);
-        return true;
+    const preferredId = bot?._botPreferredAccessoryId || 0;
+    const preferredItemType = preferredId > 0 ? accessoryItemTypeFromId(preferredId) : 0;
+    if (preferredItemType > 0) {
+        for (let i = 0; i < bot.inventory.length; i++) {
+            if (bot.inventoryCounts[i] <= 0) continue;
+            const type = bot.inventory[i] & 0x7F;
+            if (type === preferredItemType) {
+                bot.equipAccessoryFromItemType(type, i);
+                return true;
+            }
+        }
     }
     return false;
 }
@@ -1008,6 +1086,8 @@ function maintainBotInventory(bot, now = performance.now()) {
     const full = isInventoryFull(bot);
     const bestSword = getBestSwordRank(bot);
     const hasAccessoryEquipped = hasEquippedAccessory(bot);
+    const preferredId = bot?._botPreferredAccessoryId || 0;
+    const preferredItemType = preferredId > 0 ? accessoryItemTypeFromId(preferredId) : 0;
 
     if (full && (role === BOT_ROLE_PRO || role === BOT_ROLE_CASUAL)) {
         tryBotConvertCoinsToXp(bot);
@@ -1022,8 +1102,8 @@ function maintainBotInventory(bot, now = performance.now()) {
         if (type <= 0) continue;
 
         if (isAccessoryItemType(type)) {
-            // Extra accessories are useless once one is equipped.
-            if (hasAccessoryEquipped) {
+            const isPreferred = preferredItemType > 0 && type === preferredItemType;
+            if (!isPreferred || hasAccessoryEquipped) {
                 if (full || role !== BOT_ROLE_PRO) {
                     dropSlots.push(i);
                 }
@@ -1035,23 +1115,12 @@ function maintainBotInventory(bot, now = performance.now()) {
         const isWorseSword = type < bestSword;
         if (!isWorseSword) continue;
 
-        if (full) {
-            dropSlots.push(i);
-            continue;
-        }
-
+        // Always clear worse swords immediately, regardless of inventory space.
         if (role === BOT_ROLE_PRO) {
             sellSlots.push(i);
-            continue;
+        } else {
+            dropSlots.push(i);
         }
-
-        if (role === BOT_ROLE_CASUAL) {
-            if (type <= 3) dropSlots.push(i);
-            continue;
-        }
-
-        // Noob: drop useless swords.
-        dropSlots.push(i);
     }
 
     // Noob only: drop coin stacks once the inventory is full to keep making room.
@@ -1077,6 +1146,34 @@ function maintainBotInventory(bot, now = performance.now()) {
                 bot.dropItemFromSlot(slot);
             }
         }
+    }
+}
+
+function purgeUselessSwords(bot) {
+    if (!bot || !bot.isBot || !bot.inventory) return;
+    const role = getBotRole(bot);
+    const bestSword = getBestSwordRank(bot);
+    const dropSlots = [];
+    const sellSlots = [];
+    for (let i = 0; i < bot.inventory.length; i++) {
+        if (bot.inventoryCounts[i] <= 0) continue;
+        const type = bot.inventory[i] & 0x7F;
+        if (!isSwordRank(type)) continue;
+        if (type >= bestSword) continue;
+        if (role === BOT_ROLE_PRO) sellSlots.push(i);
+        else dropSlots.push(i);
+    }
+    if (sellSlots.length && typeof bot.sellItems === 'function') {
+        bot.sellItems(sellSlots);
+    }
+    if (dropSlots.length) {
+        dropSlots.sort((a, b) => b - a);
+        for (const slot of dropSlots) {
+            if (bot.inventoryCounts[slot] > 0 && typeof bot.dropItemFromSlot === 'function') {
+                bot.dropItemFromSlot(slot);
+            }
+        }
+        bot.sendInventoryUpdate?.();
     }
 }
 
@@ -1111,6 +1208,8 @@ function findNearestDesiredLootFromObjects(bot, maxRange, worldObjects = null) {
     const maxRangeSq = maxRange * maxRange;
     const bestSword = getBestSwordRank(bot);
     const hasAccessoryEquipped = (bot.accessoryId || 0) > 0 || (bot.equippedAccessoryItemType || 0) > 0;
+    const preferredId = bot?._botPreferredAccessoryId || 0;
+    const preferredItemType = preferredId > 0 ? accessoryItemTypeFromId(preferredId) : 0;
     const world = bot.world || 'main';
     const objects = Array.isArray(worldObjects) ? worldObjects : Object.values(ENTITIES.OBJECTS);
 
@@ -1128,7 +1227,11 @@ function findNearestDesiredLootFromObjects(bot, maxRange, worldObjects = null) {
         if (isSwordRank(rawType) && rawType > bestSword) {
             kind = 0;
         } else if (isAccessoryItemType(rawType) && !hasAccessoryEquipped) {
-            kind = 1;
+            if (preferredItemType > 0 && rawType === preferredItemType) {
+                kind = 1;
+            } else {
+                continue;
+            }
         } else {
             continue;
         }
@@ -1173,6 +1276,7 @@ function findNearestHumanPlayer(bot, maxRange) {
 function findNearestCombatPlayer(bot, maxRange, options = {}) {
     const realOnly = !!options.realOnly;
     const targetFilter = typeof options.targetFilter === 'function' ? options.targetFilter : null;
+    const now = Number.isFinite(options.now) ? options.now : performance.now();
     const maxRangeSq = maxRange * maxRange;
     let nearest = null;
     let nearestDistSq = maxRangeSq + 1;
@@ -1184,7 +1288,8 @@ function findNearestCombatPlayer(bot, maxRange, options = {}) {
         if ((p.world || 'main') !== (bot.world || 'main')) continue;
         if (shouldIgnoreCombatBetween(bot, p)) continue;
         if (isBotTargetTemporarilyIgnored(bot, p)) continue;
-        if (targetFilter && !targetFilter(p)) continue;
+        if (targetFilter && !targetFilter(p, now)) continue;
+        if (!shouldEngagePlayer(bot, p, now)) continue;
 
         const dx = p.x - bot.x;
         const dy = p.y - bot.y;
@@ -1195,6 +1300,27 @@ function findNearestCombatPlayer(bot, maxRange, options = {}) {
         }
     }
 
+    return nearest ? { player: nearest, distSq: nearestDistSq } : null;
+}
+
+function findNearestEnemyBot(bot, maxRange) {
+    const maxRangeSq = maxRange * maxRange;
+    let nearest = null;
+    let nearestDistSq = maxRangeSq + 1;
+    const worldId = bot.world || 'main';
+    for (const id in ENTITIES.PLAYERS) {
+        const p = ENTITIES.PLAYERS[id];
+        if (!p || !p.isAlive || !p.isBot || p.id === bot.id) continue;
+        if ((p.world || 'main') !== worldId) continue;
+        if (shouldIgnoreCombatBetween(bot, p)) continue;
+        const dx = p.x - bot.x;
+        const dy = p.y - bot.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq <= maxRangeSq && distSq < nearestDistSq) {
+            nearest = p;
+            nearestDistSq = distSq;
+        }
+    }
     return nearest ? { player: nearest, distSq: nearestDistSq } : null;
 }
 
@@ -1642,7 +1768,11 @@ function chasePlayer(bot, target, distSq, now = performance.now()) {
     }
 
     if (isOutranged && inNormalAttackRange) {
-        bot.attacking = 0;
+        // If the bot is out-ranged, still take swings unless the target is actively swinging and the bot is a noob.
+        const targetSwinging = (target.swingState || 0) > 0;
+        const role = getBotRole(bot);
+        const shouldHold = targetSwinging && role === BOT_ROLE_NOOB;
+        bot.attacking = shouldHold ? 0 : 1;
         return;
     }
 
@@ -1657,12 +1787,8 @@ function tryThrowAtTarget(bot, distSq, now, minRange, maxRange) {
 
     const role = getBotRole(bot);
     if (role === BOT_ROLE_NOOB) {
-        if (Math.random() < 0.35) {
-            bot.throwSword();
-            bot._botNextThrowAt = now + 1500 + Math.floor(Math.random() * 2400);
-        } else {
-            bot._botNextThrowAt = now + 500 + Math.floor(Math.random() * 900);
-        }
+        // Noobs never throw; skip entirely.
+        bot._botNextThrowAt = now + 800 + Math.floor(Math.random() * 1200);
         return;
     }
 
@@ -1683,6 +1809,7 @@ function tryThrowAtTarget(bot, distSq, now, minRange, maxRange) {
 
 function tryUseBotAbility(bot, target, distSq, now = performance.now(), meleeRange = BOT_ATTACK_RANGE) {
     if (!bot?.isAlive || !target || !Number.isFinite(distSq)) return false;
+    if (getBotRole(bot) === BOT_ROLE_NOOB) return false; // No active abilities for noobs.
     const ability = (bot.activeAbility || '').toLowerCase();
     if (!ability) return false;
 
@@ -1690,12 +1817,16 @@ function tryUseBotAbility(bot, target, distSq, now = performance.now(), meleeRan
     if (cooldownMs > 0 && now - (bot.lastAbilityUseTime || 0) < cooldownMs) return false;
 
     let inRange = false;
-    if (ability === 'stamina_boost' || ability === 'speed_boost') {
+    if (ability === 'stamina_boost' || ability === 'speed_boost' || ability === 'growth_spurt' || ability === 'invisibility') {
         inRange = distSq <= (meleeRange * meleeRange);
     } else if (ability === 'poison_blast') {
         inRange = distSq <= (BOT_POISON_AOE_RANGE * BOT_POISON_AOE_RANGE);
+    } else if (ability === 'smoke_blast') {
+        inRange = distSq <= (BOT_SMOKE_AOE_RANGE * BOT_SMOKE_AOE_RANGE);
     } else if (ability === 'energy_burst') {
         inRange = distSq <= (BOT_ENERGY_BURST_RANGE * BOT_ENERGY_BURST_RANGE);
+    } else if (ability === 'lightning_shot') {
+        inRange = distSq <= (BOT_LIGHTNING_RANGE * BOT_LIGHTNING_RANGE);
     } else {
         return false;
     }
@@ -1703,7 +1834,29 @@ function tryUseBotAbility(bot, target, distSq, now = performance.now(), meleeRan
     if (!inRange) return false;
 
     bot.lastAbilityUseTime = now;
-    cmdRun.activateAbility(bot.id, ability, target.x, target.y);
+    let aimX = target.x;
+    let aimY = target.y;
+    if (ability === 'lightning_shot') {
+        const dx = target.x - bot.x;
+        const dy = target.y - bot.y;
+        const dist = Math.sqrt(Math.max(1, dx * dx + dy * dy));
+        const baseAngle = Math.atan2(dy, dx);
+        const role = getBotRole(bot);
+        let angleOffset = 0;
+        let distOffset = 0;
+        if (role === BOT_ROLE_NOOB) {
+            angleOffset = degToRad(randomRangeInt(10, 15)) * (Math.random() < 0.5 ? -1 : 1);
+            distOffset = randomRangeInt(30, 50) * (Math.random() < 0.5 ? -1 : 1);
+        } else if (role === BOT_ROLE_CASUAL) {
+            angleOffset = degToRad(randomRangeInt(3, 7)) * (Math.random() < 0.5 ? -1 : 1);
+            distOffset = randomRangeInt(15, 20) * (Math.random() < 0.5 ? -1 : 1);
+        }
+        const finalAngle = baseAngle + angleOffset;
+        const finalDist = Math.max(10, dist + distOffset);
+        aimX = bot.x + Math.cos(finalAngle) * finalDist;
+        aimY = bot.y + Math.sin(finalAngle) * finalDist;
+    }
+    cmdRun.activateAbility(bot.id, ability, aimX, aimY);
     bot.sendStatsUpdate();
     return true;
 }
@@ -1741,7 +1894,9 @@ function forceBotBackInBounds(bot) {
 function configureBotPlayer(bot) {
     bot.isBot = true;
     const role = getBotRole(bot);
-    bot.username = getUniqueBotUsername(bot.id);
+    const baseName = bot._botBaseUsername || getUniqueBotUsername(bot.id);
+    bot._botBaseUsername = baseName;
+    bot.username = baseName;
     bot.world = 'main';
     bot.isAlive = true;
     bot.attacking = 0;
@@ -1765,9 +1920,11 @@ function configureBotPlayer(bot) {
     bot._botNextBuffUpgradeAt = 0;
     bot._botHunterTargetId = role === BOT_ROLE_PRO ? (bot._botHunterTargetId || 0) : 0;
     bot._botAssistTargetId = 0;
+    bot._botLastNearRealPlayerAt = performance.now();
     bot.lastX = bot.x;
     bot.lastY = bot.y;
     resetBotLifeTimers(bot);
+    assignBotPreferredAccessory(bot);
     equipBestSword(bot);
 }
 
@@ -1793,6 +1950,7 @@ function respawnBot(bot) {
     const role = getBotRole(bot);
     const prevHunterTargetId = bot._botHunterTargetId || 0;
     const pos = randomMainSpawn();
+    const baseName = bot._botBaseUsername || bot.username || getUniqueBotUsername(bot.id);
     bot.x = pos.x;
     bot.y = pos.y;
     bot.lastX = pos.x;
@@ -1809,7 +1967,8 @@ function respawnBot(bot) {
     bot.inWater = false;
     bot.accessoryId = 0;
     bot.equippedAccessoryItemType = 0;
-    bot.username = getUniqueBotUsername(bot.id);
+    bot._botBaseUsername = baseName;
+    bot.username = baseName;
     bot.isAlive = true;
     bot.lastDiedTime = 0;
     bot.attacking = 0;
@@ -1821,6 +1980,7 @@ function respawnBot(bot) {
     bot._botNextBuffUpgradeAt = 0;
     bot._botHunterTargetId = role === BOT_ROLE_PRO ? prevHunterTargetId : 0;
     bot._botAssistTargetId = 0;
+    bot._botLastNearRealPlayerAt = performance.now();
 
     bot.inventory = new Array(35).fill(0);
     bot.inventoryCounts = new Array(35).fill(0);
@@ -1828,9 +1988,10 @@ function respawnBot(bot) {
     bot.inventoryCounts[0] = 1;
     bot.selectedSlot = 0;
     resetBotLifeTimers(bot);
+    assignBotPreferredAccessory(bot);
 }
 
-export function spawnBotPlayers(count = DEFAULT_BOT_COUNT) {
+export function spawnBotPlayers(count = BOT_POPULATION_TARGET) {
     const safeCount = Math.max(0, Math.floor(count));
     botTargetPopulation = safeCount;
     for (let i = 0; i < safeCount; i++) {
@@ -1866,11 +2027,15 @@ export function isBotNearAnyRealPlayer(bot, realPlayers, range = BOT_OFFSCREEN_A
 
 export function processOffscreenBot(bot, now = performance.now(), objectBuckets = null, mobBuckets = null) {
     if (!bot || !bot.isBot || !bot.isAlive) return;
+    if (typeof bot.updateGrowthSpurt === 'function') {
+        bot.updateGrowthSpurt(now);
+    }
     bot.lastX = bot.x;
     bot.lastY = bot.y;
     bot.attacking = 0;
     bot._botHasLockedTarget = false;
     const role = getBotRole(bot);
+    const needsSwordProgress = getBestSwordRank(bot) < getBotSwordCap(bot);
     const pickupObjects = objectBuckets?.pickups || null;
 
     const speed = (bot.defaultSpeed || bot.speed || 17) * 0.7;
@@ -1924,6 +2089,9 @@ export function processOffscreenBot(bot, now = performance.now(), objectBuckets 
                         }
                         bot._botPrimitiveLastChestHitAt = now;
                     }
+                } else if (needsSwordProgress) {
+                    bot.attacking = 0;
+                    primitiveMoveToward(BOT_CENTER_X, BOT_CENTER_Y);
                 } else {
                     bot.attacking = 0;
                     if (now >= (bot._botPrimitiveTurnAt || 0)) {
@@ -1959,6 +2127,9 @@ export function processOffscreenBot(bot, now = performance.now(), objectBuckets 
 
 export function processOffscreenHunterBot(bot, now = performance.now()) {
     if (!bot || !bot.isBot || !bot.isAlive) return;
+    if (typeof bot.updateGrowthSpurt === 'function') {
+        bot.updateGrowthSpurt(now);
+    }
 
     const retaliationTarget = (getBotRole(bot) === BOT_ROLE_PRO || getBotRole(bot) === BOT_ROLE_CASUAL)
         ? getRetaliationTarget(bot)
@@ -1991,6 +2162,7 @@ export function processOffscreenHunterBot(bot, now = performance.now()) {
         target.isAlive &&
         !target.isBot &&
         !target.hasShield &&
+        !(typeof target.isPvpProtected === 'function' && target.isPvpProtected()) &&
         (target.world || 'main') === (bot.world || 'main');
     if (!validTarget) {
         if (isHunterTarget) bot._botHunterTargetId = 0;
@@ -2030,6 +2202,7 @@ export function updateBotPlayers(now = performance.now()) {
         allBots,
         proBots: proMainBots
     });
+    ensureTopPlayerHasHunter(allMainBots);
     const teamCoinReservations = new Map();
     const teamChestReservations = new Map();
     const getTeamReservationSet = (store, group) => {
@@ -2042,15 +2215,37 @@ export function updateBotPlayers(now = performance.now()) {
         const objectBuckets = worldObjectBuckets.get(worldId) || { all: [], coins: [], chests: [] };
         const mobBuckets = worldMobBuckets.get(worldId) || { polarBears: [] };
         const role = getBotRole(bot);
+        const bestSwordRank = getBestSwordRank(bot);
+        const swordCap = getBotSwordCap(bot);
+        const needsSwordProgress = bestSwordRank < swordCap;
         const teamGroup = getBotTeamGroup(bot);
         const reservedCoins = teamGroup > 0 ? getTeamReservationSet(teamCoinReservations, teamGroup) : null;
         const reservedChests = teamGroup > 0 ? getTeamReservationSet(teamChestReservations, teamGroup) : null;
         bot._botHasLockedTarget = false;
+        const reachedScoreCap = hasReachedScoreCap(bot);
+        const nearRealPlayer = isBotNearAnyRealPlayer(bot, realPlayers, BOT_OFFSCREEN_ACTIVE_RANGE);
+        const nearDespawnRange = isBotNearAnyRealPlayer(bot, realPlayers, BOT_IDLE_DESPAWN_RANGE);
+        if (nearDespawnRange) {
+            bot._botLastNearRealPlayerAt = now;
+        } else if (!bot._botLastNearRealPlayerAt) {
+            bot._botLastNearRealPlayerAt = now;
+        }
 
         if (!bot.isAlive) {
             if (now - (bot.lastDiedTime || 0) >= BOT_RESPAWN_DELAY_MS) {
                 respawnBot(bot);
             }
+            continue;
+        }
+
+        // Always purge worse swords quickly, even if bot is offscreen.
+        purgeUselessSwords(bot);
+
+        if ((bot.score || 0) >= BOT_IDLE_DESPAWN_SCORE &&
+            !isBotPossiblySpectated(bot) &&
+            !nearDespawnRange &&
+            now - (bot._botLastNearRealPlayerAt || 0) >= BOT_IDLE_DESPAWN_MS) {
+            respawnBot(bot);
             continue;
         }
 
@@ -2060,23 +2255,54 @@ export function updateBotPlayers(now = performance.now()) {
         bot._botNextDecisionAt = now + BOT_DECISION_INTERVAL_MS;
         tryBotSpendBuffPoints(bot, now);
 
+        // Blinded bots go rogue for the blindness duration: random movement and swings.
+        if (typeof bot.isBlinded === 'function' && bot.isBlinded(now)) {
+            bot._botHasLockedTarget = false;
+            if (now >= (bot._botNextMoveAt || 0)) {
+                chooseRandomMovePattern(bot);
+                bot._botNextMoveAt = now + 120 + Math.floor(Math.random() * 260);
+            }
+            // Occasionally swing while blinded.
+            bot.attacking = Math.random() < 0.45 ? 1 : 0;
+            if (now >= (bot._botNextLookAt || 0)) {
+                bot.angle = Math.random() * Math.PI * 2;
+                bot._botNextLookAt = now + 140 + Math.floor(Math.random() * 360);
+            }
+            continue;
+        }
+
         ensureBotAlwaysArmed(bot, now);
         tryBotShopUpgrade(bot, now);
         maintainBotInventory(bot, now);
 
         const hunterTargetId = bot._botHunterTargetId || 0;
-        const hunterTarget = getHunterTarget(bot);
+        let hunterTarget = getHunterTarget(bot);
         const assistTargetId = bot._botAssistTargetId || 0;
-        const assistTarget = getAssistTarget(bot);
-        const nearRealPlayer = isBotNearAnyRealPlayer(bot, realPlayers);
+        let assistTarget = getAssistTarget(bot);
         if (!nearRealPlayer && !hunterTarget && !assistTarget) {
             bot.attacking = 0;
-            continue;
+            // If the bot is already fully progressed, let it drift idly; otherwise fall through to loot logic.
+            if (reachedScoreCap && !needsSwordProgress) {
+                if (now >= (bot._botNextMoveAt || 0)) {
+                    chooseRandomMovePattern(bot);
+                    bot._botNextMoveAt = now + 250 + Math.floor(Math.random() * 900);
+                }
+                continue;
+            }
+            // When no players are around and progression is still needed, keep running the normal loot loop.
         }
 
-        if (!bot._botTargetedRealPlayerThisLife && now - (bot._botBornAt || now) >= (bot._botLifetimeMs || BOT_LIFETIME_MAX_MS)) {
-            respawnBot(bot);
-            continue;
+        const lifetimeExpired = !bot._botTargetedRealPlayerThisLife &&
+            now - (bot._botBornAt || now) >= (bot._botLifetimeMs || BOT_LIFETIME_MAX_MS);
+        if (lifetimeExpired) {
+            const inCombatRecently = (now - (bot.lastCombatTime || 0)) < 8000;
+            // Only recycle bots that are idle/offscreen to avoid them vanishing near players.
+            if (!nearRealPlayer && !inCombatRecently) {
+                respawnBot(bot);
+                continue;
+            }
+            // Give active bots more time before the next recycle check.
+            bot._botBornAt = now;
         }
 
         const forced = forceBotBackInBounds(bot);
@@ -2093,7 +2319,7 @@ export function updateBotPlayers(now = performance.now()) {
                 continue;
             }
 
-            const retaliationTarget = (role === BOT_ROLE_PRO || role === BOT_ROLE_CASUAL)
+            const retaliationTarget = ((role === BOT_ROLE_PRO || role === BOT_ROLE_CASUAL) || (role === BOT_ROLE_NOOB && reachedScoreCap))
                 ? getRetaliationTarget(bot)
                 : null;
 
@@ -2102,6 +2328,13 @@ export function updateBotPlayers(now = performance.now()) {
             if (hunterTargetId && !hunterTarget && !retaliationTarget) {
                 bot.attacking = 0;
                 continue;
+            }
+
+            if (hunterTarget && !shouldEngagePlayer(bot, hunterTarget.player, now)) {
+                hunterTarget = null;
+            }
+            if (assistTarget && !shouldEngagePlayer(bot, assistTarget.player, now)) {
+                assistTarget = null;
             }
 
             // Priority 1: Retaliation / role-based PvP logic
@@ -2114,8 +2347,11 @@ export function updateBotPlayers(now = performance.now()) {
                 playerTarget = assistTarget;
             } else if (role === BOT_ROLE_PRO) {
                 playerTarget = findNearestCombatPlayer(bot, BOT_AGGRO_RANGE, {
+                    now,
                     targetFilter: (target) => canHunterEngageTarget(bot, target)
                 });
+            } else if (role === BOT_ROLE_CASUAL && !reachedScoreCap) {
+                playerTarget = findNearestCombatPlayer(bot, BOT_AGGRO_RANGE, { now });
             }
 
             if (playerTarget) {
@@ -2125,6 +2361,7 @@ export function updateBotPlayers(now = performance.now()) {
                 tryUseBotAbility(bot, playerTarget.player, playerTarget.distSq, now, BOT_ATTACK_RANGE);
                 tryThrowAtTarget(bot, playerTarget.distSq, now, BOT_THROW_RANGE_MIN, BOT_THROW_RANGE_MAX);
                 bot._botNextMoveAt = now + 90 + Math.floor(Math.random() * 120);
+                continue; // stay focused on combat target
             } else if (retaliationTarget?.kind === 'mob') {
                 bot._botHasLockedTarget = true;
                 moveAroundCombatTarget(bot, retaliationTarget.target.x, retaliationTarget.target.y, retaliationTarget.distSq, now);
@@ -2132,6 +2369,27 @@ export function updateBotPlayers(now = performance.now()) {
                 tryUseBotAbility(bot, retaliationTarget.target, retaliationTarget.distSq, now, BOT_MOB_ATTACK_RANGE);
                 tryThrowAtTarget(bot, retaliationTarget.distSq, now, BOT_THROW_RANGE_MIN, BOT_THROW_RANGE_MAX);
                 bot._botNextMoveAt = now + 90 + Math.floor(Math.random() * 120);
+                continue;
+            } else {
+                // If no player target, look for enemy bots to fight.
+                const botEnemy = findNearestEnemyBot(bot, BOT_AGGRO_RANGE);
+                if (botEnemy) {
+                    bot._botHasLockedTarget = true;
+                    chasePlayer(bot, botEnemy.player, botEnemy.distSq, now);
+                    tryUseBotAbility(bot, botEnemy.player, botEnemy.distSq, now, BOT_ATTACK_RANGE);
+                    tryThrowAtTarget(bot, botEnemy.distSq, now, BOT_THROW_RANGE_MIN, BOT_THROW_RANGE_MAX);
+                    bot._botNextMoveAt = now + 90 + Math.floor(Math.random() * 120);
+                    continue;
+                }
+            }
+            // Looting / roaming
+            if (reachedScoreCap && !needsSwordProgress) {
+                bot._botHasLockedTarget = false;
+                bot.attacking = 0;
+                if (now >= (bot._botNextMoveAt || 0)) {
+                    chooseRandomMovePattern(bot);
+                    bot._botNextMoveAt = now + 250 + Math.floor(Math.random() * 900);
+                }
             } else {
                 // Priority 2: Desired loot (better sword or accessory when unequipped)
                 const desiredLootTarget = findNearestDesiredLootFromObjects(bot, BOT_PVE_RANGE, objectBuckets.all);
@@ -2165,6 +2423,12 @@ export function updateBotPlayers(now = performance.now()) {
                     tryUseBotAbility(bot, chestTarget.target, chestTarget.distSq, now, BOT_CHEST_ATTACK_RANGE);
                     tryThrowAtTarget(bot, chestTarget.distSq, now, 260, 900);
                     bot._botNextMoveAt = now + 90 + Math.floor(Math.random() * 140);
+                } else if (needsSwordProgress && now >= (bot._botNextMoveAt || 0)) {
+                    // Keep farming toward map center until the bot reaches its sword cap.
+                    bot._botHasLockedTarget = false;
+                    bot.attacking = 0;
+                    moveToward(bot, BOT_CENTER_X, BOT_CENTER_Y);
+                    bot._botNextMoveAt = now + 140 + Math.floor(Math.random() * 240);
                 } else if (now >= (bot._botNextMoveAt || 0)) {
                     bot.attacking = 0;
                     chooseRandomMovePattern(bot);

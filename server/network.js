@@ -7,7 +7,7 @@ import {
 } from '../public/shared/datamap.js';
 import { drainQueuedCoinPickupFxByWorld, drainQueuedChestCoinSeedsByWorld, drainQueuedDamageIndicatorFxByWorld } from './helpers.js';
 
-const UPDATE_SEND_BUFFER = 260;
+const UPDATE_SEND_BUFFER = 120;
 const SPECTATOR_RANGE_DIVISOR = 1.5;
 const MINIMAP_UPDATE_INTERVAL_TICKS = 3;
 const EMPTY_WORLD_SNAPSHOT = Object.freeze({
@@ -190,7 +190,6 @@ function writeMinimapPlayers(pw, players) {
     for (let i = 0; i < count; i++) {
         const p = safePlayers[i];
         if (!p) continue;
-        pw.writeU8(p.id);
         pw.writeU16(p.x);
         pw.writeU16(p.y);
     }
@@ -230,9 +229,7 @@ function finalizeWorldSnapshot(snapshot) {
     const minimapCount = Math.min(255, snapshot.alivePlayers.length);
     for (let i = 0; i < minimapCount; i++) {
         const p = snapshot.alivePlayers[i];
-        snapshot.minimapPlayers.push(p);
-        hash ^= (p.id & 0xFF);
-        hash = Math.imul(hash, 16777619);
+        snapshot.minimapPlayers.push({ x: p.x, y: p.y });
         hash ^= (p.x & 0xFFFF);
         hash = Math.imul(hash, 16777619);
         hash ^= (p.y & 0xFFFF);

@@ -267,11 +267,11 @@ export const dataMap = {
         }
     },
     MOBS: {
-        '1': { radius: 25, speed: 7, baseHealth: 15, score: 10, alarmDuration: 5000, imgProportions: [2, 2], imgSrc: './images/mobs/chick.png', imgName: 'mobs-chick', deathAction: (killer) => { const maxScore = 10; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
-        '2': { radius: 35, speed: 7, baseHealth: 50, score: 25, alarmDuration: 5000, imgProportions: [3, 2], imgSrc: './images/mobs/pig.png', imgName: 'mobs-pig', deathAction: (killer) => { const maxScore = 25; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
-        '3': { radius: 50, speed: 7, baseHealth: 150, score: 75, isNeutral: true, alarmDuration: Infinity, damage: 15, imgProportions: [3, 2.5], imgSrc: './images/mobs/cow.png', imgName: 'mobs-cow', deathAction: (killer) => { const maxScore = 75; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
-        '4': { radius: 45, speed: 9, baseHealth: 50, score: 10, alarmDuration: 10000, imgProportions: [2, 2], imgSrc: './images/mobs/hearty.png', imgName: 'mobs-hearty', deathAction: (killer) => { const maxScore = 10; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1); killer.health = Math.min(killer.health + 50, killer.maxHealth) } },
-        '5': { radius: 65, speed: 9, baseHealth: 250, score: 150, isNeutral: true, alarmDuration: 10000, damage: 15, imgProportions: [3, 2.5], imgSrc: './images/mobs/polar-bear.png', imgName: 'mobs-polar-bear', deathAction: (killer) => { const maxScore = 75; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
+        '1': { radius: 25, speed: 7, baseHealth: 15, score: 10, alarmDuration: 5000, imgProportions: [2, 2], imgSrc: './images/mobs/chick.png', imgName: 'mobs-chick', deathAction: (killer) => { const maxScore = 50; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
+        '2': { radius: 35, speed: 7, baseHealth: 50, score: 25, alarmDuration: 5000, imgProportions: [3, 2], imgSrc: './images/mobs/pig.png', imgName: 'mobs-pig', deathAction: (killer) => { const maxScore = 100; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
+        '3': { radius: 50, speed: 7, baseHealth: 150, score: 75, isNeutral: true, alarmDuration: Infinity, damage: 15, imgProportions: [3, 2.5], imgSrc: './images/mobs/cow.png', imgName: 'mobs-cow', deathAction: (killer) => { const maxScore = 400; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
+        '4': { radius: 45, speed: 9, baseHealth: 50, score: 10, alarmDuration: 10000, imgProportions: [2, 2], imgSrc: './images/mobs/hearty.png', imgName: 'mobs-hearty', deathAction: (killer) => { const maxScore = 100; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1); killer.health = Math.min(killer.health + 50, killer.maxHealth) } },
+        '5': { radius: 65, speed: 9, baseHealth: 250, score: 150, isNeutral: true, alarmDuration: 10000, damage: 15, imgProportions: [3, 2.5], imgSrc: './images/mobs/polar-bear.png', imgName: 'mobs-polar-bear', deathAction: (killer) => { const maxScore = 700; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
         '6': { radius: 75, speed: 7, baseHealth: 600, score: 200, alarmDuration: 20000, damage: 20, imgProportions: [3, 3.5], imgSrc: './images/mobs/minotaur.png', imgName: 'mobs-minotaur', deathAction: (killer) => { const maxScore = 10000; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } }
     },
     PROJECTILES: {
@@ -313,13 +313,13 @@ export const ACCESSORY_NAME_TO_ID = ACCESSORY_KEYS.reduce((acc, name, idx) => {
     return acc;
 }, {});
 export const ACCESSORY_DESCRIPTIONS = {
-    'bush-cloak': 'Active: Poison AOE (F). Applies poison in a 300 radius.',
-    'sunglasses': 'Coming Soon',
-    'pirate-hat': 'Chest drops +20% coins and grants a stamina boost ability (F)',
-    'viking-hat': 'Every 3 hits, you do 30% more damage.',
-    'alien-antennas': 'Allows you to view more of the map',
-    'dark-cloak': 'Mobs have slightly more difficulty spotting you',
-    'minotaur-hat': 'Active: Energy Burst (F). Passive: 20% damage reduction.'
+    'bush-cloak': 'Passive: Melee attacks poison living entities you hit. Active: Poison Blast (F) Poisons entities near you.',
+    'sunglasses': 'Active: Invisibility (F) Become invisible for 5s.',
+    'pirate-hat': 'Passive: Chests you break drop 20% more coins. Active: Stamina Boost (F) lowers your swing cooldown.',
+    'viking-hat': 'Passive: On a 3 hit combo, you do 30% more damage. Active: Growth Spurt (F) doubles your size for 8s.',
+    'alien-antennas': 'Passive: +50% view range. Active: Lightning Shot (F) to strike a target point.',
+    'dark-cloak': 'Passive: Mobs struggle to spot you. Active: Smoke Blast (F) blinds nearby entities for 8s.',
+    'minotaur-hat': 'Passive: 20% damage reduction. Active: Energy Burst (F) emits waves of energy around your player!'
 };
 export const ACCESSORY_ITEM_OFFSET = 100;
 

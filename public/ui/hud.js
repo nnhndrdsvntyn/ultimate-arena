@@ -29,7 +29,7 @@ function requestPause() {
 
 export function createComboText(parent) {
     const hb = HOTBAR_CONFIG;
-    const bottomLift = 40;
+    const bottomLift = 50; // sit between level bar and in-combat label
     const bottom = hb.marginBottom + hb.slotSize + (hb.padding * 2) + 45 + bottomLift;
 
     uiRefs.comboText = createEl('div', {
@@ -62,6 +62,28 @@ export function createShieldIcon(parent) {
     shieldIcon.onclick = () => {
         requestPause();
     };
+}
+
+export function createTopBarHint(parent) {
+    uiRefs.topBarHint = createEl('div', {
+        position: 'fixed',
+        top: '100px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        maxWidth: 'min(520px, 92vw)',
+        padding: '6px 10px',
+        background: 'rgba(0, 0, 0, 0.5)',
+        border: '1px solid rgba(255, 255, 255, 0.15)',
+        borderRadius: '10px',
+        color: '#f8fafc',
+        fontSize: '0.8rem',
+        fontWeight: '600',
+        textAlign: 'center',
+        pointerEvents: 'none',
+        boxShadow: '0 6px 18px rgba(0, 0, 0, 0.35)',
+        zIndex: '100000',
+        display: 'none'
+    }, parent, { id: 'top-left-hint' });
 }
 
 export function createFullscreenButton(parent) {
@@ -107,7 +129,7 @@ export function updateHUDVisibility(isAlive) {
 
 export function updateShieldUI(active) {
     const isAlive = ENTITIES.PLAYERS[Vars.myId]?.isAlive;
-    const shieldIconEl = document.querySelector('[style*="pause-button.png"]');
+    const shieldIconEl = document.getElementById('pauseBtn') || document.querySelector('[style*="pause-button.png"]');
     if (shieldIconEl) {
         shieldIconEl.style.display = (active && isAlive) ? 'block' : 'none';
     }
@@ -168,19 +190,6 @@ export function setupUpdateLog() {
     const homeScreen = document.getElementById('home-screen');
     if (!homeScreen) return;
 
-    const discordLink = createEl('a', {}, homeScreen, {
-        id: 'home-discord-link',
-        href: 'https://discord.gg/ZN8GWJZD',
-        target: '_blank',
-        rel: 'noopener noreferrer',
-        title: 'Join Discord'
-    });
-
-    createEl('img', {}, discordLink, {
-        src: './images/ui/discord-icon.png',
-        alt: 'Discord'
-    });
-
     const infoToggle = createEl('button', {}, homeScreen, {
         id: 'home-info-toggle',
         textContent: 'Info',
@@ -204,6 +213,7 @@ export function setupUpdateLog() {
         boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)',
         fontSize: isMobile ? '0.6rem' : '1rem',
     }, homeScreen, { id: 'update-log' });
+    updateLog.classList.add('hidden');
 
     // Toggle functionality
     infoToggle.onclick = () => {

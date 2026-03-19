@@ -37,9 +37,13 @@ import {
     spawnCoinPickupVfxToPlayer,
     spawnEnergyBurstFx,
     spawnPoisonAoeFx,
+    spawnIntimidationFx,
+    spawnBlindnessFx,
     spawnLightningShotFx,
+    spawnSmokeAoeFx,
     spawnSeededChestCoins
 } from './client.js';
+import { updateShopAttentionIndicator } from './ui/shop.js';
 import {
     dataMap,
     isSwordRank,
@@ -67,8 +71,13 @@ const PACKET_TYPES = {
     ENERGY_BURST_FX: 23,
     CRITICAL_HIT_FX: 24,
     POISON_AOE_FX: 25,
+    INTIMIDATION_AOE_FX: 32,
     TUTORIAL_OBJECTIVE: 26,
-    TUTORIAL_COMPLETE: 27
+    TUTORIAL_COMPLETE: 27,
+    STRUCTURE_ADD: 28,
+    STRUCTURE_REMOVE: 29,
+    BLINDNESS_FX: 30,
+    SMOKE_AOE_FX: 31
 };
 
 function triggerDamageIndicator(prevHp, newHp, x, y, radius = 0) {
@@ -90,6 +99,24 @@ function jitterOnEntity(x, y, radius) {
         px: x + Math.cos(angle) * dist,
         py: y + Math.sin(angle) * dist
     };
+}
+
+function handleStructureAddPacket(reader) {
+    const id = reader.readU16();
+    const x = reader.readU16();
+    const y = reader.readU16();
+    const type = reader.readU8();
+    if (!dataMap.STRUCTURES[type]) return;
+    if (ENTITIES.STRUCTURES[id]) return;
+    new Structure(id, x, y, type);
+}
+
+function handleStructureRemovePacket(reader) {
+    const id = reader.readU16();
+    const existing = ENTITIES.STRUCTURES[id];
+    if (!existing) return;
+    delete ENTITIES.STRUCTURES[id];
+    // Optional: clear any cached references if needed
 }
 
 export function parsePacket(buffer) {
@@ -148,11 +175,26 @@ export function parsePacket(buffer) {
         case PACKET_TYPES.POISON_AOE_FX:
             handlePoisonAoeFxPacket(reader);
             break;
+        case PACKET_TYPES.INTIMIDATION_AOE_FX:
+            handleIntimidationFxPacket(reader);
+            break;
+        case PACKET_TYPES.SMOKE_AOE_FX:
+            handleSmokeAoeFxPacket(reader);
+            break;
+        case PACKET_TYPES.BLINDNESS_FX:
+            handleBlindnessFxPacket(reader);
+            break;
         case PACKET_TYPES.TUTORIAL_OBJECTIVE:
             handleTutorialObjectivePacket(reader);
             break;
         case PACKET_TYPES.TUTORIAL_COMPLETE:
             handleTutorialCompletePacket();
+            break;
+        case PACKET_TYPES.STRUCTURE_ADD:
+            handleStructureAddPacket(reader);
+            break;
+        case PACKET_TYPES.STRUCTURE_REMOVE:
+            handleStructureRemovePacket(reader);
             break;
         default:
             // console.warn(`Unknown packet type: ${packetType}`);
@@ -495,16 +537,15 @@ function handleUpdatePacket(reader) {
     }
 
     // Optional minimap players payload:
-    // u8 count, then repeated [u8 id, u16 x, u16 y]
+    // u8 count, then repeated [u16 x, u16 y]
     if (reader.offset < reader.view.byteLength) {
         const count = reader.readU8();
-        const minimapPlayers = {};
+        const minimapPlayers = [];
         for (let i = 0; i < count; i++) {
-            if (reader.offset + 5 > reader.view.byteLength) break;
-            const id = reader.readU8();
+            if (reader.offset + 4 > reader.view.byteLength) break;
             const x = reader.readU16();
             const y = reader.readU16();
-            minimapPlayers[id] = { id, x, y };
+            minimapPlayers.push({ x, y });
         }
         Vars.minimapPlayers = minimapPlayers;
     }
@@ -628,6 +669,7 @@ function handleInventoryPacket(reader) {
     }
 
     if (uiState.isShopOpen) updateShopBody();
+    updateShopAttentionIndicator();
 }
 
 function handleStatsPacket(reader) {
@@ -659,6 +701,7 @@ function handleStatsPacket(reader) {
     if (uiState.isShopOpen) {
         updateShopBody();
     }
+    updateShopAttentionIndicator();
 }
 
 function handlePlayerCountPacket(reader) {
@@ -677,7 +720,12 @@ function handleLightningShotFxPacket(reader) {
     const endX = reader.readU16();
     const endY = reader.readU16();
     const durationMs = reader.readU16();
-    spawnLightningShotFx(startX, startY, endX, endY, durationMs);
+    let thicknessScale = 1;
+    // Optional thickness value (hundredths) if packet includes it.
+    if (reader.offset + 2 <= reader.view.byteLength) {
+        thicknessScale = Math.max(0.1, reader.readU16() / 100);
+    }
+    spawnLightningShotFx(startX, startY, endX, endY, durationMs, thicknessScale);
 }
 
 function handleCoinPickupFxPacket(reader) {
@@ -696,7 +744,12 @@ function handleEnergyBurstFxPacket(reader) {
     const radius = reader.readU16();
     const durationMs = reader.readU16();
     const waves = reader.readU8();
-    spawnEnergyBurstFx(x, y, radius, durationMs, waves);
+    let thicknessScale = 1;
+    // Optional thickness field (hundredths) if present.
+    if (reader.offset + 2 <= reader.view.byteLength) {
+        thicknessScale = Math.max(0.1, reader.readU16() / 100);
+    }
+    spawnEnergyBurstFx(x, y, radius, durationMs, waves, thicknessScale);
 }
 
 function handleCriticalHitFxPacket(reader) {
@@ -712,6 +765,34 @@ function handlePoisonAoeFxPacket(reader) {
     const durationMs = reader.readU16();
     const waves = reader.readU8();
     spawnPoisonAoeFx(x, y, radius, durationMs, waves);
+}
+
+function handleIntimidationFxPacket(reader) {
+    const x = reader.readU16();
+    const y = reader.readU16();
+    const radius = reader.readU16();
+    const durationMs = reader.readU16();
+    let followId = null;
+    if (reader.offset + 1 <= reader.view.byteLength) {
+        followId = reader.readU8();
+    }
+    spawnIntimidationFx(x, y, radius, durationMs, followId);
+}
+
+function handleSmokeAoeFxPacket(reader) {
+    const x = reader.readU16();
+    const y = reader.readU16();
+    const radius = reader.readU16();
+    const durationMs = reader.readU16();
+    const waves = reader.readU8();
+    spawnSmokeAoeFx(x, y, radius, durationMs, waves);
+}
+
+function handleBlindnessFxPacket(reader) {
+    const durationMs = reader.readU16();
+    const maxAlpha = reader.readU8();
+    const clampedAlpha = Math.max(0, Math.min(1, (maxAlpha || 0) / 100));
+    spawnBlindnessFx(durationMs || 5000, clampedAlpha || 0);
 }
 
 function handleTutorialObjectivePacket(reader) {

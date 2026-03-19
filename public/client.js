@@ -1,7 +1,7 @@
 import { parsePacket } from './parser.js';
 import { LibCanvas, normalizeCanvasFont } from './libcanvas.js';
 import { ENTITIES, MAP_SIZE } from './game.js';
-import { dataMap, TPS, ACCESSORY_KEYS, isAccessoryItemType, accessoryIdFromItemType, accessoryItemTypeFromId, DEFAULT_VIEW_RANGE_MULT, isCoinObjectType, getCoinObjectType, isChestObjectType, xpForLevel, MAX_LEVEL, SWORD_IDS } from './shared/datamap.js';
+import { dataMap, TPS, ACCESSORY_KEYS, isAccessoryItemType, accessoryIdFromItemType, accessoryItemTypeFromId, DEFAULT_VIEW_RANGE_MULT, isCoinObjectType, getCoinObjectType, isChestObjectType, xpForLevel, MAX_LEVEL, SWORD_IDS, isSwordRank } from './shared/datamap.js';
 import {
     initializeUI, updateShieldUI, updateHUDVisibility,
     THROW_BTN_CONFIG, PICKUP_BTN_CONFIG, DROP_BTN_CONFIG, ATTACK_BTN_CONFIG,
@@ -178,7 +178,7 @@ export const Vars = {
         y: 0,
         score: 0
     },
-    minimapPlayers: {},
+    minimapPlayers: [],
     disconnectMessage: '',
     disableAutoReconnect: false,
     structureSeed: null
@@ -202,6 +202,9 @@ const seededChestCoins = [];
 const lightningShotEffects = [];
 const energyBurstEffects = [];
 const poisonAoeEffects = [];
+const intimidationAoeEffects = [];
+const smokeAoeEffects = [];
+const blindnessOverlays = [];
 const mobDeathFades = [];
 const keyHintUi = {
     visible: false,
@@ -419,7 +422,7 @@ function consumeSeededChestCoinsNear(x, y, amount = 1) {
     }
 }
 
-export function spawnLightningShotFx(startX, startY, endX, endY, durationMs = 500) {
+export function spawnLightningShotFx(startX, startY, endX, endY, durationMs = 500, thicknessScale = 1) {
     if (!Number.isFinite(startX) || !Number.isFinite(startY) || !Number.isFinite(endX) || !Number.isFinite(endY)) return;
     const duration = Math.max(1, durationMs | 0);
     const dx = endX - startX;
@@ -438,11 +441,12 @@ export function spawnLightningShotFx(startX, startY, endX, endY, durationMs = 50
         length,
         startTime: performance.now(),
         duration,
-        seed: Math.random() * Math.PI * 2
+        seed: Math.random() * Math.PI * 2,
+        thickness: Math.max(0.1, thicknessScale || 1)
     });
 }
 
-export function spawnEnergyBurstFx(x, y, radius = 500, durationMs = 700, waves = 3) {
+export function spawnEnergyBurstFx(x, y, radius = 500, durationMs = 700, waves = 3, thicknessScale = 1) {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     const duration = Math.max(1, durationMs | 0);
     energyBurstEffects.push({
@@ -452,7 +456,8 @@ export function spawnEnergyBurstFx(x, y, radius = 500, durationMs = 700, waves =
         duration,
         waves: Math.max(1, Math.min(8, waves | 0)),
         startTime: performance.now(),
-        seed: Math.random() * Math.PI * 2
+        seed: Math.random() * Math.PI * 2,
+        thickness: Math.max(0.1, thicknessScale || 1)
     });
 }
 
@@ -466,6 +471,47 @@ export function spawnPoisonAoeFx(x, y, radius = 300, durationMs = 700, waves = 2
         duration,
         waves: Math.max(1, Math.min(8, waves | 0)),
         startTime: performance.now()
+    });
+}
+
+export function spawnIntimidationFx(x, y, radius = 300, durationMs = 9200, followPlayerId = null) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const duration = Math.max(1, durationMs | 0);
+    intimidationAoeEffects.push({
+        x,
+        y,
+        radius: Math.max(1, radius),
+        duration,
+        startTime: performance.now(),
+        followPlayerId: Number.isFinite(followPlayerId) ? followPlayerId : null
+    });
+}
+
+export function spawnSmokeAoeFx(x, y, radius = 320, durationMs = 8000, waves = 1) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const duration = Math.max(1, durationMs | 0);
+    smokeAoeEffects.push({
+        x,
+        y,
+        radius: Math.max(1, radius),
+        duration,
+        waves: Math.max(1, Math.min(8, waves | 0)),
+        startTime: performance.now(),
+        seed: Math.random() * Math.PI * 2
+    });
+}
+
+export function spawnBlindnessFx(durationMs = 5000, maxAlpha = 0.75) {
+    const total = Math.max(1, durationMs | 0);
+    const holdMs = 3500;
+    const fadeMs = Math.max(1, total - holdMs, 8000);
+    const alpha = Math.max(0, Math.min(1, maxAlpha));
+    blindnessOverlays.push({
+        startTime: performance.now(),
+        duration: holdMs + fadeMs,
+        holdMs,
+        fadeMs,
+        maxAlpha: alpha
     });
 }
 
@@ -1010,6 +1056,45 @@ function drawOutsideMapOverlay(viewRect) {
     LC.ctx.restore();
 }
 
+function drawBlindnessOverlays() {
+    if (!blindnessOverlays.length) return;
+    const now = performance.now();
+    let maxAlpha = 0;
+
+    for (let i = blindnessOverlays.length - 1; i >= 0; i--) {
+        const fx = blindnessOverlays[i];
+        const t = (now - fx.startTime) / fx.duration;
+        if (t >= 1) {
+            blindnessOverlays.splice(i, 1);
+            continue;
+        }
+        const elapsed = now - fx.startTime;
+        const hold = Math.max(0, fx.holdMs || 0);
+        const fade = Math.max(1, fx.fadeMs || 1);
+        let alpha;
+        if (elapsed <= hold) {
+            alpha = fx.maxAlpha;
+        } else {
+            const ft = Math.max(0, Math.min(1, (elapsed - hold) / fade));
+            alpha = fx.maxAlpha * (1 - ft);
+        }
+        if (alpha > maxAlpha) maxAlpha = alpha;
+    }
+
+    if (maxAlpha <= 0) return;
+    LC.ctx.save();
+    LC.ctx.fillStyle = `rgba(0, 0, 0, ${maxAlpha})`;
+    LC.ctx.fillRect(0, 0, LC.width, LC.height);
+    LC.ctx.font = '800 20px Inter, sans-serif';
+    LC.ctx.textAlign = 'center';
+    LC.ctx.textBaseline = 'middle';
+    LC.ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+    LC.ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+    LC.ctx.shadowBlur = 8;
+    LC.ctx.fillText("YOU'VE BEEN TEMPORARILY BLINDED!", LC.width / 2, LC.height / 2);
+    LC.ctx.restore();
+}
+
 function render() {
     if (disconnectedState.active) {
         LC.clearCanvas();
@@ -1059,7 +1144,9 @@ function render() {
         Object.values(group).forEach(e => e.draw());
     });
     drawMobDeathFades();
+    drawIntimidationAoeEffects();
     drawPoisonAoeEffects();
+    drawSmokeAoeEffects();
     drawEnergyBurstEffects();
     drawLightningShotEffects();
     drawCoinPickupEffects();
@@ -1091,6 +1178,7 @@ function render() {
     // UI & Overlays
     updateHUD(localPlayer);
     drawFPS();
+    drawBlindnessOverlays();
 
     setTimeout(render, 1000 / TPS.clientCapped);
 }
@@ -1215,7 +1303,16 @@ function updateHUD(lp) {
     const isAlive = lp?.isAlive;
     updateKeyHintVisibility(isAlive);
     updateHUDVisibility(isAlive);
-    updateShieldUI(lp?.hasShield);
+    const inSafeZone = (() => {
+        if (!lp) return false;
+        const safeZone = Object.values(ENTITIES.STRUCTURES).find(s => dataMap.STRUCTURES[s.type]?.isSafeZone);
+        if (!safeZone) return false;
+        const dx = safeZone.x - lp.x;
+        const dy = safeZone.y - lp.y;
+        const safeRange = (safeZone.radius || dataMap.STRUCTURES[safeZone.type]?.radius || 0) + (lp.radius || dataMap.PLAYERS.baseRadius || 0) + 2;
+        return (dx * dx + dy * dy) <= (safeRange * safeRange);
+    })();
+    updateShieldUI(lp?.hasShield && inSafeZone);
     const settingsBtn = document.getElementById('settingsBtn');
     if (settingsBtn && CURRENT_WORLD === WORLD_TUTORIAL) settingsBtn.style.display = 'none';
     const topLeftBar = document.getElementById('top-left-bar');
@@ -1226,6 +1323,33 @@ function updateHUD(lp) {
         shopBtn.disabled = !shopUnlocked;
         shopBtn.style.pointerEvents = shopUnlocked ? 'auto' : 'none';
         shopBtn.style.opacity = shopUnlocked ? '1' : '0.45';
+    }
+
+    const hintEl = document.getElementById('top-left-hint');
+    if (hintEl) {
+        const isHome = document.getElementById('home-screen')?.style.display !== 'none';
+        const isRespawn = document.getElementById('respawn-screen')?.style.display !== 'none';
+        if (!isAlive || isHome || isRespawn) {
+            hintEl.style.display = 'none';
+        } else {
+            let bestRank = 0;
+            for (let i = 0; i < Vars.myInventory.length; i++) {
+                if (Vars.myInventoryCounts[i] <= 0) continue;
+                const rank = Vars.myInventory[i] & 0x7F;
+                if (isSwordRank(rank) && rank > bestRank) bestRank = rank;
+            }
+            const score = Math.max(0, Math.floor(lp?.score || 0));
+            if (bestRank < 2) {
+                hintEl.textContent = 'You need to break chests & collect more coins to buy a better sword!';
+                hintEl.style.display = 'block';
+            } else if (score < 1000) {
+                const remaining = Math.max(0, 1000 - score);
+                hintEl.textContent = `You need ${remaining.toLocaleString()} more xp before you can fight other players!`;
+                hintEl.style.display = 'block';
+            } else {
+                hintEl.style.display = 'none';
+            }
+        }
     }
 
     const homeScreen = document.getElementById('home-screen');
@@ -2037,7 +2161,8 @@ function drawLightningShotEffects() {
         const phase = Math.floor((now - fx.startTime) / 100);
         const mirrored = (phase % 2) === 1 ? -1 : 1;
         const segCount = Math.max(8, Math.min(48, Math.floor(fx.length / 30)));
-        const jitter = Math.max(6, Math.min(26, fx.length * 0.035));
+        const jitterScale = Math.max(1, fx.thickness || 1);
+        const jitter = Math.max(6, Math.min(26, fx.length * 0.035)) * jitterScale;
         const waveCycles = Math.max(1.25, Math.min(8, 900 / Math.max(80, fx.length)));
         const baseFreq = waveCycles * Math.PI * 2;
         const branchChance = 0.22;
@@ -2057,8 +2182,9 @@ function drawLightningShotEffects() {
             const y = mirrored * wave * jitter;
             LC.ctx.lineTo(x, y);
         }
+        const thick = fx.thickness || 1;
         LC.ctx.strokeStyle = 'rgba(68, 0, 0, 0.8)';
-        LC.ctx.lineWidth = 12;
+        LC.ctx.lineWidth = 12 * thick;
         LC.ctx.lineCap = 'round';
         LC.ctx.lineJoin = 'round';
         LC.ctx.stroke();
@@ -2085,7 +2211,7 @@ function drawLightningShotEffects() {
             }
         }
         LC.ctx.strokeStyle = 'rgba(255, 80, 80, 1)';
-        LC.ctx.lineWidth = 6;
+        LC.ctx.lineWidth = 6 * thick;
         LC.ctx.lineCap = 'round';
         LC.ctx.lineJoin = 'round';
         LC.ctx.stroke();
@@ -2100,7 +2226,7 @@ function drawLightningShotEffects() {
             LC.ctx.lineTo(x, y);
         }
         LC.ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
-        LC.ctx.lineWidth = 2.5;
+        LC.ctx.lineWidth = 2.5 * thick;
         LC.ctx.lineCap = 'round';
         LC.ctx.lineJoin = 'round';
         LC.ctx.stroke();
@@ -2134,20 +2260,21 @@ function drawEnergyBurstEffects() {
             const alpha = baseAlpha * (1 - localT * 0.7);
             if (r <= 0 || alpha <= 0.01) continue;
 
+            const thick = fx.thickness || 1;
             LC.ctx.beginPath();
             LC.ctx.arc(centerX, centerY, r, 0, Math.PI * 2);
             LC.ctx.strokeStyle = `rgba(255, 70, 70, ${Math.min(0.85, alpha)})`;
-            LC.ctx.lineWidth = 6;
+            LC.ctx.lineWidth = 6 * thick;
             LC.ctx.stroke();
 
             LC.ctx.beginPath();
             LC.ctx.arc(centerX, centerY, r, 0, Math.PI * 2);
             LC.ctx.strokeStyle = `rgba(255, 255, 255, ${Math.min(0.55, alpha * 0.8)})`;
-            LC.ctx.lineWidth = 2;
+            LC.ctx.lineWidth = 2 * thick;
             LC.ctx.stroke();
 
             const boltCount = 8;
-            const boltLen = Math.max(40, Math.min(180, 48 + fx.radius * 0.14));
+            const boltLen = Math.max(40, Math.min(400, 60 + fx.radius * 0.35));
             if (localT < 0.04) continue; // avoid immediate outer-looking streaks at spawn
             for (let b = 0; b < boltCount; b++) {
                 const angle = ((b / boltCount) * Math.PI * 2) + fx.seed;
@@ -2162,7 +2289,8 @@ function drawEnergyBurstEffects() {
                     fx.seed + b * 1.37,
                     alpha,
                     now,
-                    null
+                    null,
+                    thick
                 );
             }
         }
@@ -2197,6 +2325,81 @@ function drawPoisonAoeEffects() {
         LC.ctx.arc(centerX, centerY, currentRadius, 0, Math.PI * 2);
         LC.ctx.strokeStyle = `rgba(80, 255, 110, ${strokeAlpha})`;
         LC.ctx.lineWidth = 3;
+        LC.ctx.stroke();
+        LC.ctx.restore();
+    }
+}
+
+function drawIntimidationAoeEffects() {
+    const now = performance.now();
+    const expandMs = 600;
+    const holdMs = 8000;
+    const collapseMs = 600;
+    for (let i = intimidationAoeEffects.length - 1; i >= 0; i--) {
+        const fx = intimidationAoeEffects[i];
+        const elapsed = now - fx.startTime;
+        if (elapsed >= fx.duration) {
+            intimidationAoeEffects.splice(i, 1);
+            continue;
+        }
+        let currentRadius = fx.radius;
+        if (elapsed < expandMs) {
+            currentRadius = fx.radius * Math.max(0, Math.min(1, elapsed / expandMs));
+        } else if (elapsed > expandMs + holdMs) {
+            const collapseT = Math.max(0, Math.min(1, (elapsed - expandMs - holdMs) / collapseMs));
+            currentRadius = fx.radius * (1 - collapseT);
+        }
+
+        const progress = Math.max(0, Math.min(1, elapsed / fx.duration));
+        const baseAlpha = Math.max(0.08, 1 - progress);
+        const followPlayer = fx.followPlayerId ? ENTITIES.PLAYERS[fx.followPlayerId] : null;
+        const cx = followPlayer ? followPlayer.x : fx.x;
+        const cy = followPlayer ? followPlayer.y : fx.y;
+        const centerX = cx - camera.x;
+        const centerY = cy - camera.y;
+
+        LC.ctx.save();
+        LC.ctx.beginPath();
+        LC.ctx.arc(centerX, centerY, currentRadius, 0, Math.PI * 2);
+        LC.ctx.fillStyle = `rgba(255, 255, 255, ${Math.min(0.28, baseAlpha * 0.28)})`;
+        LC.ctx.fill();
+
+        LC.ctx.beginPath();
+        LC.ctx.arc(centerX, centerY, currentRadius, 0, Math.PI * 2);
+        LC.ctx.strokeStyle = `rgba(255, 255, 255, ${Math.min(0.8, baseAlpha)})`;
+        LC.ctx.lineWidth = 3;
+        LC.ctx.stroke();
+        LC.ctx.restore();
+    }
+}
+
+function drawSmokeAoeEffects() {
+    const now = performance.now();
+    for (let i = smokeAoeEffects.length - 1; i >= 0; i--) {
+        const fx = smokeAoeEffects[i];
+        const t = (now - fx.startTime) / fx.duration;
+        if (t >= 1) {
+            smokeAoeEffects.splice(i, 1);
+            continue;
+        }
+
+        const centerX = fx.x - camera.x;
+        const centerY = fx.y - camera.y;
+        const currentRadius = fx.radius * Math.max(0, Math.min(1, t));
+        const baseAlpha = Math.max(0, 1 - t);
+        const fillAlpha = Math.min(0.85, 0.85 * baseAlpha);
+        const strokeAlpha = Math.min(0.95, 0.95 * baseAlpha);
+
+        LC.ctx.save();
+        LC.ctx.beginPath();
+        LC.ctx.arc(centerX, centerY, currentRadius, 0, Math.PI * 2);
+        LC.ctx.fillStyle = `rgba(0, 0, 0, ${fillAlpha})`;
+        LC.ctx.fill();
+
+        LC.ctx.beginPath();
+        LC.ctx.arc(centerX, centerY, currentRadius, 0, Math.PI * 2);
+        LC.ctx.strokeStyle = `rgba(0, 0, 0, ${strokeAlpha})`;
+        LC.ctx.lineWidth = 4;
         LC.ctx.stroke();
         LC.ctx.restore();
     }
@@ -2300,14 +2503,15 @@ function getBurstBoltClampedLength(worldX, worldY, angle, startRadius, length, c
     return Math.max(0, (nearestHit - minDist) - 2);
 }
 
-function drawBurstLightningBolt(centerX, centerY, worldX, worldY, angle, startRadius, length, seed, alpha, now, colliders) {
+function drawBurstLightningBolt(centerX, centerY, worldX, worldY, angle, startRadius, length, seed, alpha, now, colliders, thickness = 1) {
     const clampedLength = Array.isArray(colliders) && colliders.length
         ? getBurstBoltClampedLength(worldX, worldY, angle, startRadius, length, colliders)
         : length;
     if (clampedLength <= 1) return;
 
-    const segCount = Math.max(6, Math.min(14, Math.floor(clampedLength / 7)));
-    const jitter = Math.max(1.8, Math.min(6.2, clampedLength * 0.09));
+        const segCount = Math.max(6, Math.min(14, Math.floor(clampedLength / 7)));
+        const jitterScale = Math.max(1, thickness || 1);
+        const jitter = Math.max(1.8, Math.min(6.2, clampedLength * 0.09)) * jitterScale;
     const phase = Math.floor(now / 90);
     const mirrored = (phase % 2) === 1 ? -1 : 1;
     const glowAlpha = Math.min(0.75, alpha * 0.95);
@@ -2328,7 +2532,7 @@ function drawBurstLightningBolt(centerX, centerY, worldX, worldY, angle, startRa
         LC.ctx.lineTo(x, y);
     }
     LC.ctx.strokeStyle = `rgba(68, 0, 0, ${glowAlpha})`;
-    LC.ctx.lineWidth = 8;
+    LC.ctx.lineWidth = 8 * thickness;
     LC.ctx.lineCap = 'round';
     LC.ctx.lineJoin = 'round';
     LC.ctx.stroke();
@@ -2343,7 +2547,7 @@ function drawBurstLightningBolt(centerX, centerY, worldX, worldY, angle, startRa
         LC.ctx.lineTo(x, y);
     }
     LC.ctx.strokeStyle = `rgba(255, 80, 80, ${mainAlpha})`;
-    LC.ctx.lineWidth = 4;
+    LC.ctx.lineWidth = 4 * thickness;
     LC.ctx.lineCap = 'round';
     LC.ctx.lineJoin = 'round';
     LC.ctx.stroke();
@@ -2358,7 +2562,7 @@ function drawBurstLightningBolt(centerX, centerY, worldX, worldY, angle, startRa
         LC.ctx.lineTo(x, y);
     }
     LC.ctx.strokeStyle = `rgba(255, 255, 255, ${coreAlpha})`;
-    LC.ctx.lineWidth = 1.8;
+    LC.ctx.lineWidth = 1.8 * thickness;
     LC.ctx.lineCap = 'round';
     LC.ctx.lineJoin = 'round';
     LC.ctx.stroke();
@@ -2450,8 +2654,8 @@ function drawMinimap() {
 
     if (Settings.showMobsOnMinimap) Object.values(ENTITIES.MOBS).forEach(m => drawDot(m, 'orange'));
     if (Settings.showChestsOnMinimap) Object.values(ENTITIES.OBJECTS).filter(o => isChestObjectType(o.type)).forEach(o => drawDot(o, '#b45309'));
-    Object.values(Vars.minimapPlayers || {}).forEach(p => {
-        if (!p || p.id === Vars.myId) return;
+    (Vars.minimapPlayers || []).forEach(p => {
+        if (!p) return;
         drawDot(p, 'red');
     });
     const lp = ENTITIES.PLAYERS[Vars.myId];
@@ -2682,7 +2886,7 @@ function drawInCombatLabel() {
     if (!Vars.inCombat) return;
     LC.drawText({
         text: 'In Combat',
-        pos: [LC.width / 2, LC.height - 170],
+        pos: [LC.width / 2, LC.height - 220],
         font: 'bold 24px Inter',
         color: '#ff4d4d',
         textAlign: 'center'
@@ -2897,7 +3101,8 @@ function drawLevelProgressBar(hotbarX, hotbarY, hotbarWidth) {
 function drawAbilityCooldownBar(hotbarX, hotbarY, hotbarWidth) {
     const myPlayer = ENTITIES.PLAYERS[Vars.myId];
     const accessoryKey = ACCESSORY_KEYS[myPlayer?.accessoryId || 0];
-    if (accessoryKey !== 'minotaur-hat' && accessoryKey !== 'pirate-hat' && accessoryKey !== 'bush-cloak') return;
+    const abilityAccessories = ['minotaur-hat', 'pirate-hat', 'bush-cloak', 'alien-antennas', 'dark-cloak', 'viking-hat', 'sunglasses'];
+    if (!abilityAccessories.includes(accessoryKey)) return;
 
     const cooldownMs = Math.max(0, Vars.abilityCooldownMs || 0);
     if (cooldownMs <= 0) return;

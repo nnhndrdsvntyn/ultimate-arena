@@ -42,13 +42,45 @@ export class Mob extends Entity {
         this.alarmDuration = mobData.alarmDuration;
         this.alarmReason = null;
         this.lastHitById = null;
+        this.targetShieldedSince = 0;
 
         this.inWater = false;
         this.invincible = false;
 
         this.type = type;
 
+        this.blindUntil = 0;
+        this.blindSpeedMult = 1;
+        this._blindStored = false;
+        this._blindStoredAlarmed = false;
+        this._blindStoredTarget = null;
+        this._blindStoredAlarmReason = null;
+
         ENTITIES.MOBS[id] = this;
+    }
+    isBlinded(now = performance.now()) {
+        return now < (this.blindUntil || 0);
+    }
+    applyBlindness(durationMs = 8000, speedMult = 1.5) {
+        const now = performance.now();
+        this.blindUntil = now + Math.max(1, Math.round(durationMs));
+        this.blindSpeedMult = Math.max(1, Number.isFinite(speedMult) ? speedMult : 1.5);
+    }
+    storeBlindState() {
+        if (this._blindStored) return;
+        this._blindStored = true;
+        this._blindStoredAlarmed = this.isAlarmed;
+        this._blindStoredTarget = this.target;
+        this._blindStoredAlarmReason = this.alarmReason;
+    }
+    restoreBlindState() {
+        if (!this._blindStored) return;
+        this._blindStored = false;
+        this.isAlarmed = this._blindStoredAlarmed;
+        this.target = this._blindStoredTarget;
+        this.alarmReason = this._blindStoredAlarmReason;
+        this._blindStoredTarget = null;
+        this._blindStoredAlarmReason = null;
     }
     move() {
         // move
@@ -101,6 +133,10 @@ export class Mob extends Entity {
     alarm(shooter, reason = 'proximity') {
         if ((shooter?.world || 'main') !== (this.world || 'main')) return;
         if (shooter?.isInvisible) return;
+        const isPolarBearHit = this.type === 5 && reason === 'hit' && shooter instanceof Player;
+        const bypassProgressShield = isPolarBearHit && shooter.progressShieldActive && !shooter.touchingSafeZone;
+        if (shooter?.hasShield && !bypassProgressShield) return; // don't target shielded players
+        if (shooter instanceof Player && typeof shooter.isPvpProtected === 'function' && shooter.isPvpProtected() && !isPolarBearHit) return;
         this.target = shooter;
         this.alarmReason = reason;
 
@@ -123,6 +159,10 @@ export class Mob extends Entity {
         const target = ENTITIES.PLAYERS[this.target.id];
         if (!target || !target.isAlive) return null;
         if ((target.world || 'main') !== (this.world || 'main')) return null;
+        const isPolarBearHitTarget = this.type === 5 && this.alarmReason === 'hit' && this.lastHitById === target.id;
+        const allowProgressShieldTarget = isPolarBearHitTarget && target.progressShieldActive && !target.touchingSafeZone;
+        if (target.hasShield && !allowProgressShieldTarget) return null; // ignore shielded players
+        if (typeof target.isPvpProtected === 'function' && target.isPvpProtected() && !isPolarBearHitTarget) return null; // ignore protected players/bots
         if (requireSameReference && target !== this.target) return null;
         return target;
     }
@@ -223,6 +263,18 @@ export class Mob extends Entity {
             return;
         }
         if (this.target && this.target.lastDiedTime <= this.startHuntingTime) return;
+
+        // De-aggro if target stays shielded in base for too long.
+        if (this.target?.hasShield && this.target.touchingSafeZone) {
+            if (!this.targetShieldedSince) this.targetShieldedSince = currentTime;
+            if (currentTime - this.targetShieldedSince >= 5000) {
+                this.resetAlarmState();
+                return;
+            }
+        } else {
+            this.targetShieldedSince = 0;
+        }
+
         this.resetAlarmState();
     }
     applyPolarBearBoundary(inTutorialWorld, waterLeft, waterRight) {
@@ -262,9 +314,34 @@ export class Mob extends Entity {
     }
     process(runDecisionLogic = true) {
         const currentTime = performance.now();
+        if (!this.isBlinded(currentTime) && this._blindStored) {
+            this.restoreBlindState();
+        }
         if (!runDecisionLogic) {
             // Keep movement full-rate; AI/turning runs on throttled ticks.
             this.processMovementOnly();
+            return;
+        }
+
+        if (this.isBlinded(currentTime)) {
+            this.storeBlindState();
+            this.isAlarmed = false;
+            this.target = null;
+            this.alarmReason = null;
+
+            const world = this.getWorld();
+            const inTutorialWorld = this.isTutorialWorld();
+            const waterBounds = this.getWaterBounds();
+            const safeZone = getSafeZoneStructure(world);
+            const inBase = this.isInsideSafeZone(safeZone);
+
+            this.updateWaterState(inTutorialWorld, inBase, waterBounds);
+            this.speed = dataMap.MOBS[this.type].speed * (this.blindSpeedMult || 1.5);
+            if (currentTime - this.lastTurnTime > 200) this.defaultTurn();
+            this.move();
+            this.clamp();
+            this.applyPolarBearBoundary(inTutorialWorld, waterBounds.waterLeft, waterBounds.waterRight);
+            pushEntityOutOfSafeZone(this, world);
             return;
         }
 

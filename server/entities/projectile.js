@@ -17,6 +17,7 @@ import { recordResolveCollisionCall } from '../debug.js';
 import {
     Entity
 } from './entity.js';
+import { Player } from './players/player.js';
 
 const VIKING_HIT_TARGET = 3;
 const VIKING_BONUS_MULT = 1.3;
@@ -123,7 +124,10 @@ export class Projectile extends Entity {
         this.groupId = groupId;
         this.angle = angle;
         this.type = type;
-        this.damage = (shooter.strength + dataMap.PROJECTILES[statsType]?.damage) * 1.15;
+        const shooterDamageMult = (typeof shooter?.getAttackDamageMultiplier === 'function')
+            ? shooter.getAttackDamageMultiplier()
+            : 1;
+        this.damage = (shooter.strength + dataMap.PROJECTILES[statsType]?.damage) * 1.15 * shooterDamageMult;
         if (isPlayerShooter) {
             this.damage *= playerScale;
         }
@@ -308,12 +312,15 @@ export class Projectile extends Entity {
                 if ((projectileDx * projectileDx + projectileDy * projectileDy) > (projectileRange * projectileRange)) continue;
 
                 if (colliding(this, other)) {
+                    const canTriggerPvpCombat = !(this.shooter instanceof Player && other.shooter instanceof Player && !this.shooter.canEngagePvpWith(other.shooter));
                     // If either is a throw, both disappear
                     if (this.type === -1 || other.type === -1) {
                         ENTITIES.deleteEntity('projectile', this.id);
                         ENTITIES.deleteEntity('projectile', other.id);
-                        this.shooter.lastCombatTime = performance.now();
-                        other.shooter.lastCombatTime = performance.now();
+                        if (canTriggerPvpCombat) {
+                            this.shooter.lastCombatTime = performance.now();
+                            other.shooter.lastCombatTime = performance.now();
+                        }
                         return;
                     }
 
@@ -346,8 +353,10 @@ export class Projectile extends Entity {
 
                     ENTITIES.deleteEntity('projectile', this.id);
                     ENTITIES.deleteEntity('projectile', other.id);
-                    this.shooter.lastCombatTime = performance.now();
-                    other.shooter.lastCombatTime = performance.now();
+                    if (canTriggerPvpCombat) {
+                        this.shooter.lastCombatTime = performance.now();
+                        other.shooter.lastCombatTime = performance.now();
+                    }
                     return;
                 }
             }
@@ -369,12 +378,17 @@ export class Projectile extends Entity {
             if ((playerDx * playerDx + playerDy * playerDy) > (playerRange * playerRange)) continue;
 
             if (colliding(this, player, buffer)) {
+                // Skip damage when either side is PvP-protected, but keep collision and let projectile continue.
+                if (this.shooter instanceof Player && player instanceof Player && !this.shooter.canEngagePvpWith(player)) {
+                    continue;
+                }
                 const hitKey = `p:${player.id}`;
                 if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
                 if (isPersistentWave) this.hitEntities?.add(hitKey);
                 // damage player
                 let tookDamage = false;
-                if (!player.hasShield) {
+                const allowMinotaurHit = player.progressShieldActive && !player.touchingSafeZone && this.shooter?.type === 6;
+                if (!player.hasShield || allowMinotaurHit) {
                     const viking = getVikingHitInfo(this.shooter, this.getCurrentDamage());
                     tookDamage = player.damage(viking.damage, this.shooter);
                     if (tookDamage && viking.apply) {
@@ -382,10 +396,10 @@ export class Projectile extends Entity {
                         if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, player.x, player.y);
                     }
                     if (tookDamage && this.type !== -1 && ACCESSORY_KEYS[this.shooter?.accessoryId] === 'bush-cloak') {
-                        poison(player, 5, 750, 2000);
+                        poison(player, 5, 750, 2000, this.shooter, true);
                     }
                     if (this.type !== -1 && ACCESSORY_KEYS[player.accessoryId] === 'bush-cloak' && this.shooter && tookDamage) {
-                        poison(this.shooter, 5, 750, 2000);
+                        poison(this.shooter, 5, 750, 2000, player, true);
                     }
                     // Keep knockback synchronized with damage cooldown: only apply when damage lands.
                     if (tookDamage) {
@@ -472,7 +486,7 @@ export class Projectile extends Entity {
                     if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, mob.x, mob.y);
                 }
                 if (tookDamage && this.type !== -1 && ACCESSORY_KEYS[this.shooter?.accessoryId] === 'bush-cloak') {
-                    poison(mob, 5, 750, 2000);
+                    poison(mob, 5, 750, 2000, this.shooter, true);
                 }
 
                 mob.alarm(this.shooter, 'hit');

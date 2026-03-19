@@ -7,7 +7,7 @@ import { uiInput, uiRefs, uiRotation, uiState } from './context.js';
 import { createEl } from './dom.js';
 import { updateShopBody, toggleShopModal } from './shop.js';
 import { toggleSettingsModal } from './settings.js';
-import { handleChatToggle, handleChatAutocompleteTab, handleChatAutocompleteMoveSelection } from './chat.js';
+import { handleChatToggle, handleChatAutocompleteTab, handleChatAutocompleteMoveSelection, handleChatHistoryNavigate, closeChatInput } from './chat.js';
 
 // --- Rotation Limiting ---
 function sendRotation(angle) {
@@ -83,25 +83,19 @@ export function setupKeyboardControls() {
                 return;
             }
             if (e.key === "ArrowDown") {
-                if (handleChatAutocompleteMoveSelection(false)) {
+                if (handleChatAutocompleteMoveSelection(false) || handleChatHistoryNavigate(false)) {
                     e.preventDefault();
                     return;
                 }
             }
             if (e.key === "ArrowUp") {
-                if (handleChatAutocompleteMoveSelection(true)) {
+                if (handleChatAutocompleteMoveSelection(true) || handleChatHistoryNavigate(true)) {
                     e.preventDefault();
                     return;
                 }
             }
             if (e.key === "Escape") {
-                uiState.isChatOpen = false;
-                uiRefs.chatInput.value = '';
-                uiRefs.chatInputWrapper.style.display = 'none';
-                uiRefs.chatInput.blur();
-                uiState.lastChatCloseTime = performance.now();
-                const mobileChatBtn = document.getElementById('mobile-chat-btn');
-                if (mobileChatBtn && isMobile) mobileChatBtn.style.display = 'flex';
+                closeChatInput();
             }
             if (e.key === "Enter") handleChatToggle(myPlayer, homeUsrnInput);
             return;
@@ -176,6 +170,21 @@ function handleGameplayKeyDown(key, player) {
     } else if (key === 'r') {
         sendPickupCommand();
     } else if (key === 'q') {
+        if (Vars.isAdmin) {
+            const creativeSlot = getCreativeSlotUnderClient(Vars.mouseX, Vars.mouseY);
+            if (creativeSlot !== -1) {
+                const creativeItem = getCreativeInventoryItemBySlot(creativeSlot);
+                if (creativeItem) {
+                    sendAdminCreativeItemCommand(
+                        creativeItem.type,
+                        creativeItem.amount,
+                        255,
+                        true
+                    );
+                    return;
+                }
+            }
+        }
         const hoverSlot = getSlotUnderMouse(Vars.mouseX, Vars.mouseY);
         if (hoverSlot !== -1) {
             dropSlot(hoverSlot);

@@ -203,6 +203,14 @@ export function sendBreakChestCommand(startId, endId, dropLoot = false) {
     ws.send(writer.getBuffer());
 }
 
+export function sendBreakStructureCommand(structType = 0) {
+    writer.reset();
+    writer.writeU8(8); // Command packet
+    writer.writeU8(23); // break structures command type
+    writer.writeU8(Math.max(0, Math.min(255, structType | 0)));
+    ws.send(writer.getBuffer());
+}
+
 export function sendHealCommand(entityType, startId, endId) {
     console.log(`[Client CMD] sendHealCommand -> type=${entityType}, range=${startId}-${endId}`);
     writer.reset();
@@ -294,9 +302,21 @@ export function sendMobTypeCommand(subType, mobType, payload = {}) {
         case 10: // heal
             break;
         case 11: // damage
-            writer.writeF32(payload.damage);
-            writer.writeU8(payload.isPercentage ? 1 : 0);
-            break;
+        writer.writeF32(payload.damage);
+        writer.writeU8(payload.isPercentage ? 1 : 0);
+        break;
+    }
+    ws.send(writer.getBuffer());
+}
+
+export function sendSpawnCommand(entityKey, x = null, y = null) {
+    writer.reset();
+    writer.writeU8(8); // Command packet
+    writer.writeU8(22); // spawn command type
+    writer.writeStr(entityKey);
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+        writer.writeU16(Math.max(0, Math.min(65535, Math.round(x))));
+        writer.writeU16(Math.max(0, Math.min(65535, Math.round(y))));
     }
     ws.send(writer.getBuffer());
 }
@@ -386,10 +406,13 @@ export function sendUseAbilityPacket(targetX = null, targetY = null) {
     ws.send(writer.getBuffer());
 }
 
-export function sendResetCommand() {
+export function sendResetCommand(seed = null) {
     writer.reset();
     writer.writeU8(8); // Command packet
     writer.writeU8(15); // reset command type
+    if (Number.isFinite(seed) && seed >= 0 && seed <= 0xFFFFFFFF) {
+        writer.writeU32(seed >>> 0);
+    }
     ws.send(writer.getBuffer());
 }
 

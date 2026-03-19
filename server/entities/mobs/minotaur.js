@@ -18,7 +18,8 @@ import {
     colliding,
     playSfx,
     getId,
-    spawnEnergyBurstProjectiles
+    spawnEnergyBurstProjectiles,
+    pushEntityOutOfSafeZone
 } from '../../helpers.js';
 
 const BURST_COOLDOWN_MIN_MS = 3000;
@@ -50,9 +51,10 @@ const BONUS_DROP_SPREAD = 80;
 export class Minotaur extends Mob {
     constructor(id, x, y) {
         super(id, x, y, 6);
-        this.attackCooldownTime = dataMap.PLAYERS.baseAttackCooldown;
+        this.attackCooldownTime = Math.round(dataMap.PLAYERS.baseAttackCooldown * 1.75);
         this.lastAttackTime = 0;
         this.swingState = 0;
+        this.swingAnimSpeed = 1 / 1.35;
         this.strength = 0;
         this.weapon = { rank: 9 };
         this.targetId = null;
@@ -176,10 +178,36 @@ export class Minotaur extends Mob {
     }
 
     process(runDecisionLogic = true) {
+        const now = performance.now();
+        if (!this.isBlinded(now) && this._blindStored) {
+            this.restoreBlindState();
+        }
+        if (this.isBlinded(now)) {
+            this.storeBlindState();
+            this.isAlarmed = false;
+            this.target = null;
+            this.alarmReason = null;
+
+            this.updateSwingState();
+            this.speed = dataMap.MOBS[this.type].speed * (this.blindSpeedMult || 1.5);
+            if (!this._blindNextTurnAt || now >= this._blindNextTurnAt) {
+                this.angle = Math.random() * Math.PI * 2;
+                this._blindNextTurnAt = now + 120 + Math.floor(Math.random() * 260);
+            }
+            if (!this._blindNextSwingAt || now >= this._blindNextSwingAt) {
+                if (this.swingState === 0 && (now - this.lastAttackTime >= this.attackCooldownTime) && Math.random() < 0.45) {
+                    this.performSwing();
+                }
+                this._blindNextSwingAt = now + 180 + Math.floor(Math.random() * 320);
+            }
+            this.move();
+            this.clamp();
+            pushEntityOutOfSafeZone(this, this.getWorld());
+            return;
+        }
         this.updateSwingState();
 
         if (!runDecisionLogic) {
-            const now = performance.now();
             if (this.isAlarmed) {
                 // Keep target tracking smooth even on throttled AI frames.
                 this.turn();
@@ -197,7 +225,6 @@ export class Minotaur extends Mob {
         const preX = this.x;
         const preY = this.y;
         super.process(true);
-        const now = performance.now();
         this.clampStageTimers(now);
         this.processShockwaveWaves(now);
         this.processForcedCloseRangeBurst(now);
@@ -342,7 +369,7 @@ export class Minotaur extends Mob {
 
     updateSwingState() {
         if (this.swingState > 0) {
-            this.swingState = Math.floor(this.swingState + 1);
+            this.swingState += this.swingAnimSpeed;
             if (this.swingState >= 7) {
                 this.swingState = 0;
             }
@@ -352,7 +379,9 @@ export class Minotaur extends Mob {
     trySwingAttack() {
         if (!this.isAlarmed) return;
         const target = this.getAlarmedTarget();
-        if (!target || !target.isAlive || target.hasShield || target.isInvisible) return;
+        if (!target || !target.isAlive || target.isInvisible) return;
+        const shieldBlocks = target.hasShield && !(target.progressShieldActive && !target.touchingSafeZone);
+        if (shieldBlocks) return;
 
         const dx = target.x - this.x;
         const dy = target.y - this.y;

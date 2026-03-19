@@ -55,6 +55,7 @@ const BASE_REGEN_AMOUNT = 5;
 const DIAGONAL_MOVE_SCALE = Math.SQRT1_2 * 1.1;
 const PICKUP_DELAY_MS = 200;
 const TUTORIAL_MOVEMENT_HOLD_MS = 2000;
+const PVP_PROTECTION_SCORE = 1000; // players below this score cannot deal or receive PvP damage
 const TUTORIAL_MOVEMENT_SEQUENCE = [
     { key: 'w', label: 'W', direction: 'NORTH' },
     { key: 'a', label: 'A', direction: 'WEST' },
@@ -106,6 +107,9 @@ export class Player extends Entity {
         this.baseViewRangeMult = DEFAULT_VIEW_RANGE_MULT;
         this.viewRangeMult = DEFAULT_VIEW_RANGE_MULT;
         this.viewRangeOverride = null;
+        this.blindAppliedAt = 0;
+        this.blindUntil = 0;
+        this.blindMinMult = 1;
 
         // --- Inventory & Combat ---
         this.inventory = new Array(35).fill(0);
@@ -141,6 +145,10 @@ export class Player extends Entity {
         this.vikingHitCount = 0;
         this.lastVikingHitTime = 0;
         this._cachedAccessoryState = null;
+        this.growthSpurtUntil = 0;
+        this.growthSpurtOriginalRadius = null;
+        this.progressShieldActive = false;
+        this.damageDebuffMult = 1;
 
         // --- Timers & Cooldowns ---
         this.lastDamagedTime = 0;
@@ -186,6 +194,7 @@ export class Player extends Entity {
         this.resolveCollisions(worldPlayers, worldMobs, now);
         this.clamp();
         this.updateEnvironment(now);
+        this.updateProgressShield();
         this.updateEquippedState(now);
         this.applyAccessoryEffects(now);
         this.updateAnimations(now);
@@ -195,11 +204,16 @@ export class Player extends Entity {
         this.updateChat(now);
         this.handleAutoPickup(now, worldCoins);
         this.processTutorial(now);
+        this.updateGrowthSpurt(now);
 
         this.updateCombatState(now);
     }
 
     updateCombatState(now) {
+        // Dead players should never remain flagged as "in combat".
+        if (!this.isAlive) {
+            this.lastCombatTime = -Infinity;
+        }
         const currentlyInCombat = now - this.lastCombatTime < 10000;
         if (this.wasInCombat !== currentlyInCombat) {
             this.sendStatsUpdate();
@@ -521,14 +535,22 @@ export class Player extends Entity {
 
     updateEquippedState(now = performance.now()) {
         const cooldown = now - this.lastThrowSwordTime < this.throwSwordCoolDownTime;
-        const invalidEnv = this.inWater || this.touchingSafeZone;
+        const inCombat = now - this.lastCombatTime < 10000;
+        // Weapons stay sheathed in safe zone unless in combat.
+        const safeZoneLocksWeapon = this.touchingSafeZone && !inCombat;
+        const invalidEnv = this.inWater || safeZoneLocksWeapon;
         this.hasWeapon = !cooldown && !invalidEnv && !this.manuallyUnequippedWeapon && isSwordRank(this.weapon.rank);
-        this.hasShield = this.touchingSafeZone;
+        // Shields:
+        // - envShield: inside safe zone and not in combat
+        // - progressShieldActive: low-score/low-gear protection (does NOT block attacking/throwing)
+        const envShield = this.touchingSafeZone && !inCombat;
+        this.hasShield = envShield || this.progressShieldActive;
     }
 
     applyAccessoryEffects(now = performance.now()) {
         const accessoryKey = ACCESSORY_KEYS[this.accessoryId];
         const staminaBoostActive = this.isStaminaBoostActive(now);
+        const blindMult = this.getBlindnessViewRangeMult(now);
         const accessoryState = this._cachedAccessoryState;
         const radius = this.radius || 0;
         const baseOverride = (typeof this.viewRangeOverride === 'number')
@@ -538,13 +560,14 @@ export class Player extends Entity {
             || accessoryState.accessoryId !== this.accessoryId
             || accessoryState.radius !== radius
             || accessoryState.baseOverride !== baseOverride
-            || accessoryState.staminaBoostActive !== staminaBoostActive;
+            || accessoryState.staminaBoostActive !== staminaBoostActive
+            || Math.abs((accessoryState?.blindMult ?? 1) - blindMult) > 0.001;
 
         if (needsRecompute) {
             const accessoryMult = dataMap.ACCESSORIES[accessoryKey]?.viewRangeMult || 1;
             const baseRadius = Math.max(1, dataMap.PLAYERS.baseRadius || 30);
             const radiusScale = Math.max(0.1, radius / baseRadius);
-            this.viewRangeMult = Math.max(0.1, baseOverride * accessoryMult * radiusScale);
+            this.viewRangeMult = Math.max(0.1, baseOverride * accessoryMult * radiusScale * blindMult);
             const swingMult = staminaBoostActive ? 0.7 : 1;
             this.attackCooldownTime = Math.max(100, dataMap.PLAYERS.baseAttackCooldown * swingMult * radiusScale);
             const nextAbility = this.getEquippedAbility();
@@ -558,7 +581,8 @@ export class Player extends Entity {
                 accessoryId: this.accessoryId,
                 radius,
                 baseOverride,
-                staminaBoostActive
+                staminaBoostActive,
+                blindMult
             };
         }
         if (accessoryKey !== 'viking-hat' && this.vikingHitCount !== 0) {
@@ -580,6 +604,10 @@ export class Player extends Entity {
         if (accessoryKey === 'bush-cloak') return 'poison_blast';
         if (accessoryKey === 'pirate-hat') return 'stamina_boost';
         if (accessoryKey === 'minotaur-hat') return 'energy_burst';
+        if (accessoryKey === 'alien-antennas') return 'lightning_shot';
+        if (accessoryKey === 'dark-cloak') return 'smoke_blast';
+        if (accessoryKey === 'viking-hat') return 'growth_spurt';
+        if (accessoryKey === 'sunglasses') return 'invisibility';
         return '';
     }
 
@@ -588,7 +616,113 @@ export class Player extends Entity {
         if (abilityName === 'stamina_boost') return 30000;
         if (abilityName === 'speed_boost') return 30000;
         if (abilityName === 'energy_burst') return 30000;
+        if (abilityName === 'lightning_shot') return 30000;
+        if (abilityName === 'smoke_blast') return 30000;
+        if (abilityName === 'growth_spurt') return 30000;
+        if (abilityName === 'invisibility') return 30000;
+        if (abilityName === 'intimidation') return 30000;
         return 0;
+    }
+
+    getAttackDamageMultiplier() {
+        return Math.max(0.1, this.damageDebuffMult || 1);
+    }
+
+    isBlinded(now = performance.now()) {
+        return now < (this.blindUntil || 0);
+    }
+
+    getBlindnessViewRangeMult(now = performance.now()) {
+        if (!this.blindUntil || now >= this.blindUntil) return 1;
+        const start = this.blindAppliedAt || 0;
+        const hold = Math.max(0, this.blindHoldMs || 0);
+        const fade = Math.max(1, this.blindFadeMs || 1);
+        const elapsed = now - start;
+        const minMult = Math.max(0.1, Math.min(1, this.blindMinMult || 1));
+        if (elapsed <= hold) return minMult;
+        const t = Math.max(0, Math.min(1, (elapsed - hold) / fade));
+        return minMult + (1 - minMult) * t;
+    }
+
+    applyBlindness(durationMs = 5000, minViewRangeMult = 0.35, holdMs = 0, fadeMs = null) {
+        const now = performance.now();
+        const safeHold = Math.max(0, Math.round(holdMs));
+        const safeFade = Math.max(1, Math.round(Number.isFinite(fadeMs) ? fadeMs : Math.max(1, durationMs - safeHold)));
+        const total = safeHold + safeFade;
+        this.blindAppliedAt = now;
+        this.blindHoldMs = safeHold;
+        this.blindFadeMs = safeFade;
+        this.blindUntil = now + Math.max(1, total);
+        this.blindMinMult = Math.max(0.1, Math.min(1, minViewRangeMult));
+        this.lastCombatTime = now;
+        this._cachedAccessoryState = null;
+        this.sendStatsUpdate();
+    }
+
+    getBestSwordRank() {
+        let best = 0;
+        for (let i = 0; i < this.inventory.length; i++) {
+            if (this.inventoryCounts[i] <= 0) continue;
+            const rank = this.inventory[i] & 0x7F;
+            if (isSwordRank(rank) && rank > best) best = rank;
+        }
+        return best;
+    }
+
+    shouldHaveProgressShield() {
+        const bestRank = this.getBestSwordRank();
+        if (bestRank <= 1) return true;
+        if ((this.score || 0) < 1000) return true;
+        return false;
+    }
+
+    updateProgressShield() {
+        const active = this.shouldHaveProgressShield();
+        if (active !== this.progressShieldActive) {
+            this.progressShieldActive = active;
+            this._forceFullSync = true;
+            this.sendStatsUpdate();
+        }
+        if (!active && this.hasShield && !(this.touchingSafeZone && (performance.now() - this.lastCombatTime >= 10000))) {
+            // If progress shield fell off, keep environment shield logic.
+            this.hasShield = this.touchingSafeZone && (performance.now() - this.lastCombatTime >= 10000);
+        }
+    }
+
+    activateGrowthSpurt(durationMs = 8000) {
+        const now = performance.now();
+        const safeDuration = Math.max(1, Math.round(durationMs));
+        const baseRadius = Math.max(1, dataMap.PLAYERS.baseRadius || 30);
+        if (now < (this.growthSpurtUntil || 0)) {
+            this.growthSpurtUntil = now + safeDuration;
+            if (!Number.isFinite(this.growthSpurtOriginalRadius)) {
+                const currentRadius = Number.isFinite(this.radius) ? this.radius : baseRadius;
+                this.growthSpurtOriginalRadius = Math.max(1, currentRadius / 2);
+            }
+            return;
+        }
+        const startingRadius = Number.isFinite(this.radius) ? this.radius : baseRadius;
+        this.growthSpurtOriginalRadius = startingRadius;
+        this.radius = Math.max(1, startingRadius * 2);
+        this.growthSpurtUntil = now + safeDuration;
+        this._cachedAccessoryState = null;
+        this._forceFullSync = true;
+        this.sendStatsUpdate();
+    }
+
+    updateGrowthSpurt(now = performance.now()) {
+        if (!this.growthSpurtUntil) return;
+        if (now < this.growthSpurtUntil) return;
+        if (Number.isFinite(this.growthSpurtOriginalRadius)) {
+            this.radius = this.growthSpurtOriginalRadius;
+        } else {
+            this.radius = Math.max(1, dataMap.PLAYERS.baseRadius || 30);
+        }
+        this.growthSpurtOriginalRadius = null;
+        this.growthSpurtUntil = 0;
+        this._cachedAccessoryState = null;
+        this._forceFullSync = true;
+        this.sendStatsUpdate();
     }
 
     isStaminaBoostActive(now = performance.now()) {
@@ -652,6 +786,18 @@ export class Player extends Entity {
         return Math.max(0.1, (this.radius || baseRadius) / baseRadius);
     }
 
+    isPvpProtected() {
+        const lowScore = this.score < PVP_PROTECTION_SCORE;
+        const weakGear = this.getBestSwordRank() <= 1;
+        return lowScore || weakGear;
+    }
+
+    canEngagePvpWith(otherPlayer) {
+        if (!(otherPlayer instanceof Player)) return true;
+        // Any protected entity (bot or human) blocks PvP damage in both directions.
+        return !(this.isPvpProtected() || otherPlayer.isPvpProtected());
+    }
+
     // --- Actions ---
 
     attack(now = performance.now()) {
@@ -663,7 +809,11 @@ export class Player extends Entity {
 
         const curRank = this.inventory[this.selectedSlot];
         const baseRank = curRank & 0x7F;
-        const canAttack = this.attacking && !this.hasShield && this.isAlive && this.hasWeapon && !this.inWater && curRank < 128 && isSwordRank(baseRank);
+        // Safe-zone shield always blocks attacking; progress shield alone does not.
+        const inCombat = now - this.lastCombatTime < 10000;
+        const envShieldActive = this.touchingSafeZone && !inCombat;
+        const shieldBlocksAttack = envShieldActive;
+        const canAttack = this.attacking && !shieldBlocksAttack && this.isAlive && this.hasWeapon && !this.inWater && curRank < 128 && isSwordRank(baseRank);
 
         if (!canAttack || now - this.lastAttackTime < this.attackCooldownTime) return;
 
@@ -684,7 +834,8 @@ export class Player extends Entity {
         const now = performance.now();
         const curRank = this.inventory[this.selectedSlot];
         const baseRank = curRank & 0x7F;
-        const canThrow = !this.hasShield && this.isAlive && this.swingState === 0 && !this.inWater && curRank < 128 && isSwordRank(baseRank);
+        // Throwing is blocked only by safe-zone weapon lock (hasWeapon covers that), water, cooldown, and ghost rank.
+        const canThrow = this.isAlive && this.hasWeapon && this.swingState === 0 && !this.inWater && curRank < 128 && isSwordRank(baseRank);
 
         if (!canThrow || now - this.lastThrowSwordTime < this.throwSwordCoolDownTime) return;
 
@@ -994,17 +1145,17 @@ export class Player extends Entity {
             if (!isSwordRank(rank)) continue;
 
             const shopItem = dataMap.SHOP_ITEMS.find(item => item.id === rank);
-            if (shopItem) {
-                const sellPrice = Math.floor(shopItem.price * 0.5) * this.inventoryCounts[slotIndex];
-                totalSellPrice += sellPrice;
-                this.inventory[slotIndex] = 0;
-                this.inventoryCounts[slotIndex] = 0;
+            const unitSellPrice = shopItem ? Math.floor(shopItem.price * 0.5) : (rank === 9 ? 500 : 0);
+            if (unitSellPrice <= 0) continue;
+            const sellPrice = unitSellPrice * this.inventoryCounts[slotIndex];
+            totalSellPrice += sellPrice;
+            this.inventory[slotIndex] = 0;
+            this.inventoryCounts[slotIndex] = 0;
 
-                if (this.selectedSlot === slotIndex) {
-                    // Logic for weapon rank update if needed, but this.weapon.rank is a getter
-                }
-                soldAny = true;
+            if (this.selectedSlot === slotIndex) {
+                // Logic for weapon rank update if needed, but this.weapon.rank is a getter
             }
+            soldAny = true;
         }
 
         if (soldAny) {
@@ -1085,6 +1236,9 @@ export class Player extends Entity {
 
     damage(health, attacker) {
         if (this.invincible || performance.now() - this.lastDamagedTime < 200) return false;
+        if (attacker instanceof Player && !this.canEngagePvpWith(attacker)) {
+            return false;
+        }
 
         let finalHealthLoss = health;
         if (ACCESSORY_KEYS[this.accessoryId] === 'minotaur-hat') {
@@ -1124,9 +1278,13 @@ export class Player extends Entity {
         this.sendStatsUpdate();
         this.isAlive = false;
 
-        const lost = Math.max(1, Math.floor(this.score * 0.3));
+        const currentScore = this.score;
+        const lossPercent = 0.25 + (Math.random() * 0.10); // 25% - 35%
+        const lost = Math.min(currentScore, currentScore > 0 ? Math.max(1, Math.floor(currentScore * lossPercent)) : 0);
         if (killer instanceof Player && killer.id !== this.id) {
-            killer.addScore(lost);
+            if (lost > 0) {
+                killer.addScore(lost);
+            }
             killer.killCount = (killer.killCount || 0) + 1;
             if (killer.isBot) {
                 markBotKillTargetCooldown(killer, this.id, this.lastDiedTime);
@@ -1173,8 +1331,14 @@ export class Player extends Entity {
         this.inventoryCounts[0] = 1;
         this.baseStrength = dataMap.PLAYERS.baseStrength;
         this.baseMaxHp = dataMap.PLAYERS.maxHealth;
-        this.setScore(this.score - lost);
+        this.setScore(currentScore - lost);
         this.killCount = 0;
+        this.radius = dataMap.PLAYERS.baseRadius;
+        this.growthSpurtUntil = 0;
+        this.growthSpurtOriginalRadius = null;
+        this.damageDebuffMult = 1;
+        this.progressShieldActive = false;
+        this._forceFullSync = true;
         this.resetBuffs();
         this.recomputeBuffedAttributes({ healByMaxIncrease: false });
         this.hp = this.maxHp;
@@ -1305,7 +1469,8 @@ export class Player extends Entity {
         if (safeZone) {
             const safeDx = safeZone.x - this.x;
             const safeDy = safeZone.y - this.y;
-            const safeRange = (safeZone.radius || 0) + (this.radius || 0) + 10;
+            // Keep the touch range tight so players quickly exit safe-zone state when they step out.
+            const safeRange = (safeZone.radius || 0) + (this.radius || 0) + 2;
             if ((safeDx * safeDx + safeDy * safeDy) <= (safeRange * safeRange) && colliding(this, safeZone)) {
                 this.touchingSafeZone = true;
             }
@@ -1321,7 +1486,7 @@ export class Player extends Entity {
             const m = mobs[i];
             if (!m) continue;
 
-            if (m.type === 5 && !m.isAlarmed && !this.hasShield && !this.invincible && !this.isHidden && !this.isInvisible) {
+            if (m.type === 5 && !m.isAlarmed && !this.hasShield && !this.invincible && !this.isHidden && !this.isInvisible && !this.isPvpProtected()) {
                 const dx = m.x - this.x;
                 const dy = m.y - this.y;
                 const cloakMult = ACCESSORY_KEYS[this.accessoryId] === 'dark-cloak' ? 0.5 : 1;
@@ -1352,13 +1517,19 @@ export class Player extends Entity {
                 const meetsHealthGate = isPolarBear ? true : (mHealthRatio >= 0.6);
                 const meleeReady = !hasMeleeCooldown || (now - (m.lastMeleeAttackTime || 0) >= 600);
 
-                if (m.isAlarmed && dataMap.MOBS[m.type].isNeutral && m.target?.id === this.id && !this.hasShield && !this.isHidden && !this.isInvisible && meetsHealthGate && meleeReady) {
-                    const tookDamage = this.damage(dataMap.MOBS[m.type].damage, m);
+                const allowPolarBearHit = isPolarBear
+                    && this.progressShieldActive
+                    && !this.touchingSafeZone
+                    && m.alarmReason === 'hit'
+                    && m.lastHitById === this.id;
+                if (m.isAlarmed && dataMap.MOBS[m.type].isNeutral && m.target?.id === this.id && (!this.hasShield || allowPolarBearHit) && !this.isHidden && !this.isInvisible && meetsHealthGate && meleeReady) {
+                    const mobDmgMult = Math.max(0.1, m.damageDebuffMult || 1);
+                    const tookDamage = this.damage(dataMap.MOBS[m.type].damage * mobDmgMult, m);
                     if (tookDamage && hasMeleeCooldown) {
                         m.lastMeleeAttackTime = now;
                     }
                     if (tookDamage && ACCESSORY_KEYS[this.accessoryId] === 'bush-cloak') {
-                        poison(m, 5, 750, 2000);
+                        poison(m, 5, 750, 2000, this, true);
                     }
                 }
             }

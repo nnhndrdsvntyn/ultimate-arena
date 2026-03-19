@@ -142,19 +142,23 @@ export const UPDATES_LOG = [
         date: '2026-03-05'
     },
     {
-        version: '1.4.3 (testing, WIP)',
+        version: '1.5.0',
         changes: [
+            "Lower minotaur swing rate",
+            "Early game players can neither attack or be attacked by other players.",
+            "Slightly more realistic & advanced NPC logic",
             "Slight tutorial rework",
-            "New ability for bush cloak!",
+            "Added special abilities for the bush cloak, dark cloak, alien antennas, sunglasses and viking hat!",
             "Better performance; Less stuttering.",
+            "New commands",
             "Better UX for commands",
             "Small bug fixes",
-            "Small river tweaks.",
+            "Added bridges to center river",
             "Longer agro mob melee cooldown time",
             "Fixed polar bear agro bug",
             "Other players can now be seen as red dots on the minimap."
         ],
-        date: '2026-03-10'
+        date: '2026-03-18'
     }
 ];
 

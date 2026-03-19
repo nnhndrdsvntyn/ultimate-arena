@@ -1,5 +1,4 @@
 import { ENTITIES } from './game.js';
-
 const HUNTER_DEBUG_INTERVAL_MS = 1000;
 let loggedGroupsOnce = false;
 let resolveCollisionCalls = 0;

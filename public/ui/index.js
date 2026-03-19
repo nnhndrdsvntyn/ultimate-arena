@@ -29,6 +29,7 @@ import {
 import { ACCESSORY_KEYS } from '../shared/datamap.js';
 import { createSettingsButton, createSettingsModal, updateSettingsBody, toggleSettingsModal } from './settings.js';
 import { createShopButton, createShopModal, updateShopBody, toggleShopModal } from './shop.js';
+import { createTopBarHint } from './hud.js';
 import { createChatUI, closeChatInput } from './chat.js';
 import {
     setupKeyboardControls,
@@ -168,6 +169,7 @@ export function initializeUI() {
     const topLeftBar = createEl('div', {}, hudContainer, { id: 'top-left-bar' });
 
     createShieldIcon(topLeftBar);
+    createTopBarHint(hudContainer);
     createComboText(hudContainer);
     createSettingsButton(topLeftBar);
     createFullscreenButton(topLeftBar);
