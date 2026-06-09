@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Ultimate Arena</title>
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;900&family=Rajdhani:wght@400;600;700;900&display=swap" rel="stylesheet">
+</head>
+
+<body>
+  <!-- Home / Login Screen -->
+  <section id="home_screen">
+    <div id="home_online_count">0 players online</div>
+    <img id="home_logo" src="./images/ui/logo.png" alt="Ultimate Arena">
+    <div id="home_panels">
+      <div id="play_panel">
+        <div id="input_container">
+          <input id="homeUsrnInput" maxlength="15" placeholder="Username" autocomplete="off">
+          <div id="home_play_actions">
+            <button id="tutorialBtn" type="button">TUTORIAL</button>
+            <button id="joinBtn" type="button">PLAY</button>
+          </div>
+        </div>
+      </div>
+      <aside id="auth_panel">
+        <div id="auth_panel_title">Info</div>
+        <div id="home_info_tabs" role="tablist" aria-label="Home info sections">
+          <button class="home_info_tab active" type="button" data-tab="account" role="tab" aria-selected="true">Account</button>
+          <button class="home_info_tab" type="button" data-tab="leaderboards" role="tab" aria-selected="false">Leaderboards</button>
+          <button class="home_info_tab" type="button" data-tab="updates" role="tab" aria-selected="false">Updates</button>
+        </div>
+        <div id="home_info_sections">
+          <section class="home_info_panel_section active" data-panel="account">
+            <input id="homePassInput" type="password" maxlength="64" placeholder="Password" autocomplete="off">
+            <div id="auth_actions">
+              <button id="loginBtn" type="button">LOG IN</button>
+              <button id="signupBtn" type="button">SIGN UP</button>
+              <button id="logoutBtn" type="button">LOG OUT</button>
+            </div>
+            <div id="account_status">Log in or create an account.</div>
+            <div id="account_stats">
+              <div class="account_stat_card">
+                <div class="account_stat_label">Total Kills</div>
+                <div id="account_total_kills" class="account_stat_value">0</div>
+              </div>
+              <div class="account_stat_card">
+                <div class="account_stat_label">Total Deaths</div>
+                <div id="account_total_deaths" class="account_stat_value">0</div>
+              </div>
+              <div class="account_stat_card">
+                <div class="account_stat_label">K/D Ratio</div>
+                <div id="account_kd_ratio" class="account_stat_value">0.00</div>
+              </div>
+              <div class="account_stat_card">
+                <div class="account_stat_label">Total Play Time</div>
+                <div id="account_total_playtime" class="account_stat_value">00:00:00</div>
+              </div>
+            </div>
+          </section>
+          <section class="home_info_panel_section" data-panel="leaderboards">
+            <div class="home_info_section_head">
+              <div class="home_info_section_title">Top Runs</div>
+              <button id="leaderboardRefreshBtn" type="button">Refresh</button>
+            </div>
+            <div id="home_leaderboard_status">Loading leaderboards from the server...</div>
+            <div id="home_leaderboard_scopes">
+              <button class="home_leaderboard_scope_btn active" type="button" data-scope="daily">Daily</button>
+              <button class="home_leaderboard_scope_btn" type="button" data-scope="weekly">Weekly</button>
+              <button class="home_leaderboard_scope_btn" type="button" data-scope="monthly">Monthly</button>
+            </div>
+            <div id="home_leaderboard_list"></div>
+          </section>
+          <section class="home_info_panel_section" data-panel="updates">
+            <div class="home_info_section_head">
+              <div class="home_info_section_title">Update Log</div>
+            </div>
+            <div id="home_updates_log"></div>
+          </section>
+        </div>
+      </aside>
+    </div>
+    <div id="credits">Made by Liberation</div>
+    <a
+      id="home_form_link"
+      href="https://tinyurl.com/dtrhz9f2"
+      target="_blank"
+      rel="noopener noreferrer"
+    >Game Suggestions / Bug Reports Form</a>
+  </section>
+
+  <!-- Respawn Screen -->
+  <section id="respawn_screen">
+    <h1>You died</h1>
+    <div id="respawn_actions">
+      <button id="respawnBtn">RESPAWN</button>
+      <button id="respawnHomeBtn">HOME</button>
+    </div>
+  </section>
+
+  <!-- Game UI / HUD -->
+  <main id="game_hud">
+    <!-- HUD elements will be dynamically injected here via ui.js -->
+  </main>
+
+  <script src="./crash_handler.js"></script>
+  <script src="./client.js" type="module"></script>
+</body>
+
+</html>

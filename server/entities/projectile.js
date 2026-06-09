@@ -1,0 +1,862 @@
+import {
+    ENTITIES
+} from '../game.js';
+import {
+    dataMap,
+    ACCESSORY_KEYS,
+    isChestObjectType,
+    isWeaponRank,
+    isSpearType,
+    getWeaponSize,
+    getWeaponAttackStats,
+    isWeaponProjectileType,
+    getWeaponTypeByProjectileType,
+    getWeaponProjectileType,
+    WEAPON_TYPES,
+    isRockStructureType
+} from '../../public/shared/datamap.js';
+import {
+    colliding,
+    playSfx,
+    poison,
+    emitCriticalHitFxToPlayer
+} from '../helpers.js';
+import { recordResolveCollisionCall } from '../debug.js';
+import {
+    Entity
+} from './entity.js';
+import { Player } from './players/player.js';
+
+const VIKING_HIT_TARGET = 3;
+const VIKING_BONUS_MULT = 1.3;
+const MINOTAUR_PARRY_HALF_ANGLE = Math.PI / 3;
+const MINOTAUR_CHARGE_DISTANCE_ON_PARRY = 90;
+const MINOTAUR_PARRY_CHANCE_STAGE_1 = 0.5;
+const MINOTAUR_PARRY_CHANCE_STAGE_2 = 0.65;
+const MINOTAUR_PARRY_CHANCE_STAGE_3 = 0.85;
+const THROWN_SWORD_HITBOX_MULT = 0.6;
+const MINOTAUR_AXE_V2_PROJECTILE_TYPE = getWeaponProjectileType(WEAPON_TYPES['minotaur_axe_v2']);
+const DEFAULT_ROCK_PUSH_STRENGTH = 85;
+
+function getVikingHitInfo(shooter, baseDamage) {
+    if (!shooter || !shooter.isAlive) return { damage: baseDamage, nextCount: 0, apply: false, isBonus: false };
+    const accessoryKey = ACCESSORY_KEYS[shooter.accessoryId];
+    if (accessoryKey !== 'viking_hat') return { damage: baseDamage, nextCount: 0, apply: false, isBonus: false };
+    const next = (shooter.vikingHitCount || 0) + 1;
+    const isBonus = next === VIKING_HIT_TARGET;
+    const damage = isBonus ? baseDamage * VIKING_BONUS_MULT : baseDamage;
+    return { damage, nextCount: isBonus ? 0 : next, apply: true, isBonus };
+}
+
+function commitVikingHit(shooter, nextCount) {
+    if (!shooter) return;
+    shooter.vikingHitCount = nextCount;
+    shooter.lastVikingHitTime = performance.now();
+    shooter.sendStatsUpdate();
+}
+
+function normalizeAngle(rad) {
+    return ((rad + Math.PI) % (Math.PI * 2) + (Math.PI * 2)) % (Math.PI * 2) - Math.PI;
+}
+
+function canMinotaurParryThrow(mob, projectile) {
+    if (!mob || !projectile || projectile.type !== -1 || mob.type !== 6) return false;
+
+    // Must be within minotaur's sword swing reach.
+    const [minotaurSwordWidth] = getWeaponSize(12);
+    const swingRange = minotaurSwordWidth * 2;
+    const dx = projectile.x - mob.x;
+    const dy = projectile.y - mob.y;
+    const distSq = dx * dx + dy * dy;
+    if (distSq > swingRange * swingRange) return false;
+
+    // Must be in front-ish cone so it can parry without rotating.
+    const toProjectile = Math.atan2(dy, dx);
+    const delta = Math.abs(normalizeAngle(toProjectile - mob.angle));
+    return delta <= MINOTAUR_PARRY_HALF_ANGLE;
+}
+
+function canMinotaurParrySlash(mob, projectile) {
+    if (!mob || !projectile || mob.type !== 6) return false;
+    if (projectile.type === -1) return false; // throw uses separate parry logic
+    if (!mob.swingState || mob.swingState <= 0) return false;
+
+    const [minotaurSwordWidth] = getWeaponSize(12);
+    const swingRange = minotaurSwordWidth * 2;
+    const dx = projectile.x - mob.x;
+    const dy = projectile.y - mob.y;
+    const distSq = dx * dx + dy * dy;
+    if (distSq > swingRange * swingRange) return false;
+
+    const toProjectile = Math.atan2(dy, dx);
+    const delta = Math.abs(normalizeAngle(toProjectile - mob.angle));
+    return delta <= MINOTAUR_PARRY_HALF_ANGLE;
+}
+
+function chargeMinotaurTowardShooter(mob, shooter) {
+    if (!mob || !shooter) return;
+    const dx = shooter.x - mob.x;
+    const dy = shooter.y - mob.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist <= 0.001) return;
+    mob.x += (dx / dist) * MINOTAUR_CHARGE_DISTANCE_ON_PARRY;
+    mob.y += (dy / dist) * MINOTAUR_CHARGE_DISTANCE_ON_PARRY;
+    if (typeof mob.clamp === 'function') mob.clamp();
+}
+
+function getProjectilePushAngle(projectile, structure) {
+    const dx = structure.x - (projectile.lastX ?? projectile.x);
+    const dy = structure.y - (projectile.lastY ?? projectile.y);
+    if ((dx * dx + dy * dy) > 0.001) return Math.atan2(dy, dx);
+    return projectile.angle || 0;
+}
+
+function tryPushStructureWithProjectile(projectile, structure) {
+    if (!projectile || !structure || !isRockStructureType(structure.type)) return false;
+    const pushTypes = projectile.rockPushTypes;
+    if (!(pushTypes instanceof Set) || !pushTypes.has(Number(structure.type))) return false;
+
+    const angle = getProjectilePushAngle(projectile, structure);
+    const speedPush = Math.max(0, projectile.speed || projectile.expandPerTick || 0) * 0.45;
+    const pushAmount = Math.max(12, Math.min(projectile.rockPushStrength || DEFAULT_ROCK_PUSH_STRENGTH, speedPush || DEFAULT_ROCK_PUSH_STRENGTH));
+    structure.x += Math.cos(angle) * pushAmount;
+    structure.y += Math.sin(angle) * pushAmount;
+    if (typeof structure.clamp === 'function') structure.clamp();
+    return true;
+}
+
+function getMinotaurParryChance(mob) {
+    if (!mob || mob.type !== 6) return MINOTAUR_PARRY_CHANCE_STAGE_1;
+
+    if (typeof mob.getDifficultyStage === 'function') {
+        const stage = mob.getDifficultyStage();
+        if (stage >= 3) return MINOTAUR_PARRY_CHANCE_STAGE_3;
+        if (stage === 2) return MINOTAUR_PARRY_CHANCE_STAGE_2;
+        return MINOTAUR_PARRY_CHANCE_STAGE_1;
+    }
+
+    const hp = Number.isFinite(mob.hp) ? mob.hp : 0;
+    const maxHp = Number.isFinite(mob.maxHp) && mob.maxHp > 0 ? mob.maxHp : 1;
+    const ratio = hp / maxHp;
+    if (ratio <= 0.2) return MINOTAUR_PARRY_CHANCE_STAGE_3;
+    if (ratio <= 0.6) return MINOTAUR_PARRY_CHANCE_STAGE_2;
+    return MINOTAUR_PARRY_CHANCE_STAGE_1;
+}
+
+export class Projectile extends Entity {
+    constructor(id, x, y, angle, type, shooter, groupId, options = null) {
+        const weaponAttackType = type === -1
+            ? (shooter?.weapon?.rank || 1)
+            : (isWeaponRank(type)
+                ? type
+                : (isWeaponProjectileType(type) ? getWeaponTypeByProjectileType(type) : 0));
+        const stats = weaponAttackType > 0
+            ? (getWeaponAttackStats(weaponAttackType) || getWeaponAttackStats(1) || {})
+            : (dataMap.PROJECTILES[type] || {});
+        const speed = stats?.speed;
+        const radius = stats?.radius;
+        super(id, x, y, radius, speed, 0, 0);
+        const basePlayerRadius = Math.max(1, dataMap.PLAYERS.baseRadius || 30);
+        const isPlayerShooter = shooter && typeof shooter.accessoryId !== 'undefined';
+        const playerScale = isPlayerShooter && Number.isFinite(shooter.radius)
+            ? Math.max(0.2, shooter.radius / basePlayerRadius)
+            : 1;
+
+        this.groupId = groupId;
+        this.angle = angle;
+        this.type = type;
+        const shooterDamageMult = (typeof shooter?.getAttackDamageMultiplier === 'function')
+            ? shooter.getAttackDamageMultiplier()
+            : 1;
+        this.damage = (shooter.strength + (stats?.damage || 0)) * 1.15 * shooterDamageMult;
+        if (isPlayerShooter) {
+            this.damage *= playerScale;
+        }
+        if (this.shooter?.type === 6 && typeof this.shooter.getAttackDamageMultiplier === 'function') {
+            this.damage *= this.shooter.getAttackDamageMultiplier();
+        }
+        if (this.shooter?.type === 6 && type === MINOTAUR_AXE_V2_PROJECTILE_TYPE) {
+            this.damage *= 0.7;
+        }
+        this.maxDistance = stats?.maxDistance;
+
+        if (type === -1) {
+            this.damage /= 1.5;
+            const [swordWidth] = getWeaponSize(shooter.weapon.rank);
+            this.radius = (swordWidth || this.radius || 100) * playerScale;
+            this.radius *= THROWN_SWORD_HITBOX_MULT;
+            this.speed /= 1.25;
+            this.maxDistance *= (4 * playerScale);
+            this.weaponRank = isSpearType(shooter.weapon.rank)
+                ? (shooter.weapon.rank | 0x80)
+                : shooter.weapon.rank;
+            if (this.shooter?.inWater) {
+                this.speed *= 0.4;
+            }
+        }
+        if (type !== -1 && isWeaponProjectileType(type)) {
+            this.radius *= playerScale;
+            this.maxDistance *= playerScale;
+        }
+        this.distanceTraveled = 0;
+        this.shooter = shooter;
+        if (type !== -1) {
+            this.weaponRank = shooter.weapon.rank;
+        }
+        this.knockbackStrength = stats?.knockbackStrength || 25;
+        this.renderLength = null;
+        this.staticRender = false;
+        this.renderX = null;
+        this.renderY = null;
+        this.noMove = false;
+        this.logicOnly = false;
+        this.ttlMs = 0;
+        this.spawnedAt = performance.now();
+        this.expandPerTick = 0;
+        this.persistentHits = false;
+        this.hitEntities = null;
+        this.ignoreStructureCollisions = false;
+        this.rockPushTypes = null;
+        this.rockPushStrength = DEFAULT_ROCK_PUSH_STRENGTH;
+
+        this.fixedDistanceTravel = false;
+        if (options && Number.isFinite(options.maxDistanceOverride) && options.maxDistanceOverride > 0) {
+            this.maxDistance = options.maxDistanceOverride;
+            this.fixedDistanceTravel = true;
+        }
+        if (options && Number.isFinite(options.speedOverride) && options.speedOverride > 0) {
+            this.speed = options.speedOverride;
+        }
+        if (options?.staticRender) {
+            this.staticRender = true;
+            this.renderX = Number.isFinite(options.renderX) ? options.renderX : this.x;
+            this.renderY = Number.isFinite(options.renderY) ? options.renderY : this.y;
+        }
+        if (options?.noMove) {
+            this.noMove = true;
+        }
+        if (options?.logicOnly) {
+            this.logicOnly = true;
+        }
+        if (Number.isFinite(options?.ttlMs) && options.ttlMs > 0) {
+            this.ttlMs = options.ttlMs;
+        }
+        if (Number.isFinite(options?.radiusOverride) && options.radiusOverride > 0) {
+            this.radius = options.radiusOverride;
+        }
+        if (Number.isFinite(options?.initialRadius) && options.initialRadius > 0) {
+            this.radius = options.initialRadius;
+        }
+        if (Number.isFinite(options?.expandPerTick) && options.expandPerTick > 0) {
+            this.expandPerTick = options.expandPerTick;
+        }
+        if (options?.persistentHits) {
+            this.persistentHits = true;
+            this.hitEntities = new Set();
+        }
+        if (options?.ignoreStructureCollisions) {
+            this.ignoreStructureCollisions = true;
+        }
+        if (Array.isArray(options?.rockPushTypes)) {
+            this.rockPushTypes = new Set(options.rockPushTypes.map(type => Number(type)).filter(isRockStructureType));
+        }
+        if (Number.isFinite(options?.rockPushStrength) && options.rockPushStrength > 0) {
+            this.rockPushStrength = options.rockPushStrength;
+        }
+        if (type === 13) {
+            const defaultBoltLength = (dataMap.PROJECTILES[13]?.imgProportions?.[0] || 10) * (dataMap.PROJECTILES[13]?.radius || 30);
+            const visualLength = (options && Number.isFinite(options.visualLength) && options.visualLength > 0) ? options.visualLength : defaultBoltLength;
+            this.renderLength = Math.max(1, Math.min(65535, Math.round(visualLength)));
+        }
+
+        // Minotaur slash projectiles hit harder in knockback than player slashes.
+        if (this.type !== -1 && this.shooter?.type === 6) {
+            this.knockbackStrength *= 2;
+        }
+
+        this.treesPassed = new Set();
+        this.world = shooter?.world || 'main';
+        ENTITIES.PROJECTILES[id] = this;
+    }
+
+    move() {
+        if (this.expandPerTick > 0) {
+            this.lastX = this.x;
+            this.lastY = this.y;
+            this.radius += this.expandPerTick;
+            this.distanceTraveled += this.expandPerTick;
+            return;
+        }
+        if (this.noMove) return;
+        this.lastX = this.x;
+        this.lastY = this.y;
+        this.x += Math.cos(this.angle) * this.speed;
+        this.y += Math.sin(this.angle) * this.speed;
+
+        this.distanceTraveled += this.speed;
+    }
+
+    getTravelDamageMultiplier() {
+        // Only energy burst projectiles should lose damage over distance.
+        if (this.type !== 12) return 1;
+        if (!Number.isFinite(this.maxDistance) || this.maxDistance <= 0) return 1;
+        const traveledRatio = Math.max(0, Math.min(1, this.distanceTraveled / this.maxDistance));
+        return 1 - traveledRatio;
+    }
+
+    getCurrentDamage() {
+        return this.damage * this.getTravelDamageMultiplier();
+    }
+
+    resolveCollisions(worldStructures = null, worldPlayers = null, worldMobs = null, worldChests = null, worldProjectiles = null) {
+        recordResolveCollisionCall();
+        const shooterIsMob = typeof this.shooter?.type !== 'undefined';
+        const isPersistentWave = this.persistentHits === true;
+        const world = this.world || 'main';
+        const structures = Array.isArray(worldStructures) ? worldStructures : null;
+        const players = Array.isArray(worldPlayers) ? worldPlayers : null;
+        const mobs = Array.isArray(worldMobs) ? worldMobs : null;
+        const chests = Array.isArray(worldChests) ? worldChests : null;
+        const projectiles = Array.isArray(worldProjectiles) ? worldProjectiles : null;
+
+        // check structures
+        if (!this.ignoreStructureCollisions) {
+            if (structures) {
+                for (let i = 0; i < structures.length; i++) {
+                    const structure = structures[i];
+                    if (!structure) continue;
+                    let buffer = 0;
+                    const structureRange = Math.max(0, this.radius + structure.radius - buffer) + Math.max(this.speed || 0, this.expandPerTick || 0);
+                    const structureDx = structure.x - this.x;
+                    const structureDy = structure.y - this.y;
+                    if ((structureDx * structureDx + structureDy * structureDy) > (structureRange * structureRange)) continue;
+
+                    if (colliding(this, structure, buffer)) {
+                        if (structure.type === 3) {
+                            if (!this.treesPassed.has(structure.id)) {
+                                this.treesPassed.add(structure.id);
+                                this.damage *= 0.5;
+                            }
+                        } else if (tryPushStructureWithProjectile(this, structure)) {
+                            continue;
+                        } else {
+                            const sfx = dataMap.sfxMap.indexOf('slash_clash');
+                            const now = performance.now();
+                            if (this.shooter) {
+                                if (!this.shooter._groupHitSounds) this.shooter._groupHitSounds = new Map();
+                                const lastSoundTime = this.shooter._groupHitSounds.get(this.groupId) || 0;
+
+                                if (now - lastSoundTime > 50) {
+                                    playSfx(this.x, this.y, sfx, 1000, this.world || 'main');
+                                    this.shooter._groupHitSounds.set(this.groupId, now);
+                                    if (this.shooter._groupHitSounds.size > 20) {
+                                        for (const [gid, time] of this.shooter._groupHitSounds) {
+                                            if (now - time > 10000) this.shooter._groupHitSounds.delete(gid);
+                                        }
+                                    }
+                                }
+                            }
+                            ENTITIES.deleteEntity('projectile', this.id);
+                            return;
+                        }
+                    }
+                }
+            } else for (const id in ENTITIES.STRUCTURES) {
+                const structure = ENTITIES.STRUCTURES[id];
+                if (!structure) continue;
+                if ((structure.world || 'main') !== world) continue;
+                let buffer = 0;
+                const structureRange = Math.max(0, this.radius + structure.radius - buffer) + Math.max(this.speed || 0, this.expandPerTick || 0);
+                const structureDx = structure.x - this.x;
+                const structureDy = structure.y - this.y;
+                if ((structureDx * structureDx + structureDy * structureDy) > (structureRange * structureRange)) continue;
+
+                if (colliding(this, structure, buffer)) {
+                    if (structure.type === 3) {
+                        // Trees drain projectile power once per tree crossed.
+                        if (!this.treesPassed.has(structure.id)) {
+                            this.treesPassed.add(structure.id);
+                            this.damage *= 0.5;
+                        }
+                    } else if (tryPushStructureWithProjectile(this, structure)) {
+                        continue;
+                    } else {
+                        // other structures block the projectile
+                        const sfx = dataMap.sfxMap.indexOf('slash_clash');
+
+                        const now = performance.now();
+                        if (this.shooter) {
+                            if (!this.shooter._groupHitSounds) this.shooter._groupHitSounds = new Map();
+                            const lastSoundTime = this.shooter._groupHitSounds.get(this.groupId) || 0;
+
+                            if (now - lastSoundTime > 50) { // only play one sound every 50ms for this group
+                                playSfx(this.x, this.y, sfx, 1000, this.world || 'main');
+                                this.shooter._groupHitSounds.set(this.groupId, now);
+
+                                // basic cleanup
+                                if (this.shooter._groupHitSounds.size > 20) {
+                                    for (const [gid, time] of this.shooter._groupHitSounds) {
+                                        if (now - time > 10000) this.shooter._groupHitSounds.delete(gid);
+                                    }
+                                }
+                            }
+                        }
+
+                        ENTITIES.deleteEntity('projectile', this.id);
+                        return;
+                    }
+                }
+            }
+        }
+
+        if (!isPersistentWave) {
+            // check with other projectiles
+            if (projectiles) {
+                for (let i = 0; i < projectiles.length; i++) {
+                    const other = projectiles[i];
+                    if (!other || other.id === this.id) continue;
+                    if (this.ignoreProjectileCollisions || other.ignoreProjectileCollisions) continue;
+                    if (other.id < this.id) continue;
+                    if (other.shooter === this.shooter) continue;
+                    const projectileRange = (this.radius || 0) + (other.radius || 0) + Math.max(this.speed || 0, other.speed || 0, this.expandPerTick || 0, other.expandPerTick || 0);
+                    const projectileDx = other.x - this.x;
+                    const projectileDy = other.y - this.y;
+                    if ((projectileDx * projectileDx + projectileDy * projectileDy) > (projectileRange * projectileRange)) continue;
+
+                    if (colliding(this, other)) {
+                        const canTriggerPvpCombat = !(this.shooter instanceof Player && other.shooter instanceof Player && !this.shooter.canEngagePvpWith(other.shooter));
+                        if (this.type === -1 || other.type === -1) {
+                            ENTITIES.deleteEntity('projectile', this.id);
+                            ENTITIES.deleteEntity('projectile', other.id);
+                            if (canTriggerPvpCombat) {
+                                this.shooter.lastCombatTime = performance.now();
+                                other.shooter.lastCombatTime = performance.now();
+                            }
+                            return;
+                        }
+
+                        const sfx = dataMap.sfxMap.indexOf('slash_clash');
+                        const now = performance.now();
+                        if (this.shooter && (!this.shooter._groupClashSounds || !this.shooter._groupClashSounds.has(this.groupId) || now - this.shooter._groupClashSounds.get(this.groupId) > 100)) {
+                            if (!this.shooter._groupClashSounds) this.shooter._groupClashSounds = new Map();
+                            this.shooter._groupClashSounds.set(this.groupId, now);
+                            playSfx(this.x, this.y, sfx, 1000, this.world || 'main');
+                            const kbStrength = 60;
+                            const angle = Math.atan2(this.shooter.y - other.shooter.y, this.shooter.x - other.shooter.x);
+                            if (this.shooter.isAlive) {
+                                this.shooter.x += Math.cos(angle) * kbStrength;
+                                this.shooter.y += Math.sin(angle) * kbStrength;
+                                this.shooter.clamp();
+                            }
+                            if (other.shooter.isAlive) {
+                                other.shooter.x -= Math.cos(angle) * kbStrength;
+                                other.shooter.y -= Math.sin(angle) * kbStrength;
+                                other.shooter.clamp();
+                            }
+                        }
+
+                        ENTITIES.deleteEntity('projectile', this.id);
+                        ENTITIES.deleteEntity('projectile', other.id);
+                        if (canTriggerPvpCombat) {
+                            this.shooter.lastCombatTime = performance.now();
+                            other.shooter.lastCombatTime = performance.now();
+                        }
+                        return;
+                    }
+                }
+            } else for (const pid in ENTITIES.PROJECTILES) {
+                const other = ENTITIES.PROJECTILES[pid];
+                if (!other || other.id === this.id) continue;
+                if (this.ignoreProjectileCollisions || other.ignoreProjectileCollisions) continue;
+                if (other.id < this.id) continue;
+                if ((other.world || 'main') !== world) continue;
+                // Ignore only true same-owner projectiles (same shooter object),
+                // not merely matching numeric ids across entity types.
+                if (other.shooter === this.shooter) continue;
+                const projectileRange = (this.radius || 0) + (other.radius || 0) + Math.max(this.speed || 0, other.speed || 0, this.expandPerTick || 0, other.expandPerTick || 0);
+                const projectileDx = other.x - this.x;
+                const projectileDy = other.y - this.y;
+                if ((projectileDx * projectileDx + projectileDy * projectileDy) > (projectileRange * projectileRange)) continue;
+
+                if (colliding(this, other)) {
+                    const canTriggerPvpCombat = !(this.shooter instanceof Player && other.shooter instanceof Player && !this.shooter.canEngagePvpWith(other.shooter));
+                    // If either is a throw, both disappear
+                    if (this.type === -1 || other.type === -1) {
+                        ENTITIES.deleteEntity('projectile', this.id);
+                        ENTITIES.deleteEntity('projectile', other.id);
+                        if (canTriggerPvpCombat) {
+                            this.shooter.lastCombatTime = performance.now();
+                            other.shooter.lastCombatTime = performance.now();
+                        }
+                        return;
+                    }
+
+                    // Both are slashes - handle clash
+                    const sfx = dataMap.sfxMap.indexOf('slash_clash');
+
+                    const now = performance.now();
+                    // Throttle clash sound and knockback per group
+                    if (this.shooter && (!this.shooter._groupClashSounds || !this.shooter._groupClashSounds.has(this.groupId) || now - this.shooter._groupClashSounds.get(this.groupId) > 100)) {
+                        if (!this.shooter._groupClashSounds) this.shooter._groupClashSounds = new Map();
+                        this.shooter._groupClashSounds.set(this.groupId, now);
+
+                        playSfx(this.x, this.y, sfx, 1000, this.world || 'main');
+
+                        // Knockback shooters (don't damage)
+                        const kbStrength = 60;
+                        const angle = Math.atan2(this.shooter.y - other.shooter.y, this.shooter.x - other.shooter.x);
+
+                        if (this.shooter.isAlive) {
+                            this.shooter.x += Math.cos(angle) * kbStrength;
+                            this.shooter.y += Math.sin(angle) * kbStrength;
+                            this.shooter.clamp();
+                        }
+                        if (other.shooter.isAlive) {
+                            other.shooter.x -= Math.cos(angle) * kbStrength;
+                            other.shooter.y -= Math.sin(angle) * kbStrength;
+                            other.shooter.clamp();
+                        }
+                    }
+
+                    ENTITIES.deleteEntity('projectile', this.id);
+                    ENTITIES.deleteEntity('projectile', other.id);
+                    if (canTriggerPvpCombat) {
+                        this.shooter.lastCombatTime = performance.now();
+                        other.shooter.lastCombatTime = performance.now();
+                    }
+                    return;
+                }
+            }
+        }
+
+        // check with players
+        if (players) {
+            for (let i = 0; i < players.length; i++) {
+                const player = players[i];
+                if (!player || !player.isAlive) continue;
+                if (!shooterIsMob && player.id === this.shooter.id) continue;
+                let buffer = 0;
+                const playerRange = Math.max(0, (this.radius || 0) + (player.radius || 0) - buffer) + Math.max(this.speed || 0, this.expandPerTick || 0);
+                const playerDx = player.x - this.x;
+                const playerDy = player.y - this.y;
+                if ((playerDx * playerDx + playerDy * playerDy) > (playerRange * playerRange)) continue;
+
+                if (colliding(this, player, buffer)) {
+                    if (typeof player.recordLatestCollisionDebug === 'function') {
+                        player.recordLatestCollisionDebug(3, this.id);
+                    }
+                    if (this.shooter instanceof Player && player instanceof Player && !this.shooter.canEngagePvpWith(player)) {
+                        continue;
+                    }
+                    const hitKey = `p:${player.id}`;
+                    if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
+                    if (isPersistentWave) this.hitEntities?.add(hitKey);
+                    let tookDamage = false;
+                    const allowMinotaurHit = player.progressShieldActive && !player.touchingSafeZone && this.shooter?.type === 6;
+                    const allowBossHit = this.shooter?.type === 7 || this.shooter?.type === 8;
+                    if (!player.hasShield || allowMinotaurHit || allowBossHit) {
+                        const viking = getVikingHitInfo(this.shooter, this.getCurrentDamage());
+                        tookDamage = player.damage(viking.damage, this.shooter);
+                        if (tookDamage && viking.apply) {
+                            commitVikingHit(this.shooter, viking.nextCount);
+                            if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, player.x, player.y);
+                        }
+                        if (tookDamage && this.type !== -1 && ACCESSORY_KEYS[this.shooter?.accessoryId] === 'bush_cloak') {
+                            poison(player, 5, 750, 2000, this.shooter, true);
+                        }
+                        if (this.type !== -1 && ACCESSORY_KEYS[player.accessoryId] === 'bush_cloak' && this.shooter && tookDamage) {
+                            poison(this.shooter, 5, 750, 2000, player, true);
+                        }
+                        if (tookDamage) {
+                            const knockbackAngle = Math.atan2(player.y - this.shooter.y, player.x - this.shooter.x);
+                            player.x += Math.cos(knockbackAngle) * this.knockbackStrength;
+                            player.y += Math.sin(knockbackAngle) * this.knockbackStrength;
+                            player.clamp();
+                        }
+                    }
+
+                    if (!isPersistentWave) {
+                        ENTITIES.deleteEntity('projectile', this.id);
+                        return;
+                    }
+                }
+            }
+        } else for (const id in ENTITIES.PLAYERS) {
+            const player = ENTITIES.PLAYERS[id];
+            if (!player || !player.isAlive) continue;
+            if ((player.world || 'main') !== world) continue;
+            // Ignore true self-hit only when shooter is also a player.
+            if (!shooterIsMob && player.id === this.shooter.id) continue;
+
+            let buffer = 0;
+            const playerRange = Math.max(0, (this.radius || 0) + (player.radius || 0) - buffer) + Math.max(this.speed || 0, this.expandPerTick || 0);
+            const playerDx = player.x - this.x;
+            const playerDy = player.y - this.y;
+            if ((playerDx * playerDx + playerDy * playerDy) > (playerRange * playerRange)) continue;
+
+            if (colliding(this, player, buffer)) {
+                if (typeof player.recordLatestCollisionDebug === 'function') {
+                    player.recordLatestCollisionDebug(3, this.id);
+                }
+                // Skip damage when either side is PvP-protected, but keep collision and let projectile continue.
+                if (this.shooter instanceof Player && player instanceof Player && !this.shooter.canEngagePvpWith(player)) {
+                    continue;
+                }
+                const hitKey = `p:${player.id}`;
+                if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
+                if (isPersistentWave) this.hitEntities?.add(hitKey);
+                // damage player
+                let tookDamage = false;
+                const allowMinotaurHit = player.progressShieldActive && !player.touchingSafeZone && this.shooter?.type === 6;
+                const allowBossHit = this.shooter?.type === 7 || this.shooter?.type === 8;
+                if (!player.hasShield || allowMinotaurHit || allowBossHit) {
+                    const viking = getVikingHitInfo(this.shooter, this.getCurrentDamage());
+                    tookDamage = player.damage(viking.damage, this.shooter);
+                    if (tookDamage && viking.apply) {
+                        commitVikingHit(this.shooter, viking.nextCount);
+                        if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, player.x, player.y);
+                    }
+                    if (tookDamage && this.type !== -1 && ACCESSORY_KEYS[this.shooter?.accessoryId] === 'bush_cloak') {
+                        poison(player, 5, 750, 2000, this.shooter, true);
+                    }
+                    if (this.type !== -1 && ACCESSORY_KEYS[player.accessoryId] === 'bush_cloak' && this.shooter && tookDamage) {
+                        poison(this.shooter, 5, 750, 2000, player, true);
+                    }
+                    // Keep knockback synchronized with damage cooldown: only apply when damage lands.
+                    if (tookDamage) {
+                        const knockbackAngle = Math.atan2(player.y - this.shooter.y, player.x - this.shooter.x);
+                        player.x += Math.cos(knockbackAngle) * this.knockbackStrength;
+                        player.y += Math.sin(knockbackAngle) * this.knockbackStrength;
+                        player.clamp();
+                    }
+                }
+
+                if (!isPersistentWave) {
+                    ENTITIES.deleteEntity('projectile', this.id);
+                    return;
+                }
+            }
+        }
+        // check mobs
+        if (mobs) {
+            for (let i = 0; i < mobs.length; i++) {
+                const mob = mobs[i];
+                if (!mob) continue;
+                if (shooterIsMob && mob.id === this.shooter.id) continue;
+                let buffer = 0;
+                const mobRange = Math.max(0, (this.radius || 0) + (mob.radius || 0) - buffer) + Math.max(this.speed || 0, this.expandPerTick || 0);
+                const mobDx = mob.x - this.x;
+                const mobDy = mob.y - this.y;
+                if ((mobDx * mobDx + mobDy * mobDy) > (mobRange * mobRange)) continue;
+
+                if (colliding(this, mob, buffer)) {
+                    const hitKey = `m:${mob.id}`;
+                    if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
+                    if (isPersistentWave) this.hitEntities?.add(hitKey);
+                    if (!isPersistentWave && !shooterIsMob && canMinotaurParrySlash(mob, this)) {
+                        if (this.shooter && typeof mob.alarm === 'function') {
+                            mob.alarm(this.shooter, 'hit');
+                        }
+                        const sfx = dataMap.sfxMap.indexOf('slash_clash');
+                        playSfx(mob.x, mob.y, sfx, 1000, mob.world || 'main');
+                        if (this.shooter?.isAlive) {
+                            const knockbackAngle = Math.atan2(this.shooter.y - mob.y, this.shooter.x - mob.x);
+                            this.shooter.x += Math.cos(knockbackAngle) * 60;
+                            this.shooter.y += Math.sin(knockbackAngle) * 60;
+                            if (typeof this.shooter.clamp === 'function') this.shooter.clamp();
+                        }
+                        ENTITIES.deleteEntity('projectile', this.id);
+                        return;
+                    }
+
+                    if (!isPersistentWave && canMinotaurParryThrow(mob, this) && Math.random() < getMinotaurParryChance(mob)) {
+                        if (typeof mob.performSwing === 'function') {
+                            mob.performSwing(true);
+                        } else {
+                            mob.swingState = 1;
+                        }
+                        if (this.shooter && typeof mob.alarm === 'function') {
+                            mob.alarm(this.shooter, 'hit');
+                        }
+                        chargeMinotaurTowardShooter(mob, this.shooter);
+                        const sfx = dataMap.sfxMap.indexOf('slash_clash');
+                        playSfx(mob.x, mob.y, sfx, 1000, mob.world || 'main');
+                        ENTITIES.deleteEntity('projectile', this.id);
+                        return;
+                    }
+
+                    const viking = getVikingHitInfo(this.shooter, this.getCurrentDamage());
+                    const tookDamage = mob.damage(viking.damage, this.shooter);
+                    if (tookDamage) {
+                        const knockbackAngle = Math.atan2(mob.y - this.shooter.y, mob.x - this.shooter.x);
+                        mob.x += Math.cos(knockbackAngle) * this.knockbackStrength;
+                        mob.y += Math.sin(knockbackAngle) * this.knockbackStrength;
+                        mob.clamp();
+                    }
+                    if (tookDamage && viking.apply) {
+                        commitVikingHit(this.shooter, viking.nextCount);
+                        if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, mob.x, mob.y);
+                    }
+                    if (tookDamage && this.type !== -1 && ACCESSORY_KEYS[this.shooter?.accessoryId] === 'bush_cloak') {
+                        poison(mob, 5, 750, 2000, this.shooter, true);
+                    }
+                    mob.alarm(this.shooter, 'hit');
+                    if (!isPersistentWave) {
+                        ENTITIES.deleteEntity('projectile', this.id);
+                        return;
+                    }
+                }
+            }
+        } else for (const id in ENTITIES.MOBS) {
+            const mob = ENTITIES.MOBS[id];
+            if (!mob) continue;
+            if ((mob.world || 'main') !== world) continue;
+            // Ignore true self-hit only when shooter is also a mob.
+            if (shooterIsMob && mob.id === this.shooter.id) continue;
+
+            let buffer = 0;
+            const mobRange = Math.max(0, (this.radius || 0) + (mob.radius || 0) - buffer) + Math.max(this.speed || 0, this.expandPerTick || 0);
+            const mobDx = mob.x - this.x;
+            const mobDy = mob.y - this.y;
+            if ((mobDx * mobDx + mobDy * mobDy) > (mobRange * mobRange)) continue;
+
+            if (colliding(this, mob, buffer)) {
+                const hitKey = `m:${mob.id}`;
+                if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
+                if (isPersistentWave) this.hitEntities?.add(hitKey);
+                // Close swing parry: while minotaur is swinging, front-cone slash hits should clash and not leak damage.
+                if (!isPersistentWave && !shooterIsMob && canMinotaurParrySlash(mob, this)) {
+                    if (this.shooter && typeof mob.alarm === 'function') {
+                        mob.alarm(this.shooter, 'hit');
+                    }
+                    const sfx = dataMap.sfxMap.indexOf('slash_clash');
+                    playSfx(mob.x, mob.y, sfx, 1000, mob.world || 'main');
+                    if (this.shooter?.isAlive) {
+                        const knockbackAngle = Math.atan2(this.shooter.y - mob.y, this.shooter.x - mob.x);
+                        this.shooter.x += Math.cos(knockbackAngle) * 60;
+                        this.shooter.y += Math.sin(knockbackAngle) * 60;
+                        if (typeof this.shooter.clamp === 'function') this.shooter.clamp();
+                    }
+                    ENTITIES.deleteEntity('projectile', this.id);
+                    return;
+                }
+
+                // Minotaur can parry thrown swords from the front without turning.
+                if (!isPersistentWave && canMinotaurParryThrow(mob, this) && Math.random() < getMinotaurParryChance(mob)) {
+                    if (typeof mob.performSwing === 'function') {
+                        // Parry must be a real swing (spawns slash projectiles), not animation-only.
+                        mob.performSwing(true);
+                    } else {
+                        mob.swingState = 1;
+                    }
+                    if (this.shooter && typeof mob.alarm === 'function') {
+                        mob.alarm(this.shooter, 'hit');
+                    }
+                    chargeMinotaurTowardShooter(mob, this.shooter);
+                    const sfx = dataMap.sfxMap.indexOf('slash_clash');
+                    playSfx(mob.x, mob.y, sfx, 1000, mob.world || 'main');
+                    ENTITIES.deleteEntity('projectile', this.id);
+                    return;
+                }
+
+                // damage mob
+                const viking = getVikingHitInfo(this.shooter, this.getCurrentDamage());
+                const tookDamage = mob.damage(viking.damage, this.shooter);
+
+                // Keep knockback synchronized with damage cooldown: only apply when damage lands.
+                if (tookDamage) {
+                    const knockbackAngle = Math.atan2(mob.y - this.shooter.y, mob.x - this.shooter.x);
+                    mob.x += Math.cos(knockbackAngle) * this.knockbackStrength;
+                    mob.y += Math.sin(knockbackAngle) * this.knockbackStrength;
+                    mob.clamp();
+                }
+                if (tookDamage && viking.apply) {
+                    commitVikingHit(this.shooter, viking.nextCount);
+                    if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, mob.x, mob.y);
+                }
+                if (tookDamage && this.type !== -1 && ACCESSORY_KEYS[this.shooter?.accessoryId] === 'bush_cloak') {
+                    poison(mob, 5, 750, 2000, this.shooter, true);
+                }
+
+                mob.alarm(this.shooter, 'hit');
+                if (!isPersistentWave) {
+                    ENTITIES.deleteEntity('projectile', this.id);
+                    return;
+                }
+            }
+        }
+
+        // check objects
+        if (chests) {
+            for (let i = 0; i < chests.length; i++) {
+                const object = chests[i];
+                if (!object) continue;
+                let buffer = -10;
+                const objectRange = Math.max(0, (this.radius || 0) + (object.radius || 0) - buffer) + Math.max(this.speed || 0, this.expandPerTick || 0);
+                const objectDx = object.x - this.x;
+                const objectDy = object.y - this.y;
+                if ((objectDx * objectDx + objectDy * objectDy) > (objectRange * objectRange)) continue;
+
+                if (colliding(this, object, buffer)) {
+                    const hitKey = `o:${object.id}`;
+                    if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
+                    if (isPersistentWave) this.hitEntities?.add(hitKey);
+                    const viking = getVikingHitInfo(this.shooter, this.getCurrentDamage());
+                    const didDamage = object.damage(viking.damage, this.shooter);
+                    if (didDamage && viking.apply) {
+                        commitVikingHit(this.shooter, viking.nextCount);
+                        if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, object.x, object.y);
+                    }
+                    if (!isPersistentWave) {
+                        ENTITIES.deleteEntity('projectile', this.id);
+                        return;
+                    }
+                }
+            }
+        } else for (const id in ENTITIES.OBJECTS) {
+            const object = ENTITIES.OBJECTS[id];
+            if (!object || !isChestObjectType(object.type)) continue;
+            if ((object.world || 'main') !== world) continue;
+
+            let buffer = -10;
+            const objectRange = Math.max(0, (this.radius || 0) + (object.radius || 0) - buffer) + Math.max(this.speed || 0, this.expandPerTick || 0);
+            const objectDx = object.x - this.x;
+            const objectDy = object.y - this.y;
+            if ((objectDx * objectDx + objectDy * objectDy) > (objectRange * objectRange)) continue;
+
+            if (colliding(this, object, buffer)) {
+                const hitKey = `o:${object.id}`;
+                if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
+                if (isPersistentWave) this.hitEntities?.add(hitKey);
+                // damage object
+                const viking = getVikingHitInfo(this.shooter, this.getCurrentDamage());
+                const didDamage = object.damage(viking.damage, this.shooter);
+                if (didDamage && viking.apply) {
+                    commitVikingHit(this.shooter, viking.nextCount);
+                    if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, object.x, object.y);
+                }
+                if (!isPersistentWave) {
+                    ENTITIES.deleteEntity('projectile', this.id);
+                    return;
+                }
+            }
+        }
+    }
+
+    process(worldStructures = null, worldPlayers = null, worldMobs = null, worldChests = null, worldProjectiles = null) {
+        if (this.isExpired()) {
+            ENTITIES.deleteEntity('projectile', this.id);
+            return;
+        }
+
+        this.move();
+        this.resolveCollisions(worldStructures, worldPlayers, worldMobs, worldChests, worldProjectiles);
+    }
+
+    isExpired() {
+        if (this.ttlMs > 0 && performance.now() - this.spawnedAt >= this.ttlMs) {
+            return true;
+        }
+        return this.distanceTraveled > this.maxDistance;
+    }
+}

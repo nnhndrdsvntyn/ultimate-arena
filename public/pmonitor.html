@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Player Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./pmonitor.css">
+</head>
+<body>
+  <main class="monitor_shell">
+    <section class="monitor_hero">
+      <div class="monitor_badge">Admin Monitor</div>
+      <h1>Player World Monitor</h1>
+      <p>Live delta updates for online players across main and tutorial worlds.</p>
+    </section>
+
+    <section class="monitor_panel">
+      <div class="monitor_toolbar">
+        <div>
+          <div id="monitor_status" class="monitor_status">Connecting...</div>
+          <div id="monitor_summary" class="monitor_summary">Waiting for server</div>
+        </div>
+        <button id="monitor_reconnect" type="button">Reconnect</button>
+      </div>
+
+      <div class="monitor_table_wrap">
+        <table class="monitor_table">
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>World</th>
+            </tr>
+          </thead>
+          <tbody id="monitor_body">
+            <tr>
+              <td colspan="2" class="monitor_empty">No players yet.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="./pmonitor.js"></script>
+</body>
+</html>
