@@ -1,13 +1,10 @@
 import { Mob } from "./mob.js";
-import { dataMap, getCoinObjectType, isRockStructureType } from '../../../public/shared/datamap.js';
+import { AXE_7_TYPE, AXE_10_TYPE, ACCESSORY_NAME_TO_ID, accessoryItemTypeFromId, dataMap, getCoinObjectType, isRockStructureType } from '../../../public/shared/datamap.js';
 import { getWorldCenter, getWorldMapSize, WORLD_INFERNO_DIMENSION } from '../../../public/shared/worlds.js';
 import { ENTITIES, markInfernoBossDefeated, spawnObject } from '../../game.js';
 import { cmdRun, emitInfernoBeamFx, emitLightningShotFx, emitPoisonAoeFx, getId, playSfx, pushEntityOutOfSafeZone, spawnEnergyBurstProjectiles } from '../../helpers.js';
 import { InfernoPortal } from '../structures/boss_shrine.js';
 
-const IRON_SCYTHE_TYPE = 9;
-const BOULDER_BLADE_TYPE = 10;
-const MINOTAUR_AXE_V2_TYPE = 12;
 const CHARGE_ABILITY = 1;
 const ENRAGE_ABILITY = 2;
 const FLAME_RELEASE_ABILITY = 3;
@@ -130,9 +127,9 @@ export class InfernoBeast extends Mob {
         this.clearEnrage();
         markInfernoBossDefeated();
         this.scatterDeathCoins();
-        this.scatterIronScytheDrops();
-        this.scatterBoulderBladeDrops();
-        this.scatterMinotaurAxeV2Drop();
+        this.scatterAxe7Drops();
+        this.scatterAxe10Drop();
+        this.scatterMinotaurHatDrop();
         this.spawnExitPortal();
         super.die(killer);
     }
@@ -159,16 +156,19 @@ export class InfernoBeast extends Mob {
         }
     }
 
-    scatterIronScytheDrops() {
-        this.scatterWeaponDrops(IRON_SCYTHE_TYPE, getRandomIntInclusive(5, 10));
+    scatterAxe7Drops() {
+        this.scatterWeaponDrops(AXE_7_TYPE, getRandomIntInclusive(5, 10));
     }
 
-    scatterBoulderBladeDrops() {
-        this.scatterWeaponDrops(BOULDER_BLADE_TYPE, getRandomIntInclusive(3, 5));
+    scatterAxe10Drop() {
+        this.scatterWeaponDrops(AXE_10_TYPE, 1);
     }
 
-    scatterMinotaurAxeV2Drop() {
-        this.scatterWeaponDrops(MINOTAUR_AXE_V2_TYPE, 1);
+    scatterMinotaurHatDrop() {
+        const accessoryId = ACCESSORY_NAME_TO_ID['minotaur_hat'];
+        const itemType = accessoryItemTypeFromId(accessoryId);
+        if (!itemType) return;
+        this.scatterWeaponDrops(itemType, 1);
     }
 
     scatterWeaponDrops(itemType, count) {

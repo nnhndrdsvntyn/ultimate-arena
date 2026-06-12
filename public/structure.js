@@ -14,6 +14,10 @@ import {
     Vars
 } from './client.js';
 import { getRenderQuality } from './render_quality.js';
+import {
+    getEntityDeltaMs,
+    getTimeLerpFactor
+} from './interpolation.js';
 
 export class Structure {
     constructor(id, x, y, type) {
@@ -30,17 +34,18 @@ export class Structure {
     }
     update() {
         if (typeof this.newX !== 'number' || typeof this.newY !== 'number') return;
+        const lerpFactor = getTimeLerpFactor(getEntityDeltaMs(this), 1.35);
         const dx = this.newX - this.x;
         const dy = this.newY - this.y;
         if (Math.abs(dx) < 0.5) {
             this.x = this.newX;
         } else {
-            this.x += dx * 0.35;
+            this.x += dx * lerpFactor;
         }
         if (Math.abs(dy) < 0.5) {
             this.y = this.newY;
         } else {
-            this.y += dy * 0.35;
+            this.y += dy * lerpFactor;
         }
     }
     draw() {
@@ -54,34 +59,13 @@ export class Structure {
             const pulse = 0.9 + (Math.sin(t * 2.2) * 0.06);
             const outerRadius = this.radius * pulse;
 
-            LC.drawCircle({
-                pos: [screenPosX, screenPosY],
-                radius: outerRadius,
-                color: 'rgba(10, 6, 14, 0.88)',
-                fill: true,
-                stroke: true,
-                strokeWidth: 4,
-                strokeColor: 'rgba(33, 22, 41, 0.95)'
-            });
-            LC.drawCircle({
-                pos: [screenPosX, screenPosY],
-                radius: this.radius * 0.68,
-                color: 'rgba(0, 0, 0, 0.96)',
-                fill: true
-            });
+            LC.drawCircleFast(screenPosX, screenPosY, outerRadius, 'rgba(10, 6, 14, 0.88)', 1, true, true, 'rgba(33, 22, 41, 0.95)', 4);
+            LC.drawCircleFast(screenPosX, screenPosY, this.radius * 0.68, 'rgba(0, 0, 0, 0.96)');
             if (!renderQuality.far) {
                 for (let i = 0; i < 3; i++) {
                     const ringPhase = t + (i * 0.9);
                     const ringRadius = this.radius * (0.3 + (((ringPhase % 1.8) / 1.8) * 0.65));
-                    LC.drawCircle({
-                        pos: [screenPosX, screenPosY],
-                        radius: ringRadius,
-                        color: 'rgba(38, 28, 48, 0.24)',
-                        fill: false,
-                        stroke: true,
-                        strokeWidth: 2,
-                        strokeColor: 'rgba(38, 28, 48, 0.42)'
-                    });
+                    LC.drawCircleFast(screenPosX, screenPosY, ringRadius, 'rgba(38, 28, 48, 0.24)', 1, false, true, 'rgba(38, 28, 48, 0.42)', 2);
                 }
             }
             return;
@@ -93,11 +77,7 @@ export class Structure {
             const hoverDx = Vars.mouseWorldX - this.x;
             const hoverDy = Vars.mouseWorldY - this.y;
             const isHoveringStructure = (hoverDx * hoverDx + hoverDy * hoverDy) <= ((this.radius + 12) * (this.radius + 12));
-            LC.drawImage({
-                name: dataMap.STRUCTURES[this.type].imgName,
-                pos: [screenPosX - this.radius, screenPosY - this.radius],
-                size: [this.radius * 2, this.radius * 2]
-            });
+            LC.drawImageFast(dataMap.STRUCTURES[this.type].imgName, screenPosX - this.radius, screenPosY - this.radius, this.radius * 2, this.radius * 2);
             if (Settings.debugMode && isHoveringStructure) {
                 const idText = `(${this.id})`;
                 const idMetrics = LC.measureText({ text: idText, font: 'bold 15px Arial' });
@@ -110,15 +90,7 @@ export class Structure {
             }
 
             if (Settings.drawHitboxes) {
-                LC.drawCircle({
-                    color: 'blue',
-                    pos: [screenPosX, screenPosY],
-                    radius: this.radius,
-                    transparency: 0.2,
-                    fill: true,
-                    stroke: true,
-                    strokeWidth: 3
-                });
+                LC.drawCircleFast(screenPosX, screenPosY, this.radius, 'blue', 0.2, true, true, null, 3);
             }
             return;
         }
@@ -129,11 +101,13 @@ export class Structure {
         const hoverDy = Vars.mouseWorldY - this.y;
         const isHoveringStructure = (hoverDx * hoverDx + hoverDy * hoverDy) <= ((this.radius + 12) * (this.radius + 12));
 
-        LC.drawImage({
-            name: getStructureImageName(this.type, this.x, this.y, MAP_SIZE, this.world || CURRENT_WORLD),
-            pos: [screenPosX - this.radius, screenPosY - this.radius],
-            size: [this.radius * 2, this.radius * 2]
-        });
+        LC.drawImageFast(
+            getStructureImageName(this.type, this.x, this.y, MAP_SIZE, this.world || CURRENT_WORLD),
+            screenPosX - this.radius,
+            screenPosY - this.radius,
+            this.radius * 2,
+            this.radius * 2
+        );
 
         if (Settings.debugMode && isHoveringStructure) {
             const idText = `(${this.id})`;
@@ -147,15 +121,7 @@ export class Structure {
         }
 
         if (Settings.drawHitboxes) {
-            LC.drawCircle({
-                color: 'blue',
-                pos: [screenPosX, screenPosY],
-                radius: this.radius,
-                transparency: 0.2,
-                fill: true,
-                stroke: true,
-                strokeWidth: 3
-            });
+            LC.drawCircleFast(screenPosX, screenPosY, this.radius, 'blue', 0.2, true, true, null, 3);
         }
 
     }

@@ -13,10 +13,11 @@ import {
     WORLD_MAIN
 } from './client.js';
 import {
-    TPS,
     dataMap,
     isWeaponType,
     isSpearType,
+    isSwordType,
+    isAxeType,
     ACCESSORY_KEYS,
     getLevelFromXp,
     getWeaponConfig,
@@ -24,15 +25,64 @@ import {
     getWeaponOffset,
     getWeaponRenderTuning,
     getSpearThrustProgress,
-    getWeaponMeta
+    getWeaponMeta,
+    getWeaponAttackStats
 } from './shared/datamap.js';
 import { drawIceEncasingOverlay, isFrozen } from './freeze_overlay.js';
-import { getRenderQuality } from './render_quality.js';
+import { getRenderQualityAt } from './render_quality.js';
+import {
+    getEntityDeltaMs,
+    getTimeLerpFactor,
+    lerpAngle,
+    lerpEntityPosition,
+    normalizeAngle
+} from './interpolation.js';
 
 function getHealthBarColor(healthRatio) {
     if (healthRatio >= 0.5) return '#22c55e';
     if (healthRatio >= 0.25) return '#eab308';
     return '#ef4444';
+}
+
+const SLASH_DEBUG_LEFT_OFFSET = -Math.PI / 3;
+const SLASH_DEBUG_RIGHT_OFFSET = Math.PI / 3;
+
+function drawSlashDebugArc(player, screenPosX, screenPosY, weaponType, alpha) {
+    if (!Settings.debugMode || !Vars.isAdmin || !isWeaponType(weaponType) || isSpearType(weaponType)) return;
+    if (!isSwordType(weaponType) && !isAxeType(weaponType)) return;
+
+    const attackStats = getWeaponAttackStats(weaponType);
+    const maxDistance = Number(attackStats?.maxDistance) || 0;
+    if (maxDistance <= 0) return;
+
+    const baseRadius = Math.max(1, dataMap.PLAYERS.baseRadius || 30);
+    const playerScale = Math.max(0.2, (player.radius || baseRadius) / baseRadius);
+    const playerRadius = Math.max(0, player.radius || 0);
+    const reachRadius = Math.max(1, playerRadius + (maxDistance * playerScale));
+    const startAngle = player.angle + SLASH_DEBUG_LEFT_OFFSET;
+    const endAngle = player.angle + SLASH_DEBUG_RIGHT_OFFSET;
+    const sideAngle = player.angle - (Math.PI / 2);
+    const sideStartX = screenPosX + (Math.cos(sideAngle) * playerRadius);
+    const sideStartY = screenPosY + (Math.sin(sideAngle) * playerRadius);
+    const sideEndX = screenPosX + (Math.cos(sideAngle) * reachRadius);
+    const sideEndY = screenPosY + (Math.sin(sideAngle) * reachRadius);
+    const debugColor = isAxeType(weaponType) ? '#f97316' : '#60a5fa';
+
+    LC.ctx.save();
+    LC.ctx.globalAlpha = Math.max(0, Math.min(1, 0.78 * alpha));
+    LC.ctx.strokeStyle = debugColor;
+    LC.ctx.lineWidth = 3;
+    LC.ctx.setLineDash([14, 8]);
+
+    LC.ctx.beginPath();
+    LC.ctx.arc(screenPosX, screenPosY, reachRadius, startAngle, endAngle);
+    LC.ctx.stroke();
+
+    LC.ctx.beginPath();
+    LC.ctx.moveTo(sideStartX, sideStartY);
+    LC.ctx.lineTo(sideEndX, sideEndY);
+    LC.ctx.stroke();
+    LC.ctx.restore();
 }
 
 export class Player {
@@ -94,7 +144,8 @@ export class Player {
         ENTITIES.PLAYERS[id] = this;
     }
     update() {
-        const lerpFactor = (TPS.clientCapped / TPS.server) / 10;
+        const dt = getEntityDeltaMs(this);
+        const lerpFactor = getTimeLerpFactor(dt, 1);
 
         if (this._wasAliveState && !this.isAlive) {
             this._deathFadeStart = performance.now();
@@ -107,17 +158,7 @@ export class Player {
 
         if (typeof this.newX === 'undefined' || typeof this.newY === 'undefined') return;
 
-        // Always interpolate positions to avoid hard snapping.
-        if (typeof this.x !== 'undefined') {
-            this.x = this.x + (this.newX - this.x) * lerpFactor;
-        } else {
-            this.x = this.newX;
-        }
-        if (typeof this.y !== 'undefined') {
-            this.y = this.y + (this.newY - this.y) * lerpFactor;
-        } else {
-            this.y = this.newY;
-        }
+        lerpEntityPosition(this, dt, 1, 0.25);
 
         // update score
         this.score = this.newScore;
@@ -141,11 +182,11 @@ export class Player {
 
         // lerp angle for other players
         if (this.id != Vars.myId) {
-            this.angle += (((this.newAngle - this.angle + Math.PI * 3) % (Math.PI * 2) - Math.PI) * lerpFactor);
+            this.angle = lerpAngle(this.angle, this.newAngle, lerpFactor);
         }
 
         // keep angle within range
-        this.angle = ((this.angle + Math.PI) % (Math.PI * 2) + (Math.PI * 2)) % (Math.PI * 2) - Math.PI;
+        this.angle = normalizeAngle(this.angle);
     }
     draw() {
         if (typeof this.x === 'undefined' || typeof this.y === 'undefined') return;
@@ -165,30 +206,20 @@ export class Player {
 
         const screenPosX = drawX - camera.x;
         const screenPosY = drawY - camera.y;
-        const renderQuality = getRenderQuality({ ...this, x: drawX, y: drawY }, this.radius);
+        const renderQuality = getRenderQualityAt(drawX, drawY, this.radius);
         const isLocalPlayer = this.id === Vars.myId;
 
         const isSelfInvisible = isLocalPlayer && this.isInvisible;
         const alpha = (isSelfInvisible ? 0.5 : 1) * deathFadeAlpha;
 
         if (this.hasShield && renderQuality.showStatusOverlays) {
-            LC.drawImage({
-                name: 'spawn_zone_shield',
-                pos: [screenPosX - this.radius * 1.5, screenPosY - this.radius * 1.5],
-                size: [this.radius * 3, this.radius * 3],
-                transparency: 0.5 * alpha
-            });
+            LC.drawImageFast('spawn_zone_shield', screenPosX - this.radius * 1.5, screenPosY - this.radius * 1.5, this.radius * 3, this.radius * 3, 0, 0.5 * alpha);
         }
 
         const leaderId = Vars.topLeader?.id || 0;
         if (CURRENT_WORLD === WORLD_MAIN && leaderId === this.id && LC.images?.['ui_crown'] && !renderQuality.veryFar) {
             const crownSize = 72;
-            LC.drawImage({
-                name: 'ui_crown',
-                pos: [screenPosX - (crownSize / 2), screenPosY - this.radius - crownSize - 28],
-                size: [crownSize, crownSize],
-                transparency: alpha
-            });
+            LC.drawImageFast('ui_crown', screenPosX - (crownSize / 2), screenPosY - this.radius - crownSize - 28, crownSize, crownSize, 0, alpha);
         }
 
         let currentWeaponType = this.weaponRank || 0;
@@ -246,22 +277,21 @@ export class Player {
                 offsetY = radialY + rotatedOffsetY;
             }
 
-            let swordImgName = getWeaponConfig(currentWeaponType)?.name || 'swords_wipsword';
+            let swordImgName = getWeaponConfig(currentWeaponType)?.name || 'swords_bone';
             if (!LC.images[swordImgName]) {
-                swordImgName = `swords_wipsword`;
+                swordImgName = 'swords_bone';
             }
 
             if (this.hasWeapon) {
-                LC.drawImage({
-                    name: swordImgName,
-                    pos: [
-                        screenPosX + offsetX - swordWidth / 2,
-                        screenPosY + offsetY - swordHeight / 2
-                    ],
-                    size: [swordWidth, swordHeight],
-                    rotation: weaponRotation,
-                    transparency: alpha
-                });
+                LC.drawImageFast(
+                    swordImgName,
+                    screenPosX + offsetX - swordWidth / 2,
+                    screenPosY + offsetY - swordHeight / 2,
+                    swordWidth,
+                    swordHeight,
+                    weaponRotation,
+                    alpha
+                );
             }
 
             if (Settings.drawHitboxes && isSpear) {
@@ -296,19 +326,12 @@ export class Player {
             }
         }
 
+        drawSlashDebugArc(this, screenPosX, screenPosY, currentWeaponType, alpha);
+
         const playerColor = this.color || (this.id === Vars.myId
             ? getCurrentPlayerColor()
             : getDefaultPlayerColor());
-        LC.drawCircle({
-            pos: [screenPosX, screenPosY],
-            radius: this.radius,
-            color: playerColor,
-            transparency: alpha,
-            fill: true,
-            stroke: true,
-            strokeColor: '#000000',
-            strokeWidth: Math.max(2, this.radius * 0.1)
-        });
+        LC.drawCircleFast(screenPosX, screenPosY, this.radius, playerColor, alpha, true, true, '#000000', Math.max(2, this.radius * 0.1));
 
         // draw accessory
         const accessoryKey = ACCESSORY_KEYS[this.accessoryId];
@@ -330,16 +353,15 @@ export class Player {
                 const rotatedX = scaledOffsetX * cos - scaledOffsetY * sin;
                 const rotatedY = scaledOffsetX * sin + scaledOffsetY * cos;
 
-                LC.drawImage({
-                    name: accessory.name,
-                    pos: [
-                        screenPosX + rotatedX - (scaledWidth / 2),
-                        screenPosY + rotatedY - (scaledHeight / 2)
-                    ],
-                    size: [scaledWidth, scaledHeight],
-                    rotation: this.angle,
-                    transparency: alpha
-                });
+                LC.drawImageFast(
+                    accessory.name,
+                    screenPosX + rotatedX - (scaledWidth / 2),
+                    screenPosY + rotatedY - (scaledHeight / 2),
+                    scaledWidth,
+                    scaledHeight,
+                    this.angle,
+                    alpha
+                );
             }
         }
 
@@ -355,22 +377,10 @@ export class Player {
             const healthColor = getHealthBarColor(healthPercentage);
 
             // Background of the health bar
-            LC.drawRect({
-                pos: [screenPosX - barWidth / 2, screenPosY + this.radius + 5],
-                size: [barWidth, barHeight],
-                color: 'rgba(128, 128, 128, 0.45)',
-                cornerRadius: 2,
-                transparency: alpha
-            });
+            LC.drawRectFast(screenPosX - barWidth / 2, screenPosY + this.radius + 5, barWidth, barHeight, 'rgba(128, 128, 128, 0.45)', alpha, 2);
 
             // Foreground of the health bar
-            LC.drawRect({
-                pos: [screenPosX - barWidth / 2, screenPosY + this.radius + 5],
-                size: [barWidth * healthPercentage, barHeight],
-                color: healthColor,
-                cornerRadius: 2,
-                transparency: alpha
-            });
+            LC.drawRectFast(screenPosX - barWidth / 2, screenPosY + this.radius + 5, barWidth * healthPercentage, barHeight, healthColor, alpha, 2);
         }
 
         // draw chat
@@ -388,22 +398,18 @@ export class Player {
                 this._chatRenderCache = chatCache;
             }
             const padding = 5;
-            LC.drawRect({ // chat bubble
-                pos: [screenPosX - chatCache.width / 2 - padding, screenPosY - this.radius - 30 - 20 - padding],
-                size: [chatCache.width + padding * 2, 20 + padding * 1.5],
-                color: 'rgba(64, 64, 64, 0.7)',
-                cornerRadius: 5,
-                transparency: alpha
-            });
+            LC.drawRectFast(
+                screenPosX - chatCache.width / 2 - padding,
+                screenPosY - this.radius - 30 - 20 - padding,
+                chatCache.width + padding * 2,
+                20 + padding * 1.5,
+                'rgba(64, 64, 64, 0.7)',
+                alpha,
+                5
+            );
 
 
-            LC.drawText({
-                text: chatText,
-                pos: [screenPosX - chatCache.width / 2, screenPosY - this.radius - 35],
-                color: 'white',
-                font: '17px Arial',
-                transparency: alpha
-            });
+            LC.drawTextFast(chatText, screenPosX - chatCache.width / 2, screenPosY - this.radius - 35, '17px Arial', 'white', 'left', 'alphabetic', alpha);
         }
 
         let idText = "";
@@ -498,31 +504,13 @@ export class Player {
             const usernameColor = isLocalPlayerInSnowBiome() ? '#4b5563' : 'white';
             debugIdX = screenPosX - totalWidth / 2 + nameplateCache.levelWidth + nameplateCache.usernameWidth;
 
-            LC.drawText({
-                text: levelText,
-                pos: [screenPosX - totalWidth / 2, screenPosY - this.radius - 5],
-                color: '#1e3a8a',
-                font: 'bold 16px Arial',
-                transparency: alpha
-            });
+            LC.drawTextFast(levelText, screenPosX - totalWidth / 2, screenPosY - this.radius - 5, 'bold 16px Arial', '#1e3a8a', 'left', 'alphabetic', alpha);
 
-            LC.drawText({
-                text: usernameText,
-                pos: [screenPosX - totalWidth / 2 + nameplateCache.levelWidth, screenPosY - this.radius - 5],
-                color: usernameColor,
-                font: 'bold 16px Arial',
-                transparency: alpha
-            });
+            LC.drawTextFast(usernameText, screenPosX - totalWidth / 2 + nameplateCache.levelWidth, screenPosY - this.radius - 5, 'bold 16px Arial', usernameColor, 'left', 'alphabetic', alpha);
         }
 
         if (Settings.debugMode && isHoveringPlayer) {
-            LC.drawText({
-                text: idText,
-                pos: [debugIdX, screenPosY - this.radius - 5],
-                color: 'lightgray',
-                font: 'bold 16px Arial',
-                transparency: alpha
-            });
+            LC.drawTextFast(idText, debugIdX, screenPosY - this.radius - 5, 'bold 16px Arial', 'lightgray', 'left', 'alphabetic', alpha);
         };
 
         if (Settings.drawHitboxes) {
@@ -537,23 +525,8 @@ export class Player {
                     transparency: alpha
                 });
             }
-            LC.drawCircle({
-                pos: [screenPosX, screenPosY],
-                radius: this.radius,
-                color: 'red',
-                transparency: 0.2 * alpha,
-                fill: true,
-                stroke: true,
-                strokeWidth: 3
-            });
-            LC.drawLine({
-                start: [screenPosX, screenPosY],
-                length: this.radius,
-                angle: this.angle,
-                color: 'red',
-                lineWidth: 3,
-                transparency: 0.85 * alpha
-            });
+            LC.drawCircleFast(screenPosX, screenPosY, this.radius, 'red', 0.2 * alpha, true, true, null, 3);
+            LC.drawLineFast(screenPosX, screenPosY, this.radius, this.angle, 'red', 3, 0.85 * alpha);
         }
     }
 }

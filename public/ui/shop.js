@@ -119,7 +119,7 @@ function formatAccessoryName(key, accessory) {
 function getAssetSrc(configOrName, fallback = './images/objects/gold_coin.png') {
     if (!configOrName) return fallback;
     if (typeof configOrName === 'string') {
-        const pools = [dataMap.OBJECTS, dataMap.ACCESSORIES, dataMap.SWORDS?.imgs, dataMap.SPEARS?.imgs, dataMap.UI];
+        const pools = [dataMap.OBJECTS, dataMap.ACCESSORIES, dataMap.SWORDS?.imgs, dataMap.SPEARS?.imgs, dataMap.AXES?.imgs, dataMap.BOOMERANGS?.imgs, dataMap.UI];
         for (const pool of pools) {
             const found = Object.values(pool || {}).find(item => item?.name === configOrName || item?.imgName === configOrName);
             if (found?.src || found?.imgSrc) return found.src || found.imgSrc;
@@ -132,14 +132,19 @@ function getAssetSrc(configOrName, fallback = './images/objects/gold_coin.png') 
 function splitShopWeapons() {
     const swords = [];
     const spears = [];
+    const axes = [];
+    const boomerangs = [];
     for (const item of dataMap.SHOP_ITEMS || []) {
-        if ((item?.category || 'sword') === 'spear') spears.push(item);
+        const category = item?.category || 'sword';
+        if (category === 'spear') spears.push(item);
+        else if (category === 'axe') axes.push(item);
+        else if (category === 'boomerang') boomerangs.push(item);
         else swords.push(item);
     }
-    return { swords, spears };
+    return { swords, axes, spears, boomerangs };
 }
 
-function isTutorialBranchSwordOnly() {
+function isTutorialSword1Only() {
     return CURRENT_WORLD === WORLD_TUTORIAL
         && Vars.tutorialObjectiveStep === 5
         && !Vars.myInventory.some((type, idx) => ((type & 0x7F) === 2) && Vars.myInventoryCounts[idx] > 0);
@@ -181,12 +186,14 @@ export function toggleShopModal(show) {
 }
 
 function renderBuyTab() {
-    const tutorialLockedToBranch = isTutorialBranchSwordOnly();
-    const { swords, spears } = splitShopWeapons();
-    renderWeaponSection('Swords', swords, tutorialLockedToBranch);
-    renderWeaponSection('Spears', spears, tutorialLockedToBranch);
-    renderAccessoriesSection(tutorialLockedToBranch);
-    renderMiscSection(tutorialLockedToBranch);
+    const tutorialLockedToSword1 = isTutorialSword1Only();
+    const { swords, axes, spears, boomerangs } = splitShopWeapons();
+    renderWeaponSection('Swords', swords, tutorialLockedToSword1);
+    renderWeaponSection('Axes', axes, tutorialLockedToSword1);
+    renderWeaponSection('Spears', spears, tutorialLockedToSword1);
+    renderWeaponSection('Boomerangs', boomerangs, tutorialLockedToSword1);
+    renderAccessoriesSection(tutorialLockedToSword1);
+    renderMiscSection(tutorialLockedToSword1);
 }
 
 function renderSection(title) {
@@ -194,12 +201,12 @@ function renderSection(title) {
     return createEl('div', {}, uiRefs.shopBody, { className: 'shop_grid' });
 }
 
-function renderWeaponSection(title, items, tutorialLockedToBranch) {
+function renderWeaponSection(title, items, tutorialLockedToSword1) {
     if (!items.length) return;
     const grid = renderSection(title);
     for (const item of items) {
         const canAfford = (Vars.myStats.goldCoins || 0) >= item.price;
-        const tutorialAllowed = !tutorialLockedToBranch || item.id === 2;
+        const tutorialAllowed = !tutorialLockedToSword1 || item.id === 2;
         addShopItem(grid, {
             kind: item.category || 'sword',
             id: item.id,
@@ -213,7 +220,7 @@ function renderWeaponSection(title, items, tutorialLockedToBranch) {
     }
 }
 
-function renderAccessoriesSection(tutorialLockedToBranch) {
+function renderAccessoriesSection(tutorialLockedToSword1) {
     const grid = renderSection('Accessories');
     for (let id = 1; id < ACCESSORY_KEYS.length; id++) {
         const key = ACCESSORY_KEYS[id];
@@ -234,14 +241,14 @@ function renderAccessoriesSection(tutorialLockedToBranch) {
             name: formatAccessoryName(key, accessory),
             iconSrc: getAssetSrc(accessory),
             priceRows: [{ iconSrc, text: costConfig.amount.toLocaleString() }],
-            canBuy: canAfford && !tutorialLockedToBranch,
-            buttonText: tutorialLockedToBranch ? 'Locked' : (canAfford ? 'Buy' : 'Too Poor'),
+            canBuy: canAfford && !tutorialLockedToSword1,
+            buttonText: tutorialLockedToSword1 ? 'Locked' : (canAfford ? 'Buy' : 'Too Poor'),
             infoText: ACCESSORY_DESCRIPTIONS[key] || 'Coming Soon'
         });
     }
 }
 
-function renderMiscSection(tutorialLockedToBranch) {
+function renderMiscSection(tutorialLockedToSword1) {
     const grid = renderSection('Misc');
     for (const item of dataMap.SPECIAL_SHOP_ITEMS || []) {
         const coinCost = Math.max(0, Math.floor(item.coinCost || 0));
@@ -260,8 +267,8 @@ function renderMiscSection(tutorialLockedToBranch) {
             name: item.name || 'Special Item',
             iconSrc: getAssetSrc(dataMap.OBJECTS?.[item.itemType]),
             priceRows,
-            canBuy: canAfford && !tutorialLockedToBranch,
-            buttonText: tutorialLockedToBranch ? 'Locked' : (canAfford ? 'Buy' : 'Too Poor')
+            canBuy: canAfford && !tutorialLockedToSword1,
+            buttonText: tutorialLockedToSword1 ? 'Locked' : (canAfford ? 'Buy' : 'Too Poor')
         });
     }
 
@@ -273,8 +280,8 @@ function renderMiscSection(tutorialLockedToBranch) {
             name: item.name,
             iconText: 'XP',
             priceRows: [{ iconSrc: './images/objects/gold_coin.png', text: (item.price || 0).toLocaleString() }],
-            canBuy: canAfford && !tutorialLockedToBranch,
-            buttonText: tutorialLockedToBranch ? 'Locked' : (canAfford ? 'Buy' : 'Too Poor')
+            canBuy: canAfford && !tutorialLockedToSword1,
+            buttonText: tutorialLockedToSword1 ? 'Locked' : (canAfford ? 'Buy' : 'Too Poor')
         });
     }
 }

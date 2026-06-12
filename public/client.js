@@ -1,7 +1,7 @@
 import { parsePacket } from './parser.js';
 import { LibCanvas, normalizeCanvasFont } from './libcanvas.js';
 import { ENTITIES, MAP_SIZE } from './game.js';
-import { dataMap, TPS, ACCESSORY_KEYS, ACCESSORY_DESCRIPTIONS, isAccessoryItemType, accessoryIdFromItemType, accessoryItemTypeFromId, DEFAULT_VIEW_RANGE_MULT, isCoinObjectType, getCoinObjectType, isChestObjectType, xpForLevel, MAX_LEVEL, WEAPON_IDS, isWeaponRank, isWeaponTypeStronger, isSellableItem, getWeaponConfig, getWeaponSize, getStructureImageName, BOSS_PORTAL_MIN_SCORE, getBossPortalEntryBlockMessage, isRockStructureType } from './shared/datamap.js';
+import { dataMap, TPS, ACCESSORY_KEYS, ACCESSORY_DESCRIPTIONS, isAccessoryItemType, accessoryIdFromItemType, accessoryItemTypeFromId, DEFAULT_VIEW_RANGE_MULT, isCoinObjectType, getCoinObjectType, isChestObjectType, xpForLevel, MAX_LEVEL, WEAPON_IDS, isWeaponRank, isWeaponTypeStronger, isSellableItem, getWeaponConfig, getWeaponSize, getStructureImageName, BOSS_PORTAL_MIN_SCORE, getBossPortalEntryBlockMessage, isRockStructureType, isBoomerangType } from './shared/datamap.js';
 import { getCenterDiagonalBridgeSegments } from './shared/river.js';
 import { worldHasRivers, worldIsGrassOnly, worldIsSnowOnly, worldIsDesertOnly, worldIsMagmaOnly, WORLD_ROOT_DIMENSION, WORLD_YETI_DIMENSION, WORLD_DUNE_DIMENSION, WORLD_INFERNO_DIMENSION } from './shared/worlds.js';
 import {
@@ -53,6 +53,8 @@ const HOME_SCREEN_FADE_MS = 300;
 const DEATH_SPECTATE_BUFFER_MS = 500;
 export const DEATH_SPECTATE_START_DELAY_MS = DEATH_MENU_DELAY_MS + DEATH_MENU_FADE_MS + DEATH_SPECTATE_BUFFER_MS;
 export const PAUSE_SPECTATE_START_DELAY_MS = HOME_SCREEN_FADE_MS + DEATH_SPECTATE_BUFFER_MS;
+const JOIN_ACK_TIMEOUT_MS = 6000;
+const PAUSE_ACK_TIMEOUT_MS = 6000;
 const WORLD_STORAGE_KEY = 'ua_world';
 const WORLD_CHOICE_MADE_STORAGE_KEY = 'ua_world_choice_made';
 const TUTORIAL_COMPLETED_STORAGE_KEY = 'ua_tutorial_completed';
@@ -244,6 +246,65 @@ export const Vars = {
     inGameSoundVolume: 1
 };
 
+const SIMULATED_PING_MAX_MS = 10000;
+const SERVER_PACKET_INIT = 1;
+const SERVER_PACKET_UPDATE = 2;
+const SERVER_PACKET_DIED = 6;
+const SERVER_PACKET_KICKED = 8;
+const simulatedPingQueue = [];
+let simulatedPingMs = 0;
+let simulatedPingDisplayMs = 0;
+let simulatedPingTimer = null;
+
+function getSimulatedPingDelay() {
+    if (simulatedPingMs <= 0) return 0;
+    const base = simulatedPingMs;
+    const normalJitter = (Math.random() * 2 - 1) * base * 0.18;
+    const spikeJitter = Math.random() < 0.08 ? (Math.random() * 2 - 1) * base * 0.28 : 0;
+    const delay = Math.max(0, Math.min(SIMULATED_PING_MAX_MS, Math.round(base + normalJitter + spikeJitter)));
+    simulatedPingDisplayMs = delay;
+    return delay;
+}
+
+function clearSimulatedPingQueue() {
+    simulatedPingQueue.length = 0;
+    simulatedPingDisplayMs = 0;
+    if (simulatedPingTimer) {
+        clearTimeout(simulatedPingTimer);
+        simulatedPingTimer = null;
+    }
+}
+
+function pumpSimulatedPingQueue() {
+    simulatedPingTimer = null;
+    const now = performance.now();
+    while (simulatedPingQueue.length && simulatedPingQueue[0].deliverAt <= now) {
+        parsePacket(simulatedPingQueue.shift().data);
+    }
+    if (!simulatedPingQueue.length) return;
+    simulatedPingTimer = setTimeout(pumpSimulatedPingQueue, Math.max(0, simulatedPingQueue[0].deliverAt - performance.now()));
+}
+
+function queueSimulatedUpdatePacket(data) {
+    const delay = getSimulatedPingDelay();
+    const deliverAt = performance.now() + delay;
+    simulatedPingQueue.push({ data, deliverAt });
+    if (!simulatedPingTimer) {
+        simulatedPingTimer = setTimeout(pumpSimulatedPingQueue, delay);
+    }
+}
+
+export function setSimulatedPing(ms) {
+    const next = Math.max(0, Math.min(SIMULATED_PING_MAX_MS, Number(ms) || 0));
+    simulatedPingMs = next;
+    if (next <= 0) clearSimulatedPingQueue();
+    return simulatedPingMs;
+}
+
+export function getSimulatedPing() {
+    return simulatedPingMs;
+}
+
 export function getCurrentPlayerColor() {
     return getDefaultPlayerColor();
 }
@@ -304,6 +365,13 @@ const rootWalkerPortalOverlay = {
 };
 let bossIntroViewRangeRestoreTimer = 0;
 const BOSS_INTRO_HUD_FADE_MS = 550;
+
+function removeUnordered(array, index) {
+    const lastIndex = array.length - 1;
+    if (index < 0 || index > lastIndex) return;
+    array[index] = array[lastIndex];
+    array.pop();
+}
 
 function getBossIntroHudAlpha(now = performance.now()) {
     const hiddenUntil = Vars.bossIntroHudHiddenUntil || 0;
@@ -442,7 +510,7 @@ const HUD_UPGRADE_LAYOUT = {
     rowGap: 10,
     totalWidth: 330,
     rightPad: 12,
-    segments: 10,
+    segments: 15,
     segmentGap: 2
 };
 const HUD_UPGRADE_SLIDE_LERP = 0.22;
@@ -536,18 +604,38 @@ const shopCanvasState = {
     sellDropRect: null,
     closeButtonRect: null
 };
+const adminCreativeInventoryState = {
+    scrollY: 0,
+    scrollMax: 0
+};
 let upgradeHintActive = false;
 const ADMIN_CREATIVE_PANEL_GAP = 0;
-const ADMIN_CREATIVE_ITEMS = [
-    ...WEAPON_IDS.map(type => ({ type, amount: 1 })),
-    { type: getCoinObjectType(), amount: 256 },
-    { type: dataMap.OBJECT_TYPE_BY_KEY?.['skull'] || 0, amount: 1 },
-    { type: dataMap.OBJECT_TYPE_BY_KEY?.['golden_skull'] || 0, amount: 1 },
-    ...ACCESSORY_KEYS
+const ADMIN_CREATIVE_ITEMS = (() => {
+    const itemsByType = new Map();
+    const addItem = (type, amount = 1) => {
+        if (!Number.isFinite(type) || type <= 0 || itemsByType.has(type)) return;
+        itemsByType.set(type, { type, amount });
+    };
+
+    WEAPON_IDS.forEach(type => addItem(type, 1));
+
+    Object.entries(dataMap.OBJECTS || {})
+        .map(([type, cfg]) => ({ type: Number(type), cfg }))
+        .filter(({ type, cfg }) => (
+            Number.isFinite(type) &&
+            type > 0 &&
+            (cfg?.category === 'coin' || cfg?.category === 'drop' || cfg?.stackable)
+        ))
+        .sort((a, b) => a.type - b.type)
+        .forEach(({ type, cfg }) => addItem(type, cfg?.category === 'coin' ? Math.max(1, Math.floor(cfg.stackLimit || 256)) : 1));
+
+    ACCESSORY_KEYS
         .map((key, idx) => ({ key, idx }))
         .filter(entry => entry.key !== 'none')
-        .map(entry => ({ type: accessoryItemTypeFromId(entry.idx), amount: 1 }))
-].filter(item => item.type > 0);
+        .forEach(entry => addItem(accessoryItemTypeFromId(entry.idx), 1));
+
+    return Array.from(itemsByType.values());
+})();
 
 export function playUITapSound() {
     const sfxCfg = dataMap.AUDIO['ui_tap'] || {};
@@ -689,7 +777,7 @@ function pruneSeededChestCoins(now = performance.now()) {
     for (let i = seededChestCoins.length - 1; i >= 0; i--) {
         const coin = seededChestCoins[i];
         if (coin.removed || coin.expiresAt <= now) {
-            seededChestCoins.splice(i, 1);
+            removeUnordered(seededChestCoins, i);
         }
     }
 }
@@ -1148,8 +1236,8 @@ async function loadAssets() {
         const tutorialChestId = (dataMap.CHEST_IDS || [])[0];
         if (tutorialChestId && dataMap.OBJECTS[tutorialChestId]) tutorialObjects[tutorialChestId] = dataMap.OBJECTS[tutorialChestId];
         const tutorialSwords = Object.fromEntries(
-            Object.entries({ ...(dataMap.SWORDS.imgs || {}), ...(dataMap.SPEARS.imgs || {}) }).filter(([, sword]) => (
-                sword?.name !== 'swords_wipsword' && sword?.name !== 'swords_boulder_blade'
+            Object.entries({ ...(dataMap.SWORDS.imgs || {}), ...(dataMap.SPEARS.imgs || {}), ...(dataMap.AXES.imgs || {}) }).filter(([, sword]) => (
+                !!sword?.name
             ))
         );
 
@@ -1161,6 +1249,7 @@ async function loadAssets() {
             { data: dataMap.otherImgs, type: 'image' },
             { data: dataMap.PLAYERS.imgs, type: 'image' },
             { data: tutorialSwords, type: 'image' },
+            { data: dataMap.BOOMERANGS?.imgs || {}, type: 'image' },
             { data: { '2': dataMap.MOBS['2'] }, type: 'image', rename: true }
         );
     } else {
@@ -1181,7 +1270,7 @@ async function loadAssets() {
             { data: dataMap.OBJECTS, type: 'image', rename: true },
             { data: dataMap.otherImgs, type: 'image' },
             { data: dataMap.PLAYERS.imgs, type: 'image' },
-            { data: { ...(dataMap.SWORDS.imgs || {}), ...(dataMap.SPEARS.imgs || {}) }, type: 'image' },
+            { data: { ...(dataMap.SWORDS.imgs || {}), ...(dataMap.SPEARS.imgs || {}), ...(dataMap.AXES.imgs || {}) }, type: 'image' },
             { data: dataMap.MOBS, type: 'image', rename: true },
             { data: dataMap.STRUCTURES, type: 'image', rename: true },
             { data: dataMap.ATTACK_PROJECTILES, type: 'image' },
@@ -1254,7 +1343,8 @@ export async function ensureFullWorldAssetsLoaded() {
         { data: dataMap.OBJECTS, type: 'image', rename: true },
         { data: dataMap.otherImgs, type: 'image' },
         { data: dataMap.PLAYERS.imgs, type: 'image' },
-        { data: { ...(dataMap.SWORDS.imgs || {}), ...(dataMap.SPEARS.imgs || {}) }, type: 'image' },
+        { data: { ...(dataMap.SWORDS.imgs || {}), ...(dataMap.SPEARS.imgs || {}), ...(dataMap.AXES.imgs || {}) }, type: 'image' },
+        { data: dataMap.BOOMERANGS?.imgs || {}, type: 'image' },
         { data: dataMap.MOBS, type: 'image', rename: true },
         { data: dataMap.STRUCTURES, type: 'image', rename: true },
         { data: dataMap.ATTACK_PROJECTILES, type: 'image' },
@@ -1408,9 +1498,10 @@ ws.onopen = () => {
 
 ws.onmessage = (event) => {
     incomingPacketsThisSecond++;
+    let packetType = 0;
     if (event.data instanceof ArrayBuffer && event.data.byteLength > 0) {
-        const packetType = new Uint8Array(event.data, 0, 1)[0];
-        if (packetType === 2) {
+        packetType = new Uint8Array(event.data, 0, 1)[0];
+        if (packetType === SERVER_PACKET_UPDATE) {
             incomingUpdatePacketsThisSecond++;
             incomingUpdatePacketBytesThisSecond += event.data.byteLength;
             if (Settings.debugMode) {
@@ -1426,6 +1517,13 @@ ws.onmessage = (event) => {
         }
         parsePacket(event.data);
         cantJoin = true;
+        return;
+    }
+    if (packetType === SERVER_PACKET_INIT || packetType === SERVER_PACKET_DIED || packetType === SERVER_PACKET_KICKED) {
+        clearSimulatedPingQueue();
+    }
+    if (simulatedPingMs > 0 && packetType === SERVER_PACKET_UPDATE) {
+        queueSimulatedUpdatePacket(event.data);
         return;
     }
     parsePacket(event.data);
@@ -2017,7 +2115,7 @@ function drawBlindnessOverlays() {
         const fx = blindnessOverlays[i];
         const t = (now - fx.startTime) / fx.duration;
         if (t >= 1) {
-            blindnessOverlays.splice(i, 1);
+            removeUnordered(blindnessOverlays, i);
             continue;
         }
         const elapsed = now - fx.startTime;
@@ -2273,6 +2371,7 @@ function render(frameTime = performance.now()) {
     LC.ctx.translate(LC.width / 2, LC.height / 2);
     LC.ctx.scale(LC.zoom, LC.zoom);
     LC.ctx.translate(-LC.width / 2, -LC.height / 2);
+    LC.setImageScale((LC.scaleX || 1) * LC.zoom, (LC.scaleY || 1) * LC.zoom);
 
     drawBackground();
     if (Settings.renderGrid) drawGrid(localPlayer);
@@ -2345,12 +2444,15 @@ function render(frameTime = performance.now()) {
         const combinedRadius = (localPlayer?.radius || 0) + tree.radius;
         const isPlayerInTree = ((dx * dx) + (dy * dy)) < (combinedRadius * combinedRadius);
 
-        LC.drawImage({
-            name: getStructureImageName(tree.type, tree.x, tree.y, MAP_SIZE, tree.world || CURRENT_WORLD),
-            pos: [screenPosX - tree.radius, screenPosY - tree.radius],
-            size: [tree.radius * 2, tree.radius * 2],
-            transparency: isPlayerInTree ? 0.5 : 1
-        });
+        LC.drawImageFast(
+            getStructureImageName(tree.type, tree.x, tree.y, MAP_SIZE, tree.world || CURRENT_WORLD),
+            screenPosX - tree.radius,
+            screenPosY - tree.radius,
+            tree.radius * 2,
+            tree.radius * 2,
+            0,
+            isPlayerInTree ? 0.5 : 1
+        );
         if (Settings.debugMode && isHoveringTree) {
             const idText = `(${tree.id})`;
             const idMetrics = LC.measureText({ text: idText, font: 'bold 15px Arial' });
@@ -2362,15 +2464,7 @@ function render(frameTime = performance.now()) {
             });
         }
         if (Settings.drawHitboxes) {
-            LC.drawCircle({
-                color: 'blue',
-                pos: [screenPosX, screenPosY],
-                radius: tree.radius,
-                transparency: 0.2,
-                fill: true,
-                stroke: true,
-                strokeWidth: 3
-            });
+            LC.drawCircleFast(screenPosX, screenPosY, tree.radius, 'blue', 0.2, true, true, null, 3);
         }
     }
 
@@ -2378,6 +2472,7 @@ function render(frameTime = performance.now()) {
     drawBossShrineIndicator(localPlayer, staticViewRect);
 
     LC.ctx.restore();
+    LC.setImageScale(LC.scaleX || 1, LC.scaleY || 1);
     // UI & Overlays
     updateHUD(localPlayer);
     const hudAlpha = getBossIntroHudAlpha();
@@ -2523,7 +2618,7 @@ function drawDamageIndicators() {
         const elapsed = now - indicator.start;
         const progress = Math.min(1, elapsed / indicator.duration);
         if (progress >= 1) {
-            damageIndicators.splice(i, 1);
+            removeUnordered(damageIndicators, i);
             continue;
         }
         if (highRov && !isCircleVisible(indicator.x, indicator.y, 24, viewRect)) {
@@ -2533,14 +2628,7 @@ function drawDamageIndicators() {
         const rise = (indicator.rise || DAMAGE_INDICATOR_RISE) * progress;
         const screenX = indicator.x - camera.x;
         const screenY = indicator.y - camera.y - rise;
-        LC.drawText({
-            text: indicator.text,
-            pos: [screenX, screenY],
-            font: indicator.font || 'bold 16px Inter',
-            color: indicator.color || '#ff0000',
-            textAlign: 'center',
-            transparency
-        });
+        LC.drawTextFast(indicator.text, screenX, screenY, indicator.font || 'bold 16px Inter', indicator.color || '#ff0000', 'center', 'alphabetic', transparency);
     }
 }
 
@@ -2634,7 +2722,8 @@ function suppressBossIntroHudInteractions() {
 
 function updateHUD(lp) {
     const isAlive = lp?.isAlive;
-    const isDimensionSwitching = performance.now() < (uiState.dimensionTransitionUntil || 0);
+    const now = performance.now();
+    const isDimensionSwitching = now < (uiState.dimensionTransitionUntil || 0);
     const hudAlpha = getBossIntroHudAlpha();
     const selectedItemType = (Vars.myInventory[Vars.selectedSlot] || 0) & 0x7F;
     const selectedItemCount = Vars.myInventoryCounts[Vars.selectedSlot] || 0;
@@ -2779,6 +2868,40 @@ function updateHUD(lp) {
         setElementDisplay(respawnScreen, 'none');
         updateHomeOnlineCount(false);
         return;
+    }
+
+    if (uiState.pendingJoin) {
+        if (isAlive) {
+            uiState.pendingJoin = false;
+            uiState.pendingJoinStartedAt = 0;
+        } else if (now - (uiState.pendingJoinStartedAt || now) <= JOIN_ACK_TIMEOUT_MS) {
+            leaderboardCanvasState.toggleRect = null;
+            minimapCanvasState.toggleRect = null;
+            updateMinimapCoachOverlay(false);
+            clearDragOverlay();
+            hudUpgradeHitboxes.length = 0;
+            hudUpgradeHeaderHitbox = null;
+            updateHomeOnlineCount(homeScreen?.style.display !== 'none');
+            updateJoinButton();
+            updateRespawnButton();
+            return;
+        } else {
+            uiState.pendingJoin = false;
+            uiState.pendingJoinStartedAt = 0;
+        }
+    }
+
+    if (uiState.pendingPause) {
+        if (!isAlive) {
+            uiState.pendingPause = false;
+            uiState.pendingPauseStartedAt = 0;
+            uiState.forceHomeScreen = true;
+        } else if (now - (uiState.pendingPauseStartedAt || now) > PAUSE_ACK_TIMEOUT_MS) {
+            uiState.pendingPause = false;
+            uiState.pendingPauseStartedAt = 0;
+            uiState.isPaused = false;
+            Vars.pauseSpectateStartAt = 0;
+        }
     }
 
     if (uiState.forceHomeScreen) {
@@ -3221,7 +3344,7 @@ function drawCoinPickupEffects() {
         const elapsed = now - effect.startTime;
         const t = Math.min(1, elapsed / COIN_PICKUP_EFFECT_DURATION);
         if (t >= 1) {
-            coinPickupEffects.splice(i, 1);
+            removeUnordered(coinPickupEffects, i);
             continue;
         }
 
@@ -3243,12 +3366,7 @@ function drawCoinPickupEffects() {
             const sx = x - camera.x + (ox * px) - size / 2;
             const sy = y - camera.y + (oy * py) - size / 2;
 
-            LC.drawImage({
-                name: 'gold_coin',
-                pos: [sx, sy],
-                size: [size, size],
-                transparency: alpha
-            });
+            LC.drawImageFast('gold_coin', sx, sy, size, size, 0, alpha);
         }
     }
 }
@@ -3265,11 +3383,7 @@ function drawSeededChestCoins() {
         const coin = seededChestCoins[i];
         if (coin.removed || coin.expiresAt <= now) continue;
         if (!isCircleVisible(coin.x, coin.y, radius, viewRect)) continue;
-        LC.drawImage({
-            name: 'gold_coin',
-            pos: [coin.x - camera.x - size / 2, coin.y - camera.y - size / 2],
-            size: [size, size]
-        });
+        LC.drawImageFast('gold_coin', coin.x - camera.x - size / 2, coin.y - camera.y - size / 2, size, size);
     }
 }
 
@@ -3280,7 +3394,7 @@ function drawLightningShotEffects() {
         const fx = lightningShotEffects[i];
         const t = (now - fx.startTime) / fx.duration;
         if (t >= 1) {
-            lightningShotEffects.splice(i, 1);
+            removeUnordered(lightningShotEffects, i);
             continue;
         }
 
@@ -3368,7 +3482,7 @@ function drawEnergyBurstEffects() {
         const fx = energyBurstEffects[i];
         const t = (now - fx.startTime) / fx.duration;
         if (t >= 1) {
-            energyBurstEffects.splice(i, 1);
+            removeUnordered(energyBurstEffects, i);
             continue;
         }
 
@@ -3430,7 +3544,7 @@ function drawPoisonAoeEffects() {
         const fx = poisonAoeEffects[i];
         const t = (now - fx.startTime) / fx.duration;
         if (t >= 1) {
-            poisonAoeEffects.splice(i, 1);
+            removeUnordered(poisonAoeEffects, i);
             continue;
         }
 
@@ -3476,7 +3590,7 @@ function drawInfernoBeamEffects() {
         const elapsed = now - fx.startTime;
         const total = fx.chargeMs + fx.collapseMs + fx.beamMs;
         if (elapsed >= total) {
-            infernoBeamEffects.splice(i, 1);
+            removeUnordered(infernoBeamEffects, i);
             continue;
         }
 
@@ -3554,7 +3668,7 @@ function drawIntimidationAoeEffects() {
         const fx = intimidationAoeEffects[i];
         const elapsed = now - fx.startTime;
         if (elapsed >= fx.duration) {
-            intimidationAoeEffects.splice(i, 1);
+            removeUnordered(intimidationAoeEffects, i);
             continue;
         }
         let currentRadius = fx.radius;
@@ -3594,7 +3708,7 @@ function drawSmokeAoeEffects() {
         const fx = smokeAoeEffects[i];
         const t = (now - fx.startTime) / fx.duration;
         if (t >= 1) {
-            smokeAoeEffects.splice(i, 1);
+            removeUnordered(smokeAoeEffects, i);
             continue;
         }
 
@@ -3626,7 +3740,7 @@ function drawMobDeathFades() {
         const fx = mobDeathFades[i];
         const t = (now - fx.startTime) / fx.duration;
         if (t >= 1) {
-            mobDeathFades.splice(i, 1);
+            removeUnordered(mobDeathFades, i);
             continue;
         }
 
@@ -3640,13 +3754,7 @@ function drawMobDeathFades() {
         const screenX = fx.x - camera.x;
         const screenY = fx.y - camera.y;
 
-        LC.drawImage({
-            name: cfg.imgName,
-            pos: [screenX - width / 2, screenY - height / 2],
-            size: [width, height],
-            rotation: fx.angle || 0,
-            transparency: alpha
-        });
+        LC.drawImageFast(cfg.imgName, screenX - width / 2, screenY - height / 2, width, height, fx.angle || 0, alpha);
     }
 }
 
@@ -3821,7 +3929,10 @@ function drawInfoBox(lp) {
         `score: ${scoreText}`
     ];
     if (Settings.debugMode) {
-        text.push(`ping: ${Vars.ping}`);
+        const displayPing = simulatedPingMs > 0
+            ? Math.round((Vars.ping || 0) + (simulatedPingDisplayMs || simulatedPingMs))
+            : Vars.ping;
+        text.push(`ping: ${displayPing}`);
         text.push(`TPS: ${Vars.netTps}`);
         text.push(`PPS: ${Vars.netPps}`);
         text.push(`AUPBS: ${Vars.netAupbs}`);
@@ -4508,9 +4619,9 @@ function drawUpgradeBars() {
     const points = Math.max(0, Vars.myStats.availablePoints || 0);
     const showUpgradeControls = hudUpgradesExpanded;
     const rows = [
-        { name: 'STRENGTH', level: Math.max(0, Math.min(10, Vars.myStats.buffStrength || 0)), color: '#ef6b6b', attrType: 1 },
-        { name: 'MAX HEALTH', level: Math.max(0, Math.min(10, Vars.myStats.buffMaxHealth || 0)), color: '#f0b27a', attrType: 2 },
-        { name: 'REGENERATION', level: Math.max(0, Math.min(10, Vars.myStats.buffRegenSpeed || 0)), color: '#d06de6', attrType: 3 }
+        { name: 'STRENGTH', level: Math.max(0, Math.min(15, Vars.myStats.buffStrength || 0)), color: '#ef6b6b', attrType: 1 },
+        { name: 'MAX HEALTH', level: Math.max(0, Math.min(15, Vars.myStats.buffMaxHealth || 0)), color: '#f0b27a', attrType: 2 },
+        { name: 'REGENERATION', level: Math.max(0, Math.min(15, Vars.myStats.buffRegenSpeed || 0)), color: '#d06de6', attrType: 3 }
     ];
 
     const x = HUD_UPGRADE_LAYOUT.x;
@@ -4795,7 +4906,7 @@ function drawHeartMistEffects() {
         const active = elapsed < fx.duration;
         const followPlayer = ENTITIES.PLAYERS[fx.playerId];
         if (!followPlayer) {
-            heartMistEffects.splice(i, 1);
+            removeUnordered(heartMistEffects, i);
             continue;
         }
         if (!Array.isArray(fx.particles)) fx.particles = [];
@@ -4832,7 +4943,7 @@ function drawHeartMistEffects() {
             const particle = fx.particles[p];
             const pt = now - particle.spawnTime;
             if (pt >= particle.lifetime) {
-                fx.particles.splice(p, 1);
+                removeUnordered(fx.particles, p);
                 continue;
             }
             const progress = Math.max(0, Math.min(1, pt / particle.lifetime));
@@ -4842,13 +4953,7 @@ function drawHeartMistEffects() {
             const size = particle.size * (1 + (Math.sin((pt * 0.01) + fx.seed) * 0.05));
             const rotation = particle.rot + (particle.spin * pt);
 
-            LC.drawImage({
-                name: 'particle_heart',
-                pos: [px - camera.x - size / 2, py - camera.y - size / 2],
-                size: [size, size],
-                rotation,
-                transparency: alpha
-            });
+            LC.drawImageFast('particle_heart', px - camera.x - size / 2, py - camera.y - size / 2, size, size, rotation, alpha);
         }
 
         const t = Math.max(0, Math.min(1, elapsed / fx.duration));
@@ -4874,7 +4979,7 @@ function drawHeartMistEffects() {
         }
 
         if (!active && fx.particles.length === 0) {
-            heartMistEffects.splice(i, 1);
+            removeUnordered(heartMistEffects, i);
         }
     }
 }
@@ -5101,13 +5206,7 @@ function drawDraggedItem() {
             count: Vars.creativeDragAmount
         })) return;
 
-        LC.drawImage({
-            name: imgName,
-            pos: [x - iconW / 2, y - iconH / 2],
-            size: [iconW, iconH],
-            rotation,
-            transparency: 0.78
-        });
+        LC.drawImageFast(imgName, x - iconW / 2, y - iconH / 2, iconW, iconH, rotation, 0.78);
 
         if (Vars.creativeDragAmount > 1) {
             LC.drawText({
@@ -5143,13 +5242,7 @@ function drawDraggedItem() {
             transparency: 0.75
         })) return;
 
-        LC.drawImage({
-            name: accessory.name,
-            pos: [x - iconW / 2, y - iconH / 2],
-            size: [iconW, iconH],
-            rotation: 0,
-            transparency: 0.75
-        });
+        LC.drawImageFast(accessory.name, x - iconW / 2, y - iconH / 2, iconW, iconH, 0, 0.75);
         return;
     }
 
@@ -5178,13 +5271,7 @@ function drawDraggedItem() {
             count
         })) return;
 
-        LC.drawImage({
-            name: imgName,
-            pos: [x - iconW / 2, y - iconH / 2],
-            size: [iconW, iconH],
-            rotation: rotation,
-            transparency: 0.7
-        });
+        LC.drawImageFast(imgName, x - iconW / 2, y - iconH / 2, iconW, iconH, rotation, 0.7);
 
         if (count > 1) {
             LC.drawText({
@@ -5204,12 +5291,12 @@ function drawHotbar() {
     const hb = HOTBAR_CONFIG, totalW = (hb.slotSize * 6) + (hb.gap * 5) + (hb.padding * 2);
     const x = (LC.width / 2) - (totalW / 2), y = LC.height - hb.marginBottom - hb.slotSize - hb.padding * 2;
 
-    LC.drawRect({ pos: [x, y], size: [totalW, hb.slotSize + hb.padding * 2], color: 'rgba(0,0,0,0.5)', cornerRadius: 12 });
+    LC.drawRectFast(x, y, totalW, hb.slotSize + hb.padding * 2, 'rgba(0,0,0,0.5)', 1, 12);
 
     for (let i = 0; i < 5; i++) {
         const sx = x + hb.padding + (i * (hb.slotSize + hb.gap)), sy = y + hb.padding;
         const selected = Vars.selectedSlot === i;
-        LC.drawRect({ pos: [sx, sy], size: [hb.slotSize, hb.slotSize], color: selected ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.2)', cornerRadius: 8, stroke: selected ? 'white' : 'rgba(255,255,255,0.1)', strokeWidth: selected ? 2 : 1 });
+        LC.drawRectFast(sx, sy, hb.slotSize, hb.slotSize, selected ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.2)', 1, 8);
 
         let rank = Vars.myInventory[i];
         if (rank > 0 && i !== Vars.dragSlot && !uiState.itemsInSellQueue.includes(i)) {
@@ -5222,13 +5309,7 @@ function drawHotbar() {
             const maxIconSize = hb.slotSize - 20;
             const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
 
-            LC.drawImage({
-                name: imgName,
-                pos: [sx + hb.slotSize / 2 - iconW / 2, sy + hb.slotSize / 2 - iconH / 2],
-                size: [iconW, iconH],
-                rotation: rotation,
-                transparency: isThrown ? 0.4 : 1
-            });
+            LC.drawImageFast(imgName, sx + hb.slotSize / 2 - iconW / 2, sy + hb.slotSize / 2 - iconH / 2, iconW, iconH, rotation, isThrown ? 0.4 : 1);
 
             if (count > 1) {
                 LC.drawText({
@@ -5246,8 +5327,8 @@ function drawHotbar() {
 
     // Draw the "..." button slot
     const sx_more = x + hb.padding + (5 * (hb.slotSize + hb.gap)), sy_more = y + hb.padding;
-    LC.drawRect({ pos: [sx_more, sy_more], size: [hb.slotSize, hb.slotSize], color: 'rgba(0,0,0,0.2)', cornerRadius: 8, stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 });
-    LC.drawText({ text: '...', pos: [sx_more + hb.slotSize / 2, sy_more + hb.slotSize / 2 + 5], font: 'bold 24px Inter', color: 'white', textAlign: 'center' });
+    LC.drawRectFast(sx_more, sy_more, hb.slotSize, hb.slotSize, 'rgba(0,0,0,0.2)', 1, 8);
+    LC.drawTextFast('...', sx_more + hb.slotSize / 2, sy_more + hb.slotSize / 2 + 5, 'bold 24px Inter', 'white', 'center');
 
     drawAccessorySlot(x, y, totalW);
     drawLevelProgressBar(x, y, totalW);
@@ -5292,27 +5373,11 @@ function drawLevelProgressBar(hotbarX, hotbarY, hotbarWidth) {
     const x = hotbarX + (hotbarWidth - barWidth) / 2;
     const y = hotbarY - 56;
 
-    LC.drawRect({
-        pos: [x, y],
-        size: [barWidth, barHeight],
-        color: 'rgba(130, 130, 130, 0.45)',
-        cornerRadius: 6
-    });
+    LC.drawRectFast(x, y, barWidth, barHeight, 'rgba(130, 130, 130, 0.45)', 1, 6);
     if (progress > 0.001) {
-        LC.drawRect({
-            pos: [x, y],
-            size: [barWidth * progress, barHeight],
-            color: 'rgba(59, 130, 246, 0.95)',
-            cornerRadius: 6
-        });
+        LC.drawRectFast(x, y, barWidth * progress, barHeight, 'rgba(59, 130, 246, 0.95)', 1, 6);
     }
-    LC.drawText({
-        text: `LVL ${level}  (${Math.round(progress * 100)}%)`,
-        pos: [x + (barWidth / 2), y - 6],
-        font: 'bold 12px Inter',
-        color: isLocalPlayerInSnowBiome() ? '#4b5563' : 'white',
-        textAlign: 'center'
-    });
+    LC.drawTextFast(`LVL ${level}  (${Math.round(progress * 100)}%)`, x + (barWidth / 2), y - 6, 'bold 12px Inter', isLocalPlayerInSnowBiome() ? '#4b5563' : 'white', 'center');
 }
 
 function drawAbilityCooldownBar(hotbarX, hotbarY, hotbarWidth) {
@@ -5331,27 +5396,18 @@ function drawAbilityCooldownBar(hotbarX, hotbarY, hotbarWidth) {
     const x = hotbarX + (hotbarWidth - barWidth) / 2;
     const y = hotbarY - 18;
 
-    LC.drawRect({
-        pos: [x, y],
-        size: [barWidth, barHeight],
-        color: 'rgba(130, 130, 130, 0.45)',
-        cornerRadius: 6
-    });
-    LC.drawRect({
-        pos: [x, y],
-        size: [barWidth * fillRatio, barHeight],
-        color: 'rgba(220, 38, 38, 0.95)',
-        cornerRadius: 6
-    });
+    LC.drawRectFast(x, y, barWidth, barHeight, 'rgba(130, 130, 130, 0.45)', 1, 6);
+    LC.drawRectFast(x, y, barWidth * fillRatio, barHeight, 'rgba(220, 38, 38, 0.95)', 1, 6);
 
     if (fillRatio >= 0.999) {
-        LC.drawText({
-            text: (isMobile || Settings.forceMobileUI) ? 'Tap ability to activate!' : 'Press F to activate your ability!',
-            pos: [x + (barWidth / 2), y - 8],
-            font: 'bold 14px Inter',
-            color: isLocalPlayerInSnowBiome() ? '#4b5563' : 'white',
-            textAlign: 'center'
-        });
+        LC.drawTextFast(
+            (isMobile || Settings.forceMobileUI) ? 'Tap ability to activate!' : 'Press F to activate your ability!',
+            x + (barWidth / 2),
+            y - 8,
+            'bold 14px Inter',
+            isLocalPlayerInSnowBiome() ? '#4b5563' : 'white',
+            'center'
+        );
     }
 }
 
@@ -5364,7 +5420,7 @@ function drawInventory() {
 
     const { inventoryX: x, inventoryY: y, creativeX, creativeY } = getAdminInventoryPanelPositions(totalW, totalH);
 
-    LC.drawRect({ pos: [x, y], size: [totalW, totalH], color: inv.background, cornerRadius: inv.cornerRadius });
+    LC.drawRectFast(x, y, totalW, totalH, inv.background, 1, inv.cornerRadius);
 
     for (let i = 0; i < 30; i++) {
         const col = i % inv.cols;
@@ -5374,7 +5430,7 @@ function drawInventory() {
         const sx = x + inv.padding + (col * (inv.slotSize + inv.gap));
         const sy = y + inv.padding + (row * (inv.slotSize + inv.gap));
 
-        LC.drawRect({ pos: [sx, sy], size: [inv.slotSize, inv.slotSize], color: 'rgba(0,0,0,0.2)', cornerRadius: 8, stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 });
+        LC.drawRectFast(sx, sy, inv.slotSize, inv.slotSize, 'rgba(0,0,0,0.2)', 1, 8);
 
         let rank = Vars.myInventory[slotIndex];
         if (rank > 0 && slotIndex !== Vars.dragSlot && !uiState.itemsInSellQueue.includes(slotIndex)) {
@@ -5387,13 +5443,7 @@ function drawInventory() {
             const maxIconSize = inv.slotSize - 20;
             const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
 
-            LC.drawImage({
-                name: imgName,
-                pos: [sx + inv.slotSize / 2 - iconW / 2, sy + inv.slotSize / 2 - iconH / 2],
-                size: [iconW, iconH],
-                rotation: rotation,
-                transparency: isThrown ? 0.4 : 1
-            });
+            LC.drawImageFast(imgName, sx + inv.slotSize / 2 - iconW / 2, sy + inv.slotSize / 2 - iconH / 2, iconW, iconH, rotation, isThrown ? 0.4 : 1);
 
             if (count > 1) {
                 LC.drawText({
@@ -5436,46 +5486,65 @@ export function getAdminInventoryPanelPositions(totalW, totalH) {
 
 function drawCreativeInventoryPanel(x, y, totalW, totalH) {
     const inv = INVENTORY_CONFIG;
-    LC.drawRect({ pos: [x, y], size: [totalW, totalH], color: 'rgba(0,0,0,0.45)', cornerRadius: inv.cornerRadius });
-    LC.drawText({
-        text: 'ADMIN',
-        pos: [x + 14, y - 8],
-        font: 'bold 14px Inter',
-        color: 'rgba(255,255,255,0.92)'
-    });
+    const rowStride = inv.slotSize + inv.gap;
+    const visibleRows = inv.rows;
+    const totalRows = Math.ceil(ADMIN_CREATIVE_ITEMS.length / inv.cols);
+    const scrollMax = Math.max(0, (totalRows - visibleRows) * rowStride);
+    adminCreativeInventoryState.scrollMax = scrollMax;
+    adminCreativeInventoryState.scrollY = Math.max(0, Math.min(scrollMax, adminCreativeInventoryState.scrollY || 0));
+    const scrollY = adminCreativeInventoryState.scrollY;
+    const startRow = Math.max(0, Math.floor(scrollY / rowStride));
+    const endRow = Math.min(totalRows, startRow + visibleRows + 2);
 
-    for (let i = 0; i < inv.cols * inv.rows; i++) {
-        const col = i % inv.cols;
-        const row = Math.floor(i / inv.cols);
-        const sx = x + inv.padding + (col * (inv.slotSize + inv.gap));
-        const sy = y + inv.padding + (row * (inv.slotSize + inv.gap));
-        const item = ADMIN_CREATIVE_ITEMS[i] || null;
+    LC.drawRectFast(x, y, totalW, totalH, 'rgba(0,0,0,0.45)', 1, inv.cornerRadius);
+    LC.drawTextFast('ADMIN', x + 14, y - 8, 'bold 14px Inter', 'rgba(255,255,255,0.92)');
 
-        LC.drawRect({ pos: [sx, sy], size: [inv.slotSize, inv.slotSize], color: 'rgba(0,0,0,0.18)', cornerRadius: 8, stroke: 'rgba(255,255,255,0.12)', strokeWidth: 1 });
-        if (!item) continue;
+    LC.ctx.save();
+    LC.ctx.beginPath();
+    LC.ctx.rect(x + inv.padding, y + inv.padding, totalW - (inv.padding * 2), totalH - (inv.padding * 2));
+    LC.ctx.clip();
 
-        const { imgName, rotation, aspect } = getItemIconInfo(item.type);
-        const maxIconSize = inv.slotSize - 20;
-        const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
-        LC.drawImage({
-            name: imgName,
-            pos: [sx + inv.slotSize / 2 - iconW / 2, sy + inv.slotSize / 2 - iconH / 2],
-            size: [iconW, iconH],
-            rotation,
-            transparency: Vars.creativeDragItemType === item.type ? 0.4 : 1
-        });
+    for (let row = startRow; row < endRow; row++) {
+        for (let col = 0; col < inv.cols; col++) {
+            const i = (row * inv.cols) + col;
+            const sx = x + inv.padding + (col * (inv.slotSize + inv.gap));
+            const sy = y + inv.padding + (row * rowStride) - scrollY;
+            const item = ADMIN_CREATIVE_ITEMS[i] || null;
 
-        if (item.amount > 1) {
-            LC.drawText({
-                text: item.amount.toLocaleString(),
-                pos: [sx + inv.slotSize - 5, sy + inv.slotSize - 5],
-                font: 'bold 12px Inter',
-                color: 'white',
-                textAlign: 'right',
-                stroke: 'black',
-                strokeWidth: 2
-            });
+            LC.drawRectFast(sx, sy, inv.slotSize, inv.slotSize, 'rgba(0,0,0,0.18)', 1, 8);
+            if (!item) continue;
+
+            const { imgName, rotation, aspect } = getItemIconInfo(item.type);
+            const maxIconSize = inv.slotSize - 20;
+            const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
+            LC.drawImageFast(imgName, sx + inv.slotSize / 2 - iconW / 2, sy + inv.slotSize / 2 - iconH / 2, iconW, iconH, rotation, Vars.creativeDragItemType === item.type ? 0.4 : 1);
+
+            if (item.amount > 1) {
+                LC.drawText({
+                    text: item.amount.toLocaleString(),
+                    pos: [sx + inv.slotSize - 5, sy + inv.slotSize - 5],
+                    font: 'bold 12px Inter',
+                    color: 'white',
+                    textAlign: 'right',
+                    stroke: 'black',
+                    strokeWidth: 2
+                });
+            }
         }
+    }
+
+    LC.ctx.restore();
+
+    if (scrollMax > 0) {
+        const trackW = 6;
+        const trackX = x + totalW - inv.padding + 1;
+        const trackY = y + inv.padding;
+        const trackH = totalH - (inv.padding * 2);
+        const thumbH = Math.max(26, (visibleRows / totalRows) * trackH);
+        const thumbTravel = Math.max(0, trackH - thumbH);
+        const thumbY = trackY + ((scrollY / scrollMax) * thumbTravel);
+        LC.drawRectFast(trackX, trackY, trackW, trackH, 'rgba(255,255,255,0.12)', 1, 4);
+        LC.drawRectFast(trackX, thumbY, trackW, thumbH, 'rgba(255,255,255,0.55)', 1, 4);
     }
 }
 
@@ -5488,11 +5557,11 @@ export function getCreativeInventorySlotAtLogicalPos(x, y) {
 
     if (x < creativeX || x > creativeX + totalW || y < creativeY || y > creativeY + totalH) return -1;
     const relX = x - creativeX - inv.padding;
-    const relY = y - creativeY - inv.padding;
+    const relY = y - creativeY - inv.padding + adminCreativeInventoryState.scrollY;
     if (relX < 0 || relY < 0) return -1;
     const col = Math.floor(relX / (inv.slotSize + inv.gap));
     const row = Math.floor(relY / (inv.slotSize + inv.gap));
-    if (col < 0 || col >= inv.cols || row < 0 || row >= inv.rows) return -1;
+    if (col < 0 || col >= inv.cols || row < 0) return -1;
     const slotRelX = relX % (inv.slotSize + inv.gap);
     const slotRelY = relY % (inv.slotSize + inv.gap);
     if (slotRelX > inv.slotSize || slotRelY > inv.slotSize) return -1;
@@ -5502,6 +5571,26 @@ export function getCreativeInventorySlotAtLogicalPos(x, y) {
 
 export function getCreativeInventoryItemBySlot(slot) {
     return ADMIN_CREATIVE_ITEMS[slot] || null;
+}
+
+export function isAdminCreativeInventoryPanelAtClientPos(clientX, clientY) {
+    if (!uiState.isInventoryOpen || !Vars.isAdmin) return false;
+    const { x, y } = LC.clientToLogical(clientX, clientY);
+    const inv = INVENTORY_CONFIG;
+    const totalW = (inv.slotSize * inv.cols) + (inv.gap * (inv.cols - 1)) + (inv.padding * 2);
+    const totalH = (inv.slotSize * inv.rows) + (inv.gap * (inv.rows - 1)) + (inv.padding * 2);
+    const { creativeX, creativeY } = getAdminInventoryPanelPositions(totalW, totalH);
+    return x >= creativeX && x <= creativeX + totalW && y >= creativeY && y <= creativeY + totalH;
+}
+
+export function handleAdminCreativeInventoryWheel(clientX, clientY, deltaY) {
+    if (!isAdminCreativeInventoryPanelAtClientPos(clientX, clientY)) return false;
+    if (adminCreativeInventoryState.scrollMax <= 0) return true;
+    adminCreativeInventoryState.scrollY = Math.max(
+        0,
+        Math.min(adminCreativeInventoryState.scrollMax, adminCreativeInventoryState.scrollY + deltaY)
+    );
+    return true;
 }
 
 function fitIconSize(maxSize, aspect) {
@@ -5548,21 +5637,9 @@ function drawAccessorySlot(hotbarX, hotbarY, hotbarWidth) {
     const slotX = hotbarX - as.gap - as.size;
     const slotY = hotbarY + hb.padding + (hb.slotSize - as.size) / 2;
 
-    LC.drawRect({
-        pos: [slotX - hb.padding, hotbarY],
-        size: [as.size + hb.padding * 2, hb.slotSize + hb.padding * 2],
-        color: 'rgba(0,0,0,0.5)',
-        cornerRadius: 12
-    });
+    LC.drawRectFast(slotX - hb.padding, hotbarY, as.size + hb.padding * 2, hb.slotSize + hb.padding * 2, 'rgba(0,0,0,0.5)', 1, 12);
 
-    LC.drawRect({
-        pos: [slotX, slotY],
-        size: [as.size, as.size],
-        color: 'rgba(0,0,0,0.2)',
-        cornerRadius: 7,
-        stroke: 'rgba(255,255,255,0.2)',
-        strokeWidth: 1
-    });
+    LC.drawRectFast(slotX, slotY, as.size, as.size, 'rgba(0,0,0,0.2)', 1, 7);
 
     const myPlayer = ENTITIES.PLAYERS[Vars.myId];
     const accessoryId = myPlayer?.accessoryId || 0;
@@ -5575,12 +5652,7 @@ function drawAccessorySlot(hotbarX, hotbarY, hotbarWidth) {
     const aspect = (accessory.size?.[0] || 1) / (accessory.size?.[1] || 1);
     const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
 
-    LC.drawImage({
-        name: accessory.name,
-        pos: [slotX + as.size / 2 - iconW / 2, slotY + as.size / 2 - iconH / 2],
-        size: [iconW, iconH],
-        rotation: 0
-    });
+    LC.drawImageFast(accessory.name, slotX + as.size / 2 - iconW / 2, slotY + as.size / 2 - iconH / 2, iconW, iconH);
 }
 
 function drawPulsingTutorialArrow(ctx, tipX, tipY, dirX, dirY) {
@@ -5613,24 +5685,13 @@ function drawMobileButtons(lp) {
         const bx = LC.width - config.xOffset;
         const by = LC.height - config.yOffset;
         const alpha = active ? 0.6 : 0.2;
-        LC.drawCircle({
-            pos: [bx, by],
-            radius: config.radius,
-            color: `rgba(0,0,0,${alpha})`,
-            stroke: active ? 'white' : 'rgba(255,255,255,0.2)',
-            strokeWidth: 2
-        });
-        LC.drawText({
-            text: label,
-            pos: [bx, by + 5],
-            font: `bold ${config.radius * 0.4}px Inter`,
-            color: active ? 'white' : 'rgba(255,255,255,0.2)',
-            textAlign: 'center'
-        });
+        LC.drawCircleFast(bx, by, config.radius, `rgba(0,0,0,${alpha})`, 1, true, true, active ? 'white' : 'rgba(255,255,255,0.2)', 2);
+        LC.drawTextFast(label, bx, by + 5, `bold ${config.radius * 0.4}px Inter`, active ? 'white' : 'rgba(255,255,255,0.2)', 'center');
     };
 
+    const canSwingSelectedWeapon = lp.hasWeapon && !isBoomerangType((lp.weaponRank || 0) & 0x7F);
     drawBtn(THROW_BTN_CONFIG, 'THROW', lp.hasWeapon && isTutorialMobileActionEnabled('throw'));
-    drawBtn(ATTACK_BTN_CONFIG, 'ATTACK', lp.hasWeapon && isTutorialMobileActionEnabled('attack'));
+    drawBtn(ATTACK_BTN_CONFIG, 'ATTACK', canSwingSelectedWeapon && isTutorialMobileActionEnabled('attack'));
     drawBtn(PICKUP_BTN_CONFIG, 'PICKUP', isTutorialMobileActionEnabled('pickup'));
     drawBtn(DROP_BTN_CONFIG, 'DROP', isTutorialMobileActionEnabled('drop'));
 }
@@ -5708,6 +5769,10 @@ const tryJoin = () => {
 
     clearPendingSpectateDelay();
     startJoinActionCooldown();
+    uiState.pendingJoin = true;
+    uiState.pendingJoinStartedAt = performance.now();
+    uiState.pendingPause = false;
+    uiState.pendingPauseStartedAt = 0;
     const username = getStoredAccountUsername() || usernameInput?.value || localStorage.username || '';
     const joinWorld = pendingJoinWorld || CURRENT_WORLD;
     ws.send(encodeUsername(username, getStoredAccountAuthToken(), joinWorld));
@@ -5831,6 +5896,10 @@ if (respawnHomeBtn) {
         closeHomeScreenBlockingUI();
         if (homeScreen) homeScreen.style.display = 'flex';
         hideDeathMenu(respawnScreen);
+        uiState.pendingJoin = false;
+        uiState.pendingJoinStartedAt = 0;
+        uiState.pendingPause = false;
+        uiState.pendingPauseStartedAt = 0;
         uiState.forceHomeScreen = true;
     };
 }

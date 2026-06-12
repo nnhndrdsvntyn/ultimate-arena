@@ -122,12 +122,16 @@ export function updateHomeLeaderboards(payload = {}) {
 function setPauseState(paused) {
     if (uiState.isPaused === paused) return;
     uiState.isPaused = paused;
-    uiState.forceHomeScreen = paused;
     if (paused) {
+        uiState.pendingPause = true;
+        uiState.pendingPauseStartedAt = performance.now();
         Vars.pauseSpectateStartAt = performance.now() + PAUSE_SPECTATE_START_DELAY_MS;
         startJoinActionCooldown();
         sendPausePacket();
     } else {
+        uiState.pendingPause = false;
+        uiState.pendingPauseStartedAt = 0;
+        uiState.forceHomeScreen = false;
         Vars.pauseSpectateStartAt = 0;
     }
 }
@@ -230,7 +234,7 @@ export function updateHUDVisibility(isAlive) {
 
     const isHome = homeScreen?.style.display !== 'none';
     const isRespawn = respawnScreen?.style.display !== 'none';
-    const shouldShowTopBar = (!isHome && !isRespawn && isAlive);
+    const shouldShowTopBar = (!isHome && !isRespawn && isAlive && !uiState.pendingPause);
     const topLeftBar = uiRefs.topLeftBar;
 
     uiRefs.topBar.visible = shouldShowTopBar;
@@ -261,7 +265,7 @@ export function updateMobileUIState() {
     if (!uiRefs.respawnScreen && respawnScreen) uiRefs.respawnScreen = respawnScreen;
     const isHome = homeScreen?.style.display !== 'none';
     const isRespawn = respawnScreen?.style.display !== 'none';
-    const show = isMobile && !isHome && !isRespawn;
+    const show = isMobile && !isHome && !isRespawn && !uiState.pendingPause && !uiState.isPaused;
 
     if (joy && joy.style.display !== (show ? 'block' : 'none')) {
         joy.style.display = show ? 'block' : 'none';

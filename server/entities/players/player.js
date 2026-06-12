@@ -29,7 +29,8 @@ import {
     getWeaponOrder,
     getWeaponAttackStats,
     getWeaponProjectileType,
-    getWeaponMeta
+    getWeaponMeta,
+    isBoomerangType
 } from '../../../public/shared/datamap.js';
 import {
     wss,
@@ -75,13 +76,14 @@ const DROP_OWNER_PICKUP_LOCK_MS = 700;
 const DROP_INITIAL_PUSH = 18;
 const DROP_FINAL_PUSH = 90;
 const DROP_TRAVEL_TICKS = 4;
-const BUFF_STAGE_MAX = 10;
+const BUFF_STAGE_MAX = 15;
 const BUFF_POINTS_PER_LEVEL_UP = 1;
 const STRENGTH_BUFF_PER_STAGE = 2;
 const MAX_HP_BUFF_PER_STAGE = 20;
 const REGEN_BUFF_PER_STAGE = 1;
 const BASE_REGEN_AMOUNT = 5;
 const DIAGONAL_MOVE_SCALE = Math.SQRT1_2 * 1.1;
+const BOOMERANG_THROW_MOVE_STUN_MS = 500;
 const PICKUP_DELAY_MS = 200;
 const TUTORIAL_MOVEMENT_HOLD_MS = 2000;
 const PVP_PROTECTION_SCORE = 1000; // players below this score cannot deal or receive PvP damage
@@ -97,8 +99,8 @@ const TUTORIAL_STEP_TEXT = [
     `Throw your weapon by pressing the "E" key on your keyboard.`,
     'Attack and break this chest.',
     'Pick up the dropped coins by touching them.',
-    'Open the shop and buy the branch sword.',
-    "Equip the new branch sword by clicking its slot or pressing the number of the slot on your keyboard. (1-5)",
+    'Open the shop and buy sword1.',
+    "Equip sword1 by clicking its slot or pressing the number of the slot on your keyboard. (1-5)",
     'Eliminate the pig!',
     'Good job! Tutorial complete.'
 ];
@@ -171,6 +173,7 @@ export class Player extends Entity {
         this.blindUntil = 0;
         this.blindMinMult = 1;
         this.frozenUntil = 0;
+        this.boomerangMoveStunnedUntil = 0;
         this.iceEncasedUntil = 0;
         this.knockbackVelocityX = 0;
         this.knockbackVelocityY = 0;
@@ -324,6 +327,10 @@ export class Player extends Entity {
 
     isFrozen(now = performance.now()) {
         return now < (this.frozenUntil || 0);
+    }
+
+    isMovementLocked(now = performance.now()) {
+        return this.isFrozen(now) || now < (this.boomerangMoveStunnedUntil || 0);
     }
 
     canDropItems() {
@@ -568,10 +575,10 @@ export class Player extends Entity {
 
         this.lastX = this.x;
         this.lastY = this.y;
-        const frozen = this.isFrozen(now);
+        const movementLocked = this.isMovementLocked(now);
         let dx = 0;
         let dy = 0;
-        if (!frozen) {
+        if (!movementLocked) {
             if (this.keys.w) dy -= 1;
             if (this.keys.s) dy += 1;
             if (this.keys.a) dx -= 1;
@@ -777,7 +784,8 @@ export class Player extends Entity {
         // Weapons stay sheathed in safe zone unless in combat.
         const safeZoneLocksWeapon = this.touchingSafeZone && !inCombat;
         const invalidEnv = safeZoneLocksWeapon;
-        this.hasWeapon = !cooldown && !invalidEnv && !this.manuallyUnequippedWeapon && isWeaponRank(this.weapon.rank);
+        const selectedRaw = this.inventory[this.selectedSlot] || 0;
+        this.hasWeapon = !cooldown && selectedRaw < 128 && !invalidEnv && !this.manuallyUnequippedWeapon && isWeaponRank(this.weapon.rank);
         const throwCooldownMult = this.inWater ? 1.5 : 1;
         this.throwSwordCoolDownTime = Math.max(100, Math.round(dataMap.PLAYERS.baseThrowSwordCooldown * throwCooldownMult));
         // Shields:
@@ -922,11 +930,21 @@ export class Player extends Entity {
         return best;
     }
 
-    shouldHaveProgressShield() {
-        const bestRank = this.getBestSwordRank();
-        if (bestRank <= 1) return true;
-        if ((this.score || 0) < 1000) return true;
+    hasNonBoneInventoryWeapon() {
+        for (let i = 0; i < this.inventory.length; i++) {
+            if (this.inventoryCounts[i] <= 0) continue;
+            const rank = this.inventory[i] & 0x7F;
+            if (rank !== 1 && isWeaponRank(rank)) return true;
+        }
         return false;
+    }
+
+    meetsPvpEntryRequirements() {
+        return (this.score || 0) >= PVP_PROTECTION_SCORE && this.hasNonBoneInventoryWeapon();
+    }
+
+    shouldHaveProgressShield() {
+        return !this.meetsPvpEntryRequirements();
     }
 
     updateProgressShield() {
@@ -1059,15 +1077,30 @@ export class Player extends Entity {
     }
 
     isPvpProtected() {
-        const lowScore = this.score < PVP_PROTECTION_SCORE;
-        const weakGear = getWeaponOrder(this.getBestSwordRank()) <= 1;
-        return lowScore || weakGear;
+        return !this.meetsPvpEntryRequirements();
     }
 
-    canEngagePvpWith(otherPlayer) {
+    hasInventoryWeaponRank(weaponRank) {
+        const rank = weaponRank & 0x7F;
+        if (!isWeaponRank(rank)) return false;
+        for (let i = 0; i < this.inventory.length; i++) {
+            if (this.inventoryCounts[i] <= 0) continue;
+            if ((this.inventory[i] & 0x7F) === rank) return true;
+        }
+        return false;
+    }
+
+    canDealPvpDamageWithWeapon(weaponRank = this.weapon.rank) {
+        const rank = weaponRank & 0x7F;
+        if (!this.meetsPvpEntryRequirements()) return false;
+        if (rank === 1 || !isWeaponRank(rank)) return false;
+        if (!this.hasInventoryWeaponRank(rank)) return false;
+        return true;
+    }
+
+    canEngagePvpWith(otherPlayer, weaponRank = this.weapon.rank) {
         if (!(otherPlayer instanceof Player)) return true;
-        // Any protected entity (bot or human) blocks PvP damage in both directions.
-        return !(this.isPvpProtected() || otherPlayer.isPvpProtected());
+        return this.canDealPvpDamageWithWeapon(weaponRank) && !otherPlayer.isPvpProtected();
     }
 
     // --- Actions ---
@@ -1090,9 +1123,12 @@ export class Player extends Entity {
         const inCombat = now - this.lastCombatTime < 10000;
         const envShieldActive = this.touchingSafeZone && !inCombat;
         const shieldBlocksAttack = envShieldActive;
-        const canAttack = this.attacking && !shieldBlocksAttack && this.isAlive && this.hasWeapon && curRank < 128 && isWeaponRank(baseRank);
+        const canAttack = this.attacking && !shieldBlocksAttack && this.isAlive && this.hasWeapon && curRank < 128 && isWeaponRank(baseRank) && !isBoomerangType(baseRank);
 
-        if (!canAttack || now - this.lastAttackTime < this.attackCooldownTime) return;
+        if (!canAttack || now - this.lastAttackTime < this.attackCooldownTime) {
+            if (isBoomerangType(baseRank)) this.attacking = 0;
+            return;
+        }
 
         this.lastAttackTime = now;
         this.swingState = 1;
@@ -1131,15 +1167,20 @@ export class Player extends Entity {
 
         // Mark as ghost (thrown)
         this.inventory[this.selectedSlot] |= 0x80;
+        if (isBoomerangType(baseRank)) {
+            this.boomerangMoveStunnedUntil = Math.max(this.boomerangMoveStunnedUntil || 0, now + BOOMERANG_THROW_MOVE_STUN_MS);
+        }
 
         if (this.pendingWeaponReturnTimer) {
             clearTimeout(this.pendingWeaponReturnTimer);
             this.pendingWeaponReturnTimer = null;
         }
-        this.pendingWeaponReturnTimer = setTimeout(() => {
-            this.pendingWeaponReturnTimer = null;
-            this.returnWeapon(baseRank);
-        }, this.throwSwordCoolDownTime);
+        if (!isBoomerangType(baseRank)) {
+            this.pendingWeaponReturnTimer = setTimeout(() => {
+                this.pendingWeaponReturnTimer = null;
+                this.returnWeapon(baseRank);
+            }, this.throwSwordCoolDownTime);
+        }
 
         this.sendInventoryUpdate();
         this.sendStatsUpdate();
@@ -1547,6 +1588,36 @@ export class Player extends Entity {
         this.sendStatsUpdate();
     }
 
+    recallThrownBoomerangs() {
+        let recalledAny = false;
+        for (const id in ENTITIES.PROJECTILES) {
+            const projectile = ENTITIES.PROJECTILES[id];
+            if (!projectile || projectile.shooter !== this || !projectile.isThrownBoomerang?.()) continue;
+
+            const rank = projectile.weaponRank & 0x7F;
+            ENTITIES.deleteEntity('projectile', projectile.id);
+            if (rank > 0) {
+                this.returnWeapon(rank);
+                recalledAny = true;
+            }
+        }
+
+        for (let i = 0; i < this.inventory.length; i++) {
+            const rawType = this.inventory[i] || 0;
+            const rank = rawType & 0x7F;
+            if (rawType < 128 || !isBoomerangType(rank)) continue;
+            this.inventory[i] = rank;
+            this.inventoryCounts[i] = Math.max(1, this.inventoryCounts[i] || 1);
+            recalledAny = true;
+        }
+
+        if (recalledAny) {
+            this.lastThrowSwordTime = 0;
+            this.sendInventoryUpdate();
+            this.sendStatsUpdate();
+        }
+    }
+
     buyItem(rank) {
         if (!this.isAlive || !isWeaponRank(rank)) return;
         const cost = getWeaponShopPrice(rank);
@@ -1801,9 +1872,9 @@ export class Player extends Entity {
 
     // --- Interaction ---
 
-    damage(health, attacker) {
+    damage(health, attacker, options = null) {
         if (this.invincible || performance.now() - this.lastDamagedTime < 200) return false;
-        if (attacker instanceof Player && !this.canEngagePvpWith(attacker)) {
+        if (attacker instanceof Player && !attacker.canEngagePvpWith(this, options?.weaponRank || attacker.weapon?.rank || 0)) {
             return false;
         }
 

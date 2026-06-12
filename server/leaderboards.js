@@ -70,6 +70,16 @@ async function writeScopeRecord(scope, payload) {
     }
 }
 
+async function tryWriteScopeRecord(scope, payload) {
+    try {
+        await writeScopeRecord(scope, payload);
+        return true;
+    } catch (error) {
+        console.error(`Failed to write ${scope} leaderboard:`, error);
+        return false;
+    }
+}
+
 function normalizeEntry(raw) {
     if (!raw) return null;
     const key = String(raw.key || '').trim();
@@ -124,7 +134,9 @@ function scheduleScopeFlush(scope) {
     if (scopeState.flushTimer) return;
     scopeState.flushTimer = setTimeout(() => {
         scopeState.flushTimer = null;
-        void flushScope(scope);
+        void flushScope(scope).catch((error) => {
+            console.error(`Failed to flush ${scope} leaderboard:`, error);
+        });
     }, FLUSH_DEBOUNCE_MS);
 }
 
@@ -133,7 +145,7 @@ async function flushScope(scope) {
     if (!scopeState) return;
     await ensureScopeCurrent(scope);
     scopeState.entries = getCombinedTopEntries(scopeState);
-    await writeScopeRecord(scope, {
+    await tryWriteScopeRecord(scope, {
         periodKey: scopeState.periodKey,
         lastResetAt: scopeState.lastResetAt,
         updatedAt: Date.now(),
@@ -167,7 +179,7 @@ async function ensureScopeLoaded(scope) {
                 scopeState.periodKey = periodKey;
                 scopeState.lastResetAt = startedAt;
                 scopeState.entries = [];
-                await writeScopeRecord(scope, {
+                await tryWriteScopeRecord(scope, {
                     periodKey,
                     lastResetAt: startedAt,
                     updatedAt: now,
@@ -196,7 +208,7 @@ async function ensureScopeCurrent(scope, now = Date.now()) {
         entry.score = 0;
         entry.recordedAt = now;
     }
-    await writeScopeRecord(scope, {
+    await tryWriteScopeRecord(scope, {
         periodKey,
         lastResetAt: startedAt,
         updatedAt: now,

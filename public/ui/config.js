@@ -68,7 +68,7 @@ export const UPDATES_LOG = [
             'Hotbar slots extended from 3 => 5 + extended inventory with 30 more slots',
             'Added shop, players buy using gold coins, and sell using items to get gold coins.',
             'Textured ground',
-            'Added icicle sword (dropped only from snow biome chests)',
+            'Added sword3 (dropped only from snow biome chests)',
             'Added polar bear mob',
         ],
         date: '2026-01-31'
@@ -101,7 +101,7 @@ export const UPDATES_LOG = [
             "Added damage indicator text",
             "Better coin pick-up animation.",
             "Added minotaur mini-boss. (3 exist at any given time) on the grass side of the map.",
-            "Added rank 9 sword (two-sided axe)."
+            "Added sword8."
         ],
         date: '2026-02-22'
     },
@@ -114,7 +114,7 @@ export const UPDATES_LOG = [
             "Chest's do not drop weapons anymore, only coins.",
             "Green, yellow, and red health-bars.",
             "Slightly nerfed Minotaur miniboss, but it will grow more dangerous the closer it comes to death.",
-            "Minotaur drops: coins, rank 9 sword (25%), and the minotaur hat. (25%)",
+            "Minotaur drops: coins, sword8 (25%), and the minotaur hat. (25%)",
             "Less lag when the an entity uses the energy burst ability.",
             "Some bug fixes",
         ],
@@ -203,7 +203,7 @@ export const UPDATES_LOG = [
             "Slight UI Tweaks",
             "Players can chat and view chats via the global chat.",
             "Minotaur miniboss now spawns in the magma biome.",
-            "Minotaur Axe v2 & Plant Spear v2 both have 1.6x longer cooldown.",
+            "sword12 and spear12 both have longer cooldowns.",
             "Players now gain 20 total health added to their max health per upgrade instead of 12."
         ],
         date: '2026-04-16',
@@ -227,6 +227,19 @@ export const UPDATES_LOG = [
             "New Boss: The Yeti (Snow Biome)",
         ],
         date: '2026-06-9'
+    },
+    {
+        version: '1.6.3',
+        changes: [
+            "Improved Linear Interpolation",
+            "Major client performance improvements",
+            "Weapon Reworks!",
+            "New Weapon Class: Axe",
+            "New Weapon Class: Boomerang",
+            "Max level increased to 45",
+            "Upgrade bars now have 15 stages instead of 10."
+        ],
+        date: '2026-06-12'
     }
 ];
 

@@ -1258,11 +1258,12 @@ body {
 
 .settings_tab {
     flex: 1;
-    padding: 12px;
+    padding: 12px 8px;
     text-align: center;
     cursor: pointer;
     border-radius: 10px;
     font-weight: 600;
+    font-size: 0.95rem;
     transition: all 0.2s;
     color: rgba(255, 255, 255, 0.5);
 }
@@ -1399,6 +1400,58 @@ body {
 
 .setting_input:focus {
     border-color: #b79a6b;
+}
+
+.temp_editor_grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    margin-bottom: 18px;
+}
+
+.temp_field {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+}
+
+.temp_field span {
+    font-weight: 700;
+    font-size: 0.9rem;
+    color: rgba(255, 255, 255, 0.72);
+    user-select: none;
+}
+
+.temp_control {
+    width: 100%;
+}
+
+.temp_weapon_summary {
+    margin: 0 0 16px 0;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.25);
+    color: rgba(255, 255, 255, 0.78);
+    font-weight: 700;
+    user-select: none;
+}
+
+.temp_download_button {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 8px;
+    background: rgba(183, 154, 107, 0.28);
+    color: white;
+    font-size: 1rem;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.temp_download_button:hover {
+    filter: brightness(1.1);
 }
 
 .range_setting_item {

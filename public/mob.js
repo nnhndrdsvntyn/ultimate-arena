@@ -9,13 +9,21 @@ import {
     Settings
 } from './client.js';
 import {
-    TPS,
     dataMap,
-    getSwordSize,
-    getSwordOffset
+    getWeaponConfig,
+    getWeaponSize,
+    getWeaponOffset,
+    AXE_10_TYPE
 } from './shared/datamap.js';
 import { drawIceEncasingOverlay, isFrozen } from './freeze_overlay.js';
 import { getRenderQuality } from './render_quality.js';
+import {
+    getEntityDeltaMs,
+    getTimeLerpFactor,
+    lerpAngle,
+    lerpEntityPosition,
+    normalizeAngle
+} from './interpolation.js';
 
 function getHealthBarColor(healthRatio) {
     if (healthRatio >= 0.5) return '#22c55e';
@@ -40,7 +48,7 @@ export class Mob {
         this.newAngle = 0;
         this.swingState = 0;
         this.newSwingState = 0;
-        this.weaponRank = type === 6 ? 12 : 0;
+        this.weaponRank = type === 6 ? AXE_10_TYPE : 0;
         this.frozenUntil = 0;
 
         this.radius = dataMap.MOBS[type].radius;
@@ -50,27 +58,18 @@ export class Mob {
         ENTITIES.MOBS[id] = this;
     }
     update() {
-        const lerpFactor = (TPS.clientCapped / TPS.server) / 10;
+        const dt = getEntityDeltaMs(this);
+        const lerpFactor = getTimeLerpFactor(dt, 1);
 
         if (typeof this.newX === 'undefined' || typeof this.newY === 'undefined') return;
 
-        // lerp if x, y is NOT UNDEFINED (IS DEFINED), else don't lerp and change x, y directly.
-        if (typeof this.x !== 'undefined') {
-            this.x = this.x + (this.newX - this.x) * lerpFactor;
-        } else {
-            this.x = this.newX
-        }
-        if (typeof this.y !== 'undefined') {
-            this.y = this.y + (this.newY - this.y) * lerpFactor;
-        } else {
-            this.y = this.newY
-        };
+        lerpEntityPosition(this, dt, 1, 0.25);
 
         // lerp angle for mobs
-        this.angle += (((this.newAngle - this.angle + Math.PI * 3) % (Math.PI * 2) - Math.PI) * lerpFactor);
+        this.angle = lerpAngle(this.angle, this.newAngle, lerpFactor);
 
         // keep angle within range
-        this.angle = ((this.angle + Math.PI) % (Math.PI * 2) + (Math.PI * 2)) % (Math.PI * 2) - Math.PI;
+        this.angle = normalizeAngle(this.angle);
 
         const swingDelta = (this.newSwingState || 0) - (this.swingState || 0);
         if (Math.abs(swingDelta) < 0.01) {
@@ -89,9 +88,9 @@ export class Mob {
         const renderQuality = getRenderQuality(this, this.radius);
 
         if (this.type === 6) {
-            const axeRank = dataMap.SWORDS.imgs[this.weaponRank] ? this.weaponRank : 12;
-            const [baseAxeWidth, baseAxeHeight] = getSwordSize(axeRank);
-            const axeOffset = getSwordOffset(axeRank);
+            const axeRank = getWeaponConfig(this.weaponRank)?.category === 'axe' ? this.weaponRank : AXE_10_TYPE;
+            const [baseAxeWidth, baseAxeHeight] = getWeaponSize(axeRank);
+            const axeOffset = getWeaponOffset(axeRank);
             const axeWidth = baseAxeWidth * 1.5;
             const axeHeight = baseAxeHeight * 1.5;
             const axeAngleOffset = (this.swingState * (Math.PI / 6)) - (Math.PI / 2);
@@ -109,24 +108,25 @@ export class Mob {
             const axeOffsetY = radialY + rotatedOffsetY;
 
             if (!renderQuality.veryFar) {
-                LC.drawImage({
-                    name: dataMap.SWORDS.imgs[axeRank]?.name || 'swords_boulder_blade',
-                    pos: [
-                        screenPosX + axeOffsetX - axeWidth / 2,
-                        screenPosY + axeOffsetY - axeHeight / 2
-                    ],
-                    size: [axeWidth, axeHeight],
-                    rotation: axeAngle
-                });
+                LC.drawImageFast(
+                    getWeaponConfig(axeRank)?.name || 'axes_axe10',
+                    screenPosX + axeOffsetX - axeWidth / 2,
+                    screenPosY + axeOffsetY - axeHeight / 2,
+                    axeWidth,
+                    axeHeight,
+                    axeAngle
+                );
             }
 
             const proportions = dataMap.MOBS[this.type].imgProportions;
-            LC.drawImage({
-                name: dataMap.MOBS[this.type].imgName,
-                pos: [screenPosX - this.radius * (proportions[0] / 2), screenPosY - this.radius * (proportions[1] / 2)],
-                size: [proportions[0] * this.radius, proportions[1] * this.radius],
-                rotation: this.angle
-            });
+            LC.drawImageFast(
+                dataMap.MOBS[this.type].imgName,
+                screenPosX - this.radius * (proportions[0] / 2),
+                screenPosY - this.radius * (proportions[1] / 2),
+                proportions[0] * this.radius,
+                proportions[1] * this.radius,
+                this.angle
+            );
 
             if (isFrozen(this) && renderQuality.showStatusOverlays) {
                 drawIceEncasingOverlay(LC, screenPosX, screenPosY, this.radius, 1, [
@@ -140,52 +140,27 @@ export class Mob {
                 const barHeight = 5;
                 const healthPercentage = Math.max(0, Math.min(1, this.health / Math.max(1, this.maxHealth)));
                 const healthColor = getHealthBarColor(healthPercentage);
-                LC.drawRect({
-                    pos: [screenPosX - barWidth / 2, screenPosY + this.radius + 8],
-                    size: [barWidth, barHeight],
-                    color: 'rgba(128, 128, 128, 0.45)',
-                    cornerRadius: 2
-                });
-                LC.drawRect({
-                    pos: [screenPosX - barWidth / 2, screenPosY + this.radius + 8],
-                    size: [barWidth * healthPercentage, barHeight],
-                    color: healthColor,
-                    cornerRadius: 2
-                });
+                LC.drawRectFast(screenPosX - barWidth / 2, screenPosY + this.radius + 8, barWidth, barHeight, 'rgba(128, 128, 128, 0.45)', 1, 2);
+                LC.drawRectFast(screenPosX - barWidth / 2, screenPosY + this.radius + 8, barWidth * healthPercentage, barHeight, healthColor, 1, 2);
             }
 
             if (Settings.drawHitboxes) {
-                LC.drawCircle({
-                    pos: [screenPosX, screenPosY],
-                    radius: this.radius,
-                    color: 'orange',
-                    transparency: 0.2,
-                    fill: true,
-                    stroke: true,
-                    strokeWidth: 3
-                });
-                LC.drawLine({
-                    start: [screenPosX, screenPosY],
-                    length: this.radius,
-                    angle: this.angle,
-                    color: 'orange',
-                    lineWidth: 3,
-                    transparency: 0.85
-                });
+                LC.drawCircleFast(screenPosX, screenPosY, this.radius, 'orange', 0.2, true, true, null, 3);
+                LC.drawLineFast(screenPosX, screenPosY, this.radius, this.angle, 'orange', 3, 0.85);
             }
             return;
         }
 
-        let proportions = {
-            ...dataMap.MOBS[this.type].imgProportions
-        };
+        const proportions = dataMap.MOBS[this.type].imgProportions;
 
-        LC.drawImage({
-            name: dataMap.MOBS[this.type].imgName,
-            pos: [screenPosX - this.radius * (proportions[0] / 2), screenPosY - this.radius * (proportions[1] / 2)],
-            size: [proportions[0] * this.radius, proportions[1] * this.radius],
-            rotation: this.angle
-        });
+        LC.drawImageFast(
+            dataMap.MOBS[this.type].imgName,
+            screenPosX - this.radius * (proportions[0] / 2),
+            screenPosY - this.radius * (proportions[1] / 2),
+            proportions[0] * this.radius,
+            proportions[1] * this.radius,
+            this.angle
+        );
 
         if (isFrozen(this) && renderQuality.showStatusOverlays) {
             drawIceEncasingOverlay(LC, screenPosX, screenPosY, this.radius, 1, [
@@ -202,20 +177,10 @@ export class Mob {
             const healthColor = getHealthBarColor(healthPercentage);
 
             // Background of the health bar
-            LC.drawRect({
-                pos: [screenPosX - barWidth / 2, screenPosY + this.radius * (proportions[1] / 2) + 5],
-                size: [barWidth, barHeight],
-                color: 'rgba(128, 128, 128, 0.45)',
-                cornerRadius: 2
-            });
+            LC.drawRectFast(screenPosX - barWidth / 2, screenPosY + this.radius * (proportions[1] / 2) + 5, barWidth, barHeight, 'rgba(128, 128, 128, 0.45)', 1, 2);
 
             // Foreground of the health bar
-            LC.drawRect({
-                pos: [screenPosX - barWidth / 2, screenPosY + this.radius * (proportions[1] / 2) + 5],
-                size: [barWidth * healthPercentage, barHeight],
-                color: healthColor,
-                cornerRadius: 2
-            });
+            LC.drawRectFast(screenPosX - barWidth / 2, screenPosY + this.radius * (proportions[1] / 2) + 5, barWidth * healthPercentage, barHeight, healthColor, 1, 2);
         }
 
         // hitbox for debug
@@ -233,23 +198,8 @@ export class Mob {
             });
         }
         if (Settings.drawHitboxes) {
-            LC.drawCircle({
-                pos: [screenPosX, screenPosY],
-                radius: this.radius,
-                color: 'orange',
-                transparency: 0.2,
-                fill: true,
-                stroke: true,
-                strokeWidth: 3
-            });
-            LC.drawLine({
-                start: [screenPosX, screenPosY],
-                length: this.radius,
-                angle: this.angle,
-                color: 'orange',
-                lineWidth: 3,
-                transparency: 0.85
-            });
+            LC.drawCircleFast(screenPosX, screenPosY, this.radius, 'orange', 0.2, true, true, null, 3);
+            LC.drawLineFast(screenPosX, screenPosY, this.radius, this.angle, 'orange', 3, 0.85);
         }
     }
 }

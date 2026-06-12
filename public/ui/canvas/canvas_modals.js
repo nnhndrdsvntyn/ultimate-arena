@@ -108,11 +108,15 @@ const getShopCatalog = (shopCanvasState, dataMap, accessoryKeys) => {
     const shopItems = Array.isArray(dataMap.SHOP_ITEMS) ? dataMap.SHOP_ITEMS : [];
     const swords = [];
     const spears = [];
+    const axes = [];
     for (let i = 0; i < shopItems.length; i++) {
         const item = shopItems[i];
         if (!item) continue;
-        if ((item.category || 'sword') === 'spear') {
+        const category = item.category || 'sword';
+        if (category === 'spear') {
             spears.push(item);
+        } else if (category === 'axe') {
+            axes.push(item);
         } else {
             swords.push(item);
         }
@@ -127,7 +131,7 @@ const getShopCatalog = (shopCanvasState, dataMap, accessoryKeys) => {
         accessories.push({ id, key, accessory });
     }
 
-    const catalog = { swords, spears, accessories };
+    const catalog = { swords, axes, spears, accessories };
     shopCanvasState._shopCatalogCache = { signature, catalog };
     return catalog;
 };
@@ -829,7 +833,7 @@ export function drawShopModal(ctx) {
             }
         };
 
-        const tutorialBranchSwordOnly = (CURRENT_WORLD === WORLD_TUTORIAL) && (Vars.tutorialObjectiveStep === 5) && !Vars.myInventory.some((t, idx) => ((t & 0x7F) === 2) && Vars.myInventoryCounts[idx] > 0);
+        const tutorialSword1Only = (CURRENT_WORLD === WORLD_TUTORIAL) && (Vars.tutorialObjectiveStep === 5) && !Vars.myInventory.some((t, idx) => ((t & 0x7F) === 2) && Vars.myInventoryCounts[idx] > 0);
 
         const gridGap = 12;
         const minCardW = 150;
@@ -844,7 +848,7 @@ export function drawShopModal(ctx) {
             let rowY = bodyY;
             items.forEach(itemConfig => {
                 const canAfford = (Vars.myStats.goldCoins || 0) >= itemConfig.price;
-                const tutorialAllowed = !tutorialBranchSwordOnly || itemConfig.id === 2;
+                const tutorialAllowed = !tutorialSword1Only || itemConfig.id === 2;
                 const canBuy = canAfford && tutorialAllowed;
                 const cfg = {
                     kind: itemConfig.category || 'sword',
@@ -869,6 +873,7 @@ export function drawShopModal(ctx) {
         };
 
         drawWeaponCards('Swords', shopCatalog.swords);
+        drawWeaponCards('Axes', shopCatalog.axes);
         drawWeaponCards('Spears', shopCatalog.spears);
 
         sectionTitle('Accessories');
@@ -880,7 +885,7 @@ export function drawShopModal(ctx) {
             const canAfford = costConfig.currency === 'hearty_essence'
                 ? (essenceType ? getInventoryItemCount(Vars, essenceType) >= costConfig.amount : false)
                 : (Vars.myStats.goldCoins || 0) >= costConfig.amount;
-            const canBuy = canAfford && !tutorialBranchSwordOnly;
+            const canBuy = canAfford && !tutorialSword1Only;
             const cfg = {
                 kind: 'accessory',
                 id,
@@ -889,7 +894,7 @@ export function drawShopModal(ctx) {
                 priceText: costConfig.amount.toLocaleString(),
                 priceIconName: costConfig.currency === 'hearty_essence' ? 'objects_hearty_essence' : 'gold_coin',
                 canBuy,
-                buttonText: tutorialBranchSwordOnly ? 'LOCKED' : (canAfford ? 'BUY' : 'TOO POOR'),
+                buttonText: tutorialSword1Only ? 'LOCKED' : (canAfford ? 'BUY' : 'TOO POOR'),
                 infoText: ACCESSORY_DESCRIPTIONS[key] || 'Coming Soon'
             };
             const x = bodyX + col * (cardW + gridGap);
@@ -919,7 +924,7 @@ export function drawShopModal(ctx) {
                     break;
                 }
             }
-            const canBuy = canAfford && !tutorialBranchSwordOnly;
+            const canBuy = canAfford && !tutorialSword1Only;
             const cfg = {
                 kind: 'special',
                 id: itemConfig.itemType,
@@ -930,7 +935,7 @@ export function drawShopModal(ctx) {
                     { iconName: dataMap.OBJECTS?.[dataMap.OBJECT_TYPE_BY_KEY?.['skull'] || 0]?.imgName || 'objects_skull', text: '1' }
                 ],
                 canBuy,
-                buttonText: tutorialBranchSwordOnly ? 'LOCKED' : (canAfford ? 'BUY' : 'TOO POOR')
+                buttonText: tutorialSword1Only ? 'LOCKED' : (canAfford ? 'BUY' : 'TOO POOR')
             };
             const x = bodyX + col * (cardW + gridGap);
             drawItemCard(x, rowY, cardW, cardH, cfg);
@@ -943,7 +948,7 @@ export function drawShopModal(ctx) {
         const xpItems = dataMap.XP_SHOP_ITEMS || [];
         xpItems.forEach((itemConfig) => {
             const canAfford = (Vars.myStats.goldCoins || 0) >= (itemConfig.price || 0);
-            const canBuy = canAfford && !tutorialBranchSwordOnly;
+            const canBuy = canAfford && !tutorialSword1Only;
             const cfg = {
                 kind: 'xp',
                 id: itemConfig.id,
@@ -951,7 +956,7 @@ export function drawShopModal(ctx) {
                 name: itemConfig.name,
                 priceText: (itemConfig.price || 0).toLocaleString(),
                 canBuy,
-                buttonText: tutorialBranchSwordOnly ? 'LOCKED' : (canAfford ? 'BUY' : 'TOO POOR')
+                buttonText: tutorialSword1Only ? 'LOCKED' : (canAfford ? 'BUY' : 'TOO POOR')
             };
             const x = bodyX + col * (cardW + gridGap);
             drawItemCard(x, rowY, cardW, cardH, cfg);

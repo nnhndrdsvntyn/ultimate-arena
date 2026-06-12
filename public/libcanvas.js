@@ -24,6 +24,8 @@ export class LibCanvas {
         this.offsetX = 0;
         this.offsetY = 0;
         this.uniformScale = 1;
+        this.imageScaleX = 1;
+        this.imageScaleY = 1;
         this.displayWidth = 0;
         this.displayHeight = 0;
         this.createDOM();
@@ -84,9 +86,8 @@ export class LibCanvas {
         const levels = this.imageMipmaps[name];
         if (!levels?.length) return baseImage;
 
-        const transform = this.ctx.getTransform();
-        const scaleX = Math.hypot(transform.a, transform.b);
-        const scaleY = Math.hypot(transform.c, transform.d);
+        const scaleX = this.imageScaleX || this.scaleX || 1;
+        const scaleY = this.imageScaleY || this.scaleY || 1;
         const targetWidthPx = Math.max(1, Math.abs(width * scaleX));
         const targetHeightPx = Math.max(1, Math.abs(height * scaleY));
         let selected = levels[0];
@@ -183,6 +184,8 @@ export class LibCanvas {
         );
         this.scaleX = this.uniformScale;
         this.scaleY = this.uniformScale;
+        this.imageScaleX = this.scaleX;
+        this.imageScaleY = this.scaleY;
         this.offsetX = 0;
         this.offsetY = 0;
         this.ctx.setTransform(this.scaleX, 0, 0, this.scaleY, this.offsetX, this.offsetY);
@@ -194,11 +197,18 @@ export class LibCanvas {
         this.resizeCanvas();
     }
 
+    setImageScale(scaleX = this.scaleX, scaleY = this.scaleY) {
+        this.imageScaleX = Math.max(0.001, Number(scaleX) || this.scaleX || 1);
+        this.imageScaleY = Math.max(0.001, Number(scaleY) || this.scaleY || 1);
+    }
+
     clearCanvas() {
         if (!this.ctx) return;
         this.ctx.setTransform(1, 0, 0, 1, 0, 0);
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
         this.ctx.setTransform(this.scaleX, 0, 0, this.scaleY, this.offsetX, this.offsetY);
+        this.imageScaleX = this.scaleX;
+        this.imageScaleY = this.scaleY;
     }
 
     getCanvasRect() {
@@ -436,6 +446,75 @@ export class LibCanvas {
         };
     }
 
+    drawRectFast(x, y, width, height, color, transparency = 1, cornerRadius = 0) {
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.globalAlpha = transparency;
+        if (cornerRadius > 0) {
+            const r = Math.min(cornerRadius, Math.abs(width) * 0.5, Math.abs(height) * 0.5);
+            ctx.beginPath();
+            ctx.moveTo(x + r, y);
+            ctx.lineTo(x + width - r, y);
+            ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+            ctx.lineTo(x + width, y + height - r);
+            ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+            ctx.lineTo(x + r, y + height);
+            ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+            ctx.lineTo(x, y + r);
+            ctx.quadraticCurveTo(x, y, x + r, y);
+            ctx.fill();
+        } else {
+            ctx.fillRect(x, y, width, height);
+        }
+        ctx.restore();
+    }
+
+    drawCircleFast(x, y, radius, color, transparency = 1, fill = true, stroke = false, strokeColor = null, strokeWidth = 1) {
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.globalAlpha = transparency;
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        if (fill) {
+            ctx.fillStyle = color;
+            ctx.fill();
+        }
+        if (stroke || !fill) {
+            ctx.strokeStyle = strokeColor || color;
+            ctx.lineWidth = strokeWidth;
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    drawLineFast(startX, startY, length, angle, color, lineWidth = 1, transparency = 1) {
+        const endX = startX + Math.cos(angle) * length;
+        const endY = startY + Math.sin(angle) * length;
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lineWidth;
+        ctx.globalAlpha = transparency;
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    drawTextFast(text, x, y, font = '16px Arial', color = 'black', textAlign = 'left', textBaseline = 'alphabetic', transparency = 1) {
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.font = normalizeCanvasFont(font);
+        ctx.textAlign = textAlign;
+        ctx.textBaseline = textBaseline;
+        ctx.globalAlpha = transparency;
+        ctx.fillText(text, x, y);
+        ctx.restore();
+    }
+
     loadImage({
         name,
         src
@@ -520,6 +599,21 @@ export class LibCanvas {
         this.ctx.drawImage(imageSource, -halfWidth, -halfHeight, width, height);
         this.ctx.globalAlpha = 1;
         this.ctx.restore();
+    }
+
+    drawImageFast(name, x, y, width, height, rotation = 0, transparency = 1) {
+        if (!this.images[name]) return;
+        const imageSource = this.getBestImageSource(name, width, height);
+        if (!imageSource) return;
+        const halfWidth = width / 2;
+        const halfHeight = height / 2;
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.translate(x + halfWidth, y + halfHeight);
+        ctx.rotate(rotation);
+        ctx.globalAlpha = transparency;
+        ctx.drawImage(imageSource, -halfWidth, -halfHeight, width, height);
+        ctx.restore();
     }
 
     playAudio({

@@ -1,13 +1,10 @@
 import { Mob } from "./mob.js";
-import { dataMap, getCoinObjectType, isRockStructureType } from '../../../public/shared/datamap.js';
+import { AXE_7_TYPE, AXE_10_TYPE, SWORD_3_TYPE, dataMap, getCoinObjectType, isRockStructureType } from '../../../public/shared/datamap.js';
 import { getWorldCenter, getWorldMapSize, WORLD_DUNE_DIMENSION } from '../../../public/shared/worlds.js';
 import { ENTITIES, markDuneBossDefeated, spawnObject } from '../../game.js';
-import { getId, cmdRun, pushEntityOutOfSafeZone } from '../../helpers.js';
+import { getId, cmdRun, playSfx, pushEntityOutOfSafeZone } from '../../helpers.js';
 import { DunePortal } from '../structures/boss_shrine.js';
 
-const IRON_DAGGER_TYPE = 3;
-const MINOTAUR_AXE_V1_TYPE = 8;
-const MINOTAUR_AXE_V2_TYPE = 12;
 const RAT_MOB_TYPE = 14;
 const RAT_SPAWN_ABILITY = 1;
 const RAT_SPAWN_COOLDOWN_MS = 30000;
@@ -169,9 +166,9 @@ export class DuneBehemoth extends Mob {
         this.clearRockCannon();
         markDuneBossDefeated();
         this.scatterDeathCoins();
-        this.scatterIronDaggerDrops();
-        this.scatterMinotaurAxeV1Drops();
-        this.scatterMinotaurAxeV2Drop();
+        this.scatterSword3Drops();
+        this.scatterAxe7Drops();
+        this.scatterAxe10Drop();
         this.spawnExitPortal();
         super.die(killer);
     }
@@ -198,18 +195,18 @@ export class DuneBehemoth extends Mob {
         }
     }
 
-    scatterIronDaggerDrops() {
+    scatterSword3Drops() {
         const count = getRandomIntInclusive(5, 10);
-        this.scatterWeaponDrops(IRON_DAGGER_TYPE, count);
+        this.scatterWeaponDrops(SWORD_3_TYPE, count);
     }
 
-    scatterMinotaurAxeV1Drops() {
+    scatterAxe7Drops() {
         const count = getRandomIntInclusive(3, 5);
-        this.scatterWeaponDrops(MINOTAUR_AXE_V1_TYPE, count);
+        this.scatterWeaponDrops(AXE_7_TYPE, count);
     }
 
-    scatterMinotaurAxeV2Drop() {
-        this.scatterWeaponDrops(MINOTAUR_AXE_V2_TYPE, 1);
+    scatterAxe10Drop() {
+        this.scatterWeaponDrops(AXE_10_TYPE, 1);
     }
 
     scatterWeaponDrops(itemType, count) {
@@ -623,6 +620,10 @@ export class DuneBehemoth extends Mob {
         entry.flightEndsAt = now + ROCK_CANNON_FLIGHT_MS;
         rock.lastX = rock.x;
         rock.lastY = rock.y;
+        const impactSfx = dataMap.sfxMap.indexOf('ground_impact');
+        if (impactSfx >= 0) {
+            playSfx(rock.x, rock.y, impactSfx, 1800, this.world || 'main');
+        }
         if (Array.isArray(_state.activeShots)) _state.activeShots.push(entry);
         _state.current = null;
     }
@@ -774,6 +775,13 @@ export class DuneBehemoth extends Mob {
 
         if (state.phase === 'spin') {
             this.processRockTornadoSpin(state, deltaSeconds, now);
+            if (!state.releaseSfxPlayed && now - state.phaseStartedAt >= ROCK_TORNADO_SPIN_MS - 500) {
+                state.releaseSfxPlayed = true;
+                const explosionSfx = dataMap.sfxMap.indexOf('underwater_explosion');
+                if (explosionSfx >= 0) {
+                    playSfx(this.x, this.y, explosionSfx, 1800, this.world || 'main');
+                }
+            }
             if (now - state.phaseStartedAt >= ROCK_TORNADO_SPIN_MS) {
                 this.releaseRockTornado(state, now);
             }

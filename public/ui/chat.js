@@ -37,7 +37,8 @@ import {
     camera,
     JOIN_ACTION_COOLDOWN_MS,
     startJoinActionCooldown,
-    getMinimapWorldPositionAtClientPos
+    getMinimapWorldPositionAtClientPos,
+    setSimulatedPing
 } from '../client.js';
 import {
     dataMap,
@@ -126,6 +127,10 @@ const COMMANDS = [{
         params: '<number>'
     },
     {
+        name: '/simulateping',
+        params: '<number|default>'
+    },
+    {
         name: '/agro',
         params: '<id|range|all> <@p[id]|@s>'
     },
@@ -209,7 +214,7 @@ function normalizeGiveItemToken(value) {
     return String(value || '')
         .trim()
         .toLowerCase()
-        .replace(/^(swords|spears)[-_]/, '')
+        .replace(/^(swords|spears|axes|boomerangs)[-_]/, '')
         .replace(/\s+/g, '_')
         .replace(/-/g, '_');
 }
@@ -1909,6 +1914,28 @@ function handleRov(raw) {
     return true;
 }
 
+function handleSimulatePing(raw) {
+    const match = raw.match(/^\/simulateping\s+(\d+(?:\.\d+)?|default)$/i);
+    if (!match) return false;
+
+    if (!Vars.isAdmin) {
+        showNotification("Invalid command.", 'red');
+        return true;
+    }
+
+    const value = match[1].toLowerCase();
+    if (value === 'default') {
+        setSimulatedPing(0);
+        showNotification('Simulated ping disabled.', '#2ecc71');
+        return true;
+    }
+
+    const pingMs = Math.max(0, Math.min(10000, Math.round(parseFloat(value))));
+    setSimulatedPing(pingMs);
+    showNotification(`Simulated ping: ${pingMs}ms`, '#eab308');
+    return true;
+}
+
 function handleAdmin(raw) {
     const adminMatch = raw.match(/^\/admin\s+(\d+)$/i);
     if (!adminMatch) return false;
@@ -2141,6 +2168,7 @@ function executeChatInput(raw, rawLower, isCommand) {
     if (handleHeal(raw)) return;
     if (handleDamage(raw)) return;
     if (handleRov(raw)) return;
+    if (handleSimulatePing(raw)) return;
     if (handleAdmin(raw)) return;
     if (handleAdminAcc(raw)) return;
     if (handlePmonitor(raw)) return;

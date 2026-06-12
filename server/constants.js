@@ -1,5 +1,8 @@
 import fs from "fs";
 
+const SERVER_STARTUP_GRACE_PERIOD_MS = 3 * 60 * 1000;
+const serverStartedAt = Date.now();
+
 // ===== KEY GENERATION =====
 const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
 let key = "";
@@ -226,3 +229,6 @@ process.once("unhandledRejection", async (error) => {
 });
 
 export const adminKey = key;
+export function isServerStartupGracePeriodActive(now = Date.now()) {
+  return now - serverStartedAt < SERVER_STARTUP_GRACE_PERIOD_MS;
+}

@@ -7,12 +7,14 @@ import {
     isChestObjectType,
     isWeaponRank,
     isSpearType,
+    isBoomerangType,
     getWeaponSize,
     getWeaponAttackStats,
+    getWeaponMeta,
     isWeaponProjectileType,
     getWeaponTypeByProjectileType,
     getWeaponProjectileType,
-    WEAPON_TYPES,
+    AXE_10_TYPE,
     isRockStructureType
 } from '../../public/shared/datamap.js';
 import {
@@ -35,8 +37,11 @@ const MINOTAUR_PARRY_CHANCE_STAGE_1 = 0.5;
 const MINOTAUR_PARRY_CHANCE_STAGE_2 = 0.65;
 const MINOTAUR_PARRY_CHANCE_STAGE_3 = 0.85;
 const THROWN_SWORD_HITBOX_MULT = 0.6;
-const MINOTAUR_AXE_V2_PROJECTILE_TYPE = getWeaponProjectileType(WEAPON_TYPES['minotaur_axe_v2']);
+const BOOMERANG_THROW_HITBOX_MULT = 0.36;
+const BOOMERANG_RETURN_SPEED_MULT = 1.18;
+const MINOTAUR_SLASH_PROJECTILE_TYPE = getWeaponProjectileType(AXE_10_TYPE);
 const DEFAULT_ROCK_PUSH_STRENGTH = 85;
+const BIG_ROCK_STRUCTURE_TYPE = 6;
 
 function getVikingHitInfo(shooter, baseDamage) {
     if (!shooter || !shooter.isAlive) return { damage: baseDamage, nextCount: 0, apply: false, isBonus: false };
@@ -63,7 +68,7 @@ function canMinotaurParryThrow(mob, projectile) {
     if (!mob || !projectile || projectile.type !== -1 || mob.type !== 6) return false;
 
     // Must be within minotaur's sword swing reach.
-    const [minotaurSwordWidth] = getWeaponSize(12);
+    const [minotaurSwordWidth] = getWeaponSize(AXE_10_TYPE);
     const swingRange = minotaurSwordWidth * 2;
     const dx = projectile.x - mob.x;
     const dy = projectile.y - mob.y;
@@ -81,7 +86,7 @@ function canMinotaurParrySlash(mob, projectile) {
     if (projectile.type === -1) return false; // throw uses separate parry logic
     if (!mob.swingState || mob.swingState <= 0) return false;
 
-    const [minotaurSwordWidth] = getWeaponSize(12);
+    const [minotaurSwordWidth] = getWeaponSize(AXE_10_TYPE);
     const swingRange = minotaurSwordWidth * 2;
     const dx = projectile.x - mob.x;
     const dy = projectile.y - mob.y;
@@ -125,6 +130,10 @@ function tryPushStructureWithProjectile(projectile, structure) {
     return true;
 }
 
+function getStructureImpactCost(structure) {
+    return Number(structure?.type) === BIG_ROCK_STRUCTURE_TYPE ? 2 : 1;
+}
+
 function getMinotaurParryChance(mob) {
     if (!mob || mob.type !== 6) return MINOTAUR_PARRY_CHANCE_STAGE_1;
 
@@ -147,9 +156,9 @@ export class Projectile extends Entity {
     constructor(id, x, y, angle, type, shooter, groupId, options = null) {
         const weaponAttackType = type === -1
             ? (shooter?.weapon?.rank || 1)
-            : (isWeaponRank(type)
-                ? type
-                : (isWeaponProjectileType(type) ? getWeaponTypeByProjectileType(type) : 0));
+            : (isWeaponProjectileType(type)
+                ? getWeaponTypeByProjectileType(type)
+                : (isWeaponRank(type) ? type : 0));
         const stats = weaponAttackType > 0
             ? (getWeaponAttackStats(weaponAttackType) || getWeaponAttackStats(1) || {})
             : (dataMap.PROJECTILES[type] || {});
@@ -175,21 +184,38 @@ export class Projectile extends Entity {
         if (this.shooter?.type === 6 && typeof this.shooter.getAttackDamageMultiplier === 'function') {
             this.damage *= this.shooter.getAttackDamageMultiplier();
         }
-        if (this.shooter?.type === 6 && type === MINOTAUR_AXE_V2_PROJECTILE_TYPE) {
+        if (this.shooter?.type === 6 && type === MINOTAUR_SLASH_PROJECTILE_TYPE) {
             this.damage *= 0.7;
         }
         this.maxDistance = stats?.maxDistance;
 
         if (type === -1) {
+            const thrownWeaponRank = shooter.weapon.rank;
+            const isBoomerangThrow = isBoomerangType(thrownWeaponRank);
             this.damage /= 1.5;
-            const [swordWidth] = getWeaponSize(shooter.weapon.rank);
+            const [swordWidth, swordHeight] = getWeaponSize(thrownWeaponRank);
             this.radius = (swordWidth || this.radius || 100) * playerScale;
-            this.radius *= THROWN_SWORD_HITBOX_MULT;
+            this.radius *= isBoomerangThrow ? BOOMERANG_THROW_HITBOX_MULT : THROWN_SWORD_HITBOX_MULT;
             this.speed /= 1.25;
-            this.maxDistance *= (4 * playerScale);
-            this.weaponRank = isSpearType(shooter.weapon.rank)
-                ? (shooter.weapon.rank | 0x80)
-                : shooter.weapon.rank;
+            this.maxDistance *= ((isBoomerangThrow ? 5 : 4) * playerScale);
+            this.weaponRank = isSpearType(thrownWeaponRank)
+                ? (thrownWeaponRank | 0x80)
+                : thrownWeaponRank;
+            if (isBoomerangThrow) {
+                const meta = getWeaponMeta(thrownWeaponRank);
+                const baseToughness = Math.max(1, Math.floor(Number(meta?.toughness) || 1));
+                const toughness = baseToughness * Math.max(1, Math.floor(playerScale));
+                this.boomerang = {
+                    startX: x,
+                    startY: y,
+                    outboundDistance: Math.max(160, Math.min(this.maxDistance * 0.58, (swordWidth + swordHeight) * 3.2 * playerScale)),
+                    toughness,
+                    impacts: 0,
+                    returning: false,
+                    hitKeys: new Set()
+                };
+                this.damage *= 0.92;
+            }
             if (this.shooter?.inWater) {
                 this.speed *= 0.4;
             }
@@ -215,9 +241,21 @@ export class Projectile extends Entity {
         this.expandPerTick = 0;
         this.persistentHits = false;
         this.hitEntities = null;
+        this.impactDurability = 0;
+        this.impactImpacts = 0;
+        this.impactDamageHits = 0;
+        this.impactHitKeys = null;
         this.ignoreStructureCollisions = false;
         this.rockPushTypes = null;
         this.rockPushStrength = DEFAULT_ROCK_PUSH_STRENGTH;
+
+        if (!this.isThrownBoomerang()) {
+            const weaponMeta = getWeaponMeta(this.weaponRank & 0x7F);
+            if (weaponMeta && ['sword', 'spear', 'axe'].includes(weaponMeta.category)) {
+                this.impactDurability = Math.max(0, Math.floor(Number(weaponMeta.toughness) || 0));
+                this.impactHitKeys = new Set();
+            }
+        }
 
         this.fixedDistanceTravel = false;
         if (options && Number.isFinite(options.maxDistanceOverride) && options.maxDistanceOverride > 0) {
@@ -279,6 +317,88 @@ export class Projectile extends Entity {
         ENTITIES.PROJECTILES[id] = this;
     }
 
+    isThrownBoomerang() {
+        return this.type === -1 && !!this.boomerang;
+    }
+
+    markBoomerangHit(hitKey) {
+        if (!this.isThrownBoomerang() || !hitKey) return false;
+        if (this.boomerang.hitKeys.has(hitKey)) return true;
+        this.boomerang.hitKeys.add(hitKey);
+        return false;
+    }
+
+    hasBoomerangHit(hitKey) {
+        return this.isThrownBoomerang() && this.shouldDedupeBoomerangImpact(hitKey) && this.boomerang.hitKeys.has(hitKey);
+    }
+
+    hasImpactHit(hitKey) {
+        if (!hitKey) return false;
+        if (this.hasBoomerangHit(hitKey)) return true;
+        return this.impactDurability > 0 && this.impactHitKeys?.has(hitKey);
+    }
+
+    shouldDedupeBoomerangImpact(hitKey = '') {
+        return typeof hitKey === 'string' && (hitKey.startsWith('s:') || hitKey.startsWith('pr:'));
+    }
+
+    consumeBoomerangImpact(hitKey = '', impactCost = 1) {
+        if (!this.isThrownBoomerang()) return true;
+        if (this.shouldDedupeBoomerangImpact(hitKey) && this.markBoomerangHit(hitKey)) return false;
+        this.impactDamageHits = (this.impactDamageHits || 0) + 1;
+        const cost = Math.max(1, Math.floor(Number(impactCost) || 1));
+        this.boomerang.impacts = (this.boomerang.impacts || 0) + cost;
+        if (this.boomerang.impacts <= (this.boomerang.toughness || 1)) {
+            return false;
+        }
+        this.startBoomerangReturn();
+        return true;
+    }
+
+    startBoomerangReturn() {
+        if (!this.isThrownBoomerang() || this.boomerang.returning) return false;
+        this.boomerang.returning = true;
+        this.distanceTraveled = Math.min(this.distanceTraveled, this.maxDistance * 0.55);
+        return true;
+    }
+
+    finishBoomerangReturnIfCaught() {
+        if (!this.isThrownBoomerang() || !this.boomerang.returning || !this.shooter?.isAlive) return false;
+        const dx = this.shooter.x - this.x;
+        const dy = this.shooter.y - this.y;
+        const catchRadius = Math.max(this.shooter.radius || 0, 30) + Math.max(12, (this.radius || 0) * 0.35);
+        if ((dx * dx + dy * dy) > catchRadius * catchRadius) return false;
+
+        const rank = this.weaponRank & 0x7F;
+        if (this.shooter.pendingWeaponReturnTimer) {
+            clearTimeout(this.shooter.pendingWeaponReturnTimer);
+            this.shooter.pendingWeaponReturnTimer = null;
+        }
+        if (typeof this.shooter.returnWeapon === 'function') {
+            this.shooter.returnWeapon(rank);
+        }
+        ENTITIES.deleteEntity('projectile', this.id);
+        return true;
+    }
+
+    resolveProjectileImpact(hitKey = '', impactCost = 1) {
+        if (this.isThrownBoomerang()) {
+            return this.consumeBoomerangImpact(hitKey, impactCost);
+        }
+        if (this.impactDurability > 0) {
+            if (hitKey && this.impactHitKeys?.has(hitKey)) return false;
+            if (hitKey) this.impactHitKeys?.add(hitKey);
+            this.impactDamageHits = (this.impactDamageHits || 0) + 1;
+            const cost = Math.max(1, Math.floor(Number(impactCost) || 1));
+            this.impactImpacts = (this.impactImpacts || 0) + cost;
+            if (this.impactImpacts <= this.impactDurability) {
+                return false;
+            }
+        }
+        ENTITIES.deleteEntity('projectile', this.id);
+        return true;
+    }
+
     move() {
         if (this.expandPerTick > 0) {
             this.lastX = this.x;
@@ -290,6 +410,38 @@ export class Projectile extends Entity {
         if (this.noMove) return;
         this.lastX = this.x;
         this.lastY = this.y;
+        if (this.isThrownBoomerang()) {
+            if (this.boomerang.returning) {
+                const target = this.shooter?.isAlive ? this.shooter : null;
+                if (!target) {
+                    ENTITIES.deleteEntity('projectile', this.id);
+                    return;
+                }
+                const dx = target.x - this.x;
+                const dy = target.y - this.y;
+                const dist = Math.max(0.001, Math.sqrt(dx * dx + dy * dy));
+                const step = Math.min(dist, this.speed * BOOMERANG_RETURN_SPEED_MULT);
+                this.x += (dx / dist) * step;
+                this.y += (dy / dist) * step;
+                this.angle = Math.atan2(this.y - this.lastY, this.x - this.lastX);
+                this.distanceTraveled += step;
+                this.finishBoomerangReturnIfCaught();
+                return;
+            }
+
+            if (Number.isFinite(this.shooter?.angle)) {
+                this.angle = normalizeAngle(this.shooter.angle);
+            }
+            this.x += Math.cos(this.angle) * this.speed;
+            this.y += Math.sin(this.angle) * this.speed;
+            this.distanceTraveled += this.speed;
+            const dx = this.x - this.boomerang.startX;
+            const dy = this.y - this.boomerang.startY;
+            if ((dx * dx + dy * dy) >= (this.boomerang.outboundDistance * this.boomerang.outboundDistance)) {
+                this.startBoomerangReturn();
+            }
+            return;
+        }
         this.x += Math.cos(this.angle) * this.speed;
         this.y += Math.sin(this.angle) * this.speed;
 
@@ -305,7 +457,14 @@ export class Projectile extends Entity {
     }
 
     getCurrentDamage() {
-        return this.damage * this.getTravelDamageMultiplier();
+        const durabilityFalloff = (this.impactDurability > 0 || this.isThrownBoomerang())
+            ? Math.pow(0.8, Math.max(0, this.impactDamageHits || 0))
+            : 1;
+        return this.damage * this.getTravelDamageMultiplier() * durabilityFalloff;
+    }
+
+    getPvpWeaponRank() {
+        return (this.weaponRank || this.shooter?.weapon?.rank || 0) & 0x7F;
     }
 
     resolveCollisions(worldStructures = null, worldPlayers = null, worldMobs = null, worldChests = null, worldProjectiles = null) {
@@ -333,6 +492,7 @@ export class Projectile extends Entity {
 
                     if (colliding(this, structure, buffer)) {
                         if (structure.type === 3) {
+                            if (this.isThrownBoomerang()) continue;
                             if (!this.treesPassed.has(structure.id)) {
                                 this.treesPassed.add(structure.id);
                                 this.damage *= 0.5;
@@ -356,8 +516,8 @@ export class Projectile extends Entity {
                                     }
                                 }
                             }
-                            ENTITIES.deleteEntity('projectile', this.id);
-                            return;
+                            if (this.resolveProjectileImpact(`s:${structure.id}`, getStructureImpactCost(structure))) return;
+                            continue;
                         }
                     }
                 }
@@ -373,6 +533,7 @@ export class Projectile extends Entity {
 
                 if (colliding(this, structure, buffer)) {
                     if (structure.type === 3) {
+                        if (this.isThrownBoomerang()) continue;
                         // Trees drain projectile power once per tree crossed.
                         if (!this.treesPassed.has(structure.id)) {
                             this.treesPassed.add(structure.id);
@@ -402,8 +563,8 @@ export class Projectile extends Entity {
                             }
                         }
 
-                        ENTITIES.deleteEntity('projectile', this.id);
-                        return;
+                        if (this.resolveProjectileImpact(`s:${structure.id}`, getStructureImpactCost(structure))) return;
+                        continue;
                     }
                 }
             }
@@ -424,10 +585,14 @@ export class Projectile extends Entity {
                     if ((projectileDx * projectileDx + projectileDy * projectileDy) > (projectileRange * projectileRange)) continue;
 
                     if (colliding(this, other)) {
-                        const canTriggerPvpCombat = !(this.shooter instanceof Player && other.shooter instanceof Player && !this.shooter.canEngagePvpWith(other.shooter));
+                        const canTriggerPvpCombat = !(this.shooter instanceof Player && other.shooter instanceof Player)
+                            || (this.shooter.canEngagePvpWith(other.shooter, this.getPvpWeaponRank())
+                                && other.shooter.canEngagePvpWith(this.shooter, other.getPvpWeaponRank?.() || other.weaponRank || 0));
                         if (this.type === -1 || other.type === -1) {
-                            ENTITIES.deleteEntity('projectile', this.id);
-                            ENTITIES.deleteEntity('projectile', other.id);
+                            if (this.isThrownBoomerang()) this.resolveProjectileImpact(`pr:${other.id}`);
+                            else ENTITIES.deleteEntity('projectile', this.id);
+                            if (other.isThrownBoomerang?.()) other.resolveProjectileImpact(`pr:${this.id}`);
+                            else ENTITIES.deleteEntity('projectile', other.id);
                             if (canTriggerPvpCombat) {
                                 this.shooter.lastCombatTime = performance.now();
                                 other.shooter.lastCombatTime = performance.now();
@@ -455,7 +620,7 @@ export class Projectile extends Entity {
                             }
                         }
 
-                        ENTITIES.deleteEntity('projectile', this.id);
+                        this.resolveProjectileImpact();
                         ENTITIES.deleteEntity('projectile', other.id);
                         if (canTriggerPvpCombat) {
                             this.shooter.lastCombatTime = performance.now();
@@ -479,11 +644,15 @@ export class Projectile extends Entity {
                 if ((projectileDx * projectileDx + projectileDy * projectileDy) > (projectileRange * projectileRange)) continue;
 
                 if (colliding(this, other)) {
-                    const canTriggerPvpCombat = !(this.shooter instanceof Player && other.shooter instanceof Player && !this.shooter.canEngagePvpWith(other.shooter));
+                    const canTriggerPvpCombat = !(this.shooter instanceof Player && other.shooter instanceof Player)
+                        || (this.shooter.canEngagePvpWith(other.shooter, this.getPvpWeaponRank())
+                            && other.shooter.canEngagePvpWith(this.shooter, other.getPvpWeaponRank?.() || other.weaponRank || 0));
                     // If either is a throw, both disappear
                     if (this.type === -1 || other.type === -1) {
-                        ENTITIES.deleteEntity('projectile', this.id);
-                        ENTITIES.deleteEntity('projectile', other.id);
+                        if (this.isThrownBoomerang()) this.resolveProjectileImpact(`pr:${other.id}`);
+                        else ENTITIES.deleteEntity('projectile', this.id);
+                        if (other.isThrownBoomerang?.()) other.resolveProjectileImpact(`pr:${this.id}`);
+                        else ENTITIES.deleteEntity('projectile', other.id);
                         if (canTriggerPvpCombat) {
                             this.shooter.lastCombatTime = performance.now();
                             other.shooter.lastCombatTime = performance.now();
@@ -518,7 +687,7 @@ export class Projectile extends Entity {
                         }
                     }
 
-                    ENTITIES.deleteEntity('projectile', this.id);
+                    this.resolveProjectileImpact();
                     ENTITIES.deleteEntity('projectile', other.id);
                     if (canTriggerPvpCombat) {
                         this.shooter.lastCombatTime = performance.now();
@@ -545,18 +714,19 @@ export class Projectile extends Entity {
                     if (typeof player.recordLatestCollisionDebug === 'function') {
                         player.recordLatestCollisionDebug(3, this.id);
                     }
-                    if (this.shooter instanceof Player && player instanceof Player && !this.shooter.canEngagePvpWith(player)) {
+                    if (this.shooter instanceof Player && player instanceof Player && !this.shooter.canEngagePvpWith(player, this.getPvpWeaponRank())) {
                         continue;
                     }
                     const hitKey = `p:${player.id}`;
                     if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
                     if (isPersistentWave) this.hitEntities?.add(hitKey);
+                    if (this.hasImpactHit(hitKey)) continue;
                     let tookDamage = false;
                     const allowMinotaurHit = player.progressShieldActive && !player.touchingSafeZone && this.shooter?.type === 6;
                     const allowBossHit = this.shooter?.type === 7 || this.shooter?.type === 8;
                     if (!player.hasShield || allowMinotaurHit || allowBossHit) {
                         const viking = getVikingHitInfo(this.shooter, this.getCurrentDamage());
-                        tookDamage = player.damage(viking.damage, this.shooter);
+                        tookDamage = player.damage(viking.damage, this.shooter, { weaponRank: this.getPvpWeaponRank() });
                         if (tookDamage && viking.apply) {
                             commitVikingHit(this.shooter, viking.nextCount);
                             if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, player.x, player.y);
@@ -576,8 +746,8 @@ export class Projectile extends Entity {
                     }
 
                     if (!isPersistentWave) {
-                        ENTITIES.deleteEntity('projectile', this.id);
-                        return;
+                        if (this.resolveProjectileImpact(hitKey)) return;
+                        continue;
                     }
                 }
             }
@@ -599,19 +769,20 @@ export class Projectile extends Entity {
                     player.recordLatestCollisionDebug(3, this.id);
                 }
                 // Skip damage when either side is PvP-protected, but keep collision and let projectile continue.
-                if (this.shooter instanceof Player && player instanceof Player && !this.shooter.canEngagePvpWith(player)) {
+                if (this.shooter instanceof Player && player instanceof Player && !this.shooter.canEngagePvpWith(player, this.getPvpWeaponRank())) {
                     continue;
                 }
                 const hitKey = `p:${player.id}`;
                 if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
                 if (isPersistentWave) this.hitEntities?.add(hitKey);
+                if (this.hasImpactHit(hitKey)) continue;
                 // damage player
                 let tookDamage = false;
                 const allowMinotaurHit = player.progressShieldActive && !player.touchingSafeZone && this.shooter?.type === 6;
                 const allowBossHit = this.shooter?.type === 7 || this.shooter?.type === 8;
                 if (!player.hasShield || allowMinotaurHit || allowBossHit) {
                     const viking = getVikingHitInfo(this.shooter, this.getCurrentDamage());
-                    tookDamage = player.damage(viking.damage, this.shooter);
+                    tookDamage = player.damage(viking.damage, this.shooter, { weaponRank: this.getPvpWeaponRank() });
                     if (tookDamage && viking.apply) {
                         commitVikingHit(this.shooter, viking.nextCount);
                         if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, player.x, player.y);
@@ -632,8 +803,8 @@ export class Projectile extends Entity {
                 }
 
                 if (!isPersistentWave) {
-                    ENTITIES.deleteEntity('projectile', this.id);
-                    return;
+                    if (this.resolveProjectileImpact(hitKey)) return;
+                    continue;
                 }
             }
         }
@@ -653,6 +824,7 @@ export class Projectile extends Entity {
                     const hitKey = `m:${mob.id}`;
                     if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
                     if (isPersistentWave) this.hitEntities?.add(hitKey);
+                    if (this.hasImpactHit(hitKey)) continue;
                     if (!isPersistentWave && !shooterIsMob && canMinotaurParrySlash(mob, this)) {
                         if (this.shooter && typeof mob.alarm === 'function') {
                             mob.alarm(this.shooter, 'hit');
@@ -665,8 +837,8 @@ export class Projectile extends Entity {
                             this.shooter.y += Math.sin(knockbackAngle) * 60;
                             if (typeof this.shooter.clamp === 'function') this.shooter.clamp();
                         }
-                        ENTITIES.deleteEntity('projectile', this.id);
-                        return;
+                        if (this.resolveProjectileImpact(hitKey)) return;
+                        continue;
                     }
 
                     if (!isPersistentWave && canMinotaurParryThrow(mob, this) && Math.random() < getMinotaurParryChance(mob)) {
@@ -681,8 +853,8 @@ export class Projectile extends Entity {
                         chargeMinotaurTowardShooter(mob, this.shooter);
                         const sfx = dataMap.sfxMap.indexOf('slash_clash');
                         playSfx(mob.x, mob.y, sfx, 1000, mob.world || 'main');
-                        ENTITIES.deleteEntity('projectile', this.id);
-                        return;
+                        if (this.resolveProjectileImpact(hitKey)) return;
+                        continue;
                     }
 
                     const viking = getVikingHitInfo(this.shooter, this.getCurrentDamage());
@@ -702,8 +874,8 @@ export class Projectile extends Entity {
                     }
                     mob.alarm(this.shooter, 'hit');
                     if (!isPersistentWave) {
-                        ENTITIES.deleteEntity('projectile', this.id);
-                        return;
+                        if (this.resolveProjectileImpact(hitKey)) return;
+                        continue;
                     }
                 }
             }
@@ -724,6 +896,7 @@ export class Projectile extends Entity {
                 const hitKey = `m:${mob.id}`;
                 if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
                 if (isPersistentWave) this.hitEntities?.add(hitKey);
+                if (this.hasImpactHit(hitKey)) continue;
                 // Close swing parry: while minotaur is swinging, front-cone slash hits should clash and not leak damage.
                 if (!isPersistentWave && !shooterIsMob && canMinotaurParrySlash(mob, this)) {
                     if (this.shooter && typeof mob.alarm === 'function') {
@@ -737,8 +910,8 @@ export class Projectile extends Entity {
                         this.shooter.y += Math.sin(knockbackAngle) * 60;
                         if (typeof this.shooter.clamp === 'function') this.shooter.clamp();
                     }
-                    ENTITIES.deleteEntity('projectile', this.id);
-                    return;
+                    if (this.resolveProjectileImpact(hitKey)) return;
+                    continue;
                 }
 
                 // Minotaur can parry thrown swords from the front without turning.
@@ -755,8 +928,8 @@ export class Projectile extends Entity {
                     chargeMinotaurTowardShooter(mob, this.shooter);
                     const sfx = dataMap.sfxMap.indexOf('slash_clash');
                     playSfx(mob.x, mob.y, sfx, 1000, mob.world || 'main');
-                    ENTITIES.deleteEntity('projectile', this.id);
-                    return;
+                    if (this.resolveProjectileImpact(hitKey)) return;
+                    continue;
                 }
 
                 // damage mob
@@ -780,8 +953,8 @@ export class Projectile extends Entity {
 
                 mob.alarm(this.shooter, 'hit');
                 if (!isPersistentWave) {
-                    ENTITIES.deleteEntity('projectile', this.id);
-                    return;
+                    if (this.resolveProjectileImpact(hitKey)) return;
+                    continue;
                 }
             }
         }
@@ -801,6 +974,7 @@ export class Projectile extends Entity {
                     const hitKey = `o:${object.id}`;
                     if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
                     if (isPersistentWave) this.hitEntities?.add(hitKey);
+                    if (this.hasImpactHit(hitKey)) continue;
                     const viking = getVikingHitInfo(this.shooter, this.getCurrentDamage());
                     const didDamage = object.damage(viking.damage, this.shooter);
                     if (didDamage && viking.apply) {
@@ -808,8 +982,8 @@ export class Projectile extends Entity {
                         if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, object.x, object.y);
                     }
                     if (!isPersistentWave) {
-                        ENTITIES.deleteEntity('projectile', this.id);
-                        return;
+                        if (this.resolveProjectileImpact(hitKey)) return;
+                        continue;
                     }
                 }
             }
@@ -828,6 +1002,7 @@ export class Projectile extends Entity {
                 const hitKey = `o:${object.id}`;
                 if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
                 if (isPersistentWave) this.hitEntities?.add(hitKey);
+                if (this.hasImpactHit(hitKey)) continue;
                 // damage object
                 const viking = getVikingHitInfo(this.shooter, this.getCurrentDamage());
                 const didDamage = object.damage(viking.damage, this.shooter);
@@ -836,8 +1011,8 @@ export class Projectile extends Entity {
                     if (viking.isBonus) emitCriticalHitFxToPlayer(this.shooter.id, object.x, object.y);
                 }
                 if (!isPersistentWave) {
-                    ENTITIES.deleteEntity('projectile', this.id);
-                    return;
+                    if (this.resolveProjectileImpact(hitKey)) return;
+                    continue;
                 }
             }
         }
@@ -854,6 +1029,7 @@ export class Projectile extends Entity {
     }
 
     isExpired() {
+        if (this.isThrownBoomerang()) return false;
         if (this.ttlMs > 0 && performance.now() - this.spawnedAt >= this.ttlMs) {
             return true;
         }

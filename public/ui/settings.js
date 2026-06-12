@@ -16,6 +16,19 @@ import { BACK_BUFFER_QUALITIES } from './config.js';
 import { createEl, makeDraggable } from './dom.js';
 import { uiRefs, uiState } from './context.js';
 import { resetInputs } from './input.js';
+import { SWORD_IDS, SPEAR_IDS, AXE_IDS, getWeaponConfig, getWeaponDisplayName } from '../shared/datamap.js';
+
+const TEMP_WEAPON_IDS = {
+    sword: SWORD_IDS.filter(id => id !== 1).slice(0, 12),
+    axe: AXE_IDS.slice(0, 12),
+    spear: SPEAR_IDS.slice(0, 12)
+};
+
+const TEMP_WEAPON_LABELS = {
+    sword: 'Sword',
+    axe: 'Axe',
+    spear: 'Spear'
+};
 
 export function createSettingsButton(parent) {
     const btn = createEl('button', {
@@ -46,7 +59,7 @@ export function createSettingsModal(parent) {
 
     // Tabs
     const tabsContainer = createEl('div', {}, uiRefs.settingsModal, { className: 'settings_tabs' });
-    const tabs = ['Visuals', 'Audio', 'Stats', 'Admin'];
+    const tabs = ['Visuals', 'Audio', 'Stats', 'Admin', 'Temp'];
     tabs.forEach((tab) => {
         const tabEl = createEl('div', {}, tabsContainer, {
             className: `settings_tab ${tab === uiState.activeTab ? 'active' : ''}`,
@@ -81,6 +94,7 @@ export function updateSettingsBody() {
         case 'Audio': renderAudioTab(); break;
         case 'Stats': renderStatsTab(); break;
         case 'Admin': renderAdminTab(); break;
+        case 'Temp': renderTempTab(); break;
     }
 }
 
@@ -179,6 +193,158 @@ function renderAdminAuth() {
     btn.onmouseover = () => btn.style.filter = 'brightness(1.1)';
     btn.onmouseout = () => btn.style.filter = 'none';
     btn.onclick = () => uiState.tempAdminKey && sendAdminKey(uiState.tempAdminKey);
+}
+
+function getTempState() {
+    if (!uiState.tempWeaponEditor || typeof uiState.tempWeaponEditor !== 'object') {
+        uiState.tempWeaponEditor = { category: 'sword', level: 1 };
+    }
+    const state = uiState.tempWeaponEditor;
+    if (!TEMP_WEAPON_IDS[state.category]) state.category = 'sword';
+    state.level = Math.max(1, Math.min(12, Math.floor(Number(state.level) || 1)));
+    return state;
+}
+
+function getTempWeaponType(category, level) {
+    return TEMP_WEAPON_IDS[category]?.[level - 1] || 0;
+}
+
+function getTempWeaponConfig() {
+    const state = getTempState();
+    const weaponType = getTempWeaponType(state.category, state.level);
+    return { state, weaponType, config: getWeaponConfig(weaponType) };
+}
+
+function setTempWeaponNumber(field, value) {
+    const next = Number(value);
+    if (!Number.isFinite(next)) return;
+    const { config } = getTempWeaponConfig();
+    if (!config || typeof config !== 'object') return;
+
+    if (field === 'width') {
+        config.swordWidth = Math.max(1, next);
+    } else if (field === 'height') {
+        config.swordHeight = Math.max(1, next);
+    } else if (field === 'offsetX') {
+        if (!config.offset || typeof config.offset !== 'object') config.offset = { x: 0, y: 0 };
+        config.offset.x = next;
+    } else if (field === 'offsetY') {
+        if (!config.offset || typeof config.offset !== 'object') config.offset = { x: 0, y: 0 };
+        config.offset.y = next;
+    }
+}
+
+function makeWeaponExportData() {
+    const groups = [
+        ['sword', TEMP_WEAPON_IDS.sword],
+        ['axe', TEMP_WEAPON_IDS.axe],
+        ['spear', TEMP_WEAPON_IDS.spear]
+    ];
+    const out = {};
+    groups.forEach(([category, ids]) => {
+        out[category] = ids.map((weaponType, idx) => {
+            const cfg = getWeaponConfig(weaponType);
+            const size = Array.isArray(cfg.size) ? cfg.size : [cfg.swordWidth || 100, cfg.swordHeight || 50];
+            const offset = cfg.offset || {};
+            return {
+                level: idx + 1,
+                type: weaponType,
+                width: Math.max(1, Number(size[0]) || 100),
+                height: Math.max(1, Number(size[1]) || 50),
+                offsetX: Number(offset.x) || 0,
+                offsetY: Number(offset.y) || 0
+            };
+        });
+    });
+    return out;
+}
+
+function downloadTempWeaponData() {
+    const text = JSON.stringify(makeWeaponExportData(), null, 2);
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'ultimate-arena-weapon-render-data.txt';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+}
+
+function renderTempTab() {
+    const { state, weaponType, config } = getTempWeaponConfig();
+    const offset = config.offset || {};
+    const size = Array.isArray(config.size) ? config.size : [config.swordWidth || 100, config.swordHeight || 50];
+    const displayName = getWeaponDisplayName(weaponType) || config.name || `${TEMP_WEAPON_LABELS[state.category]} ${state.level}`;
+
+    createEl('div', { userSelect: 'none' }, uiRefs.settingsBody, {
+        className: 'settings_section_header',
+        textContent: 'Weapon Render Debug'
+    });
+
+    const selector = createEl('div', {}, uiRefs.settingsBody, { className: 'temp_editor_grid' });
+    addTempSelect(selector, 'Weapon Type', Object.keys(TEMP_WEAPON_LABELS).map(value => ({
+        value,
+        label: TEMP_WEAPON_LABELS[value]
+    })), state.category, (value) => {
+        state.category = value;
+        state.level = 1;
+        updateSettingsBody();
+    });
+    addTempSelect(selector, 'Level', Array.from({ length: 12 }, (_, idx) => ({
+        value: String(idx + 1),
+        label: String(idx + 1)
+    })), String(state.level), (value) => {
+        state.level = Math.max(1, Math.min(12, Math.floor(Number(value) || 1)));
+        updateSettingsBody();
+    });
+
+    createEl('div', {}, uiRefs.settingsBody, {
+        className: 'temp_weapon_summary',
+        textContent: `${displayName} · type ${weaponType}`
+    });
+
+    const fields = createEl('div', {}, uiRefs.settingsBody, { className: 'temp_editor_grid' });
+    addTempNumberInput(fields, 'Width', Number(size[0]) || 100, (value) => setTempWeaponNumber('width', value));
+    addTempNumberInput(fields, 'Height', Number(size[1]) || 50, (value) => setTempWeaponNumber('height', value));
+    addTempNumberInput(fields, 'X Offset', Number(offset.x) || 0, (value) => setTempWeaponNumber('offsetX', value));
+    addTempNumberInput(fields, 'Y Offset', Number(offset.y) || 0, (value) => setTempWeaponNumber('offsetY', value));
+
+    const downloadBtn = createEl('button', {}, uiRefs.settingsBody, {
+        className: 'temp_download_button no_select',
+        type: 'button',
+        textContent: 'Download Weapon Data'
+    });
+    downloadBtn.onclick = downloadTempWeaponData;
+}
+
+function addTempSelect(parent, label, options, value, onChange) {
+    const item = createEl('label', {}, parent, { className: 'temp_field' });
+    createEl('span', {}, item, { textContent: label });
+    const select = createEl('select', {}, item, { className: 'setting_input temp_control' });
+    options.forEach((opt) => {
+        createEl('option', {}, select, {
+            value: opt.value,
+            textContent: opt.label
+        });
+    });
+    select.value = value;
+    select.onchange = () => onChange(select.value);
+    return select;
+}
+
+function addTempNumberInput(parent, label, value, onChange) {
+    const item = createEl('label', {}, parent, { className: 'temp_field' });
+    createEl('span', {}, item, { textContent: label });
+    const input = createEl('input', {}, item, {
+        className: 'setting_input temp_control',
+        type: 'number',
+        step: '1',
+        value: String(Math.round(value * 1000) / 1000)
+    });
+    input.oninput = () => onChange(input.value);
+    return input;
 }
 
 function createStatItem(parent, label, value) {

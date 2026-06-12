@@ -1115,6 +1115,9 @@ class CommandMap {
             player._rootWalkerPortalSince = 0;
             player._bossPortalSince = 0;
             player._bossPortalId = 0;
+            if (typeof player.recallThrownBoomerangs === 'function') {
+                player.recallThrownBoomerangs();
+            }
             player.world = worldId;
             player.x = center.x;
             player.y = center.y;

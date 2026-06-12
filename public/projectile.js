@@ -3,10 +3,10 @@ import {
 } from './game.js';
 import {
     dataMap,
-    TPS,
     getWeaponConfig,
     getWeaponSize,
-    getProjectileVisualConfig
+    getProjectileVisualConfig,
+    isBoomerangType
 } from './shared/datamap.js';
 import {
     LC,
@@ -14,6 +14,15 @@ import {
     Settings
 } from './client.js';
 import { getRenderQuality } from './render_quality.js';
+import {
+    getEntityDeltaMs,
+    getTimeLerpFactor,
+    lerpAngle,
+    lerpEntityPosition,
+    normalizeAngle
+} from './interpolation.js';
+
+const BOOMERANG_THROW_HITBOX_MULT = 0.36;
 
 export class Projectile {
     constructor(id, x, y, angle, type, weaponRank) {
@@ -36,27 +45,18 @@ export class Projectile {
         ENTITIES.PROJECTILES[id] = this;
     }
     update() {
-        const lerpFactor = (TPS.clientCapped / TPS.server) / 10;
+        const dt = getEntityDeltaMs(this);
+        const lerpFactor = getTimeLerpFactor(dt, 1);
 
         if (typeof this.newX === 'undefined' || typeof this.newY === 'undefined') return;
 
-        // lerp if x, y is NOT UNDEFINED (IS DEFINED), else don't lerp and change x, y directly.
-        if (typeof this.x !== 'undefined') {
-            this.x = this.x + (this.newX - this.x) * lerpFactor;
-        } else {
-            this.x = this.newX
-        }
-        if (typeof this.y !== 'undefined') {
-            this.y = this.y + (this.newY - this.y) * lerpFactor;
-        } else {
-            this.y = this.newY
-        };
+        lerpEntityPosition(this, dt, 1, 0.25);
 
         // lerp angle for projectiles
-        this.angle += (((this.newAngle - this.angle + Math.PI * 3) % (Math.PI * 2) - Math.PI) * lerpFactor);
+        this.angle = lerpAngle(this.angle, this.newAngle, lerpFactor);
 
         // keep angle within range
-        this.angle = ((this.angle + Math.PI) % (Math.PI * 2) + (Math.PI * 2)) % (Math.PI * 2) - Math.PI;
+        this.angle = normalizeAngle(this.angle);
 
         // for thrown swords
         if (this.type === -1) {
@@ -79,31 +79,33 @@ export class Projectile {
         if (this.type === -1) {
             const noSpin = (this.weaponRank & 0x80) !== 0;
             const baseRank = this.weaponRank & 0x7F;
+            const isBoomerang = isBoomerangType(baseRank);
             // Draw sword
             let swordWidth = 100;
             let swordHeight = 33;
             const weaponCfg = getWeaponConfig(baseRank);
             if (weaponCfg?.name) {
                 const [baseWidth, baseHeight] = getWeaponSize(baseRank);
-                const drawWidth = Number.isFinite(this.radius) && this.radius > 0
-                    ? Math.max(baseWidth, this.radius)
+                const radiusWidth = Number.isFinite(this.radius) && this.radius > 0
+                    ? (isBoomerang ? this.radius / BOOMERANG_THROW_HITBOX_MULT : this.radius)
                     : baseWidth;
+                const drawWidth = Math.max(baseWidth, radiusWidth);
                 const scale = drawWidth / Math.max(1, baseWidth);
                 swordWidth = drawWidth;
                 swordHeight = baseHeight * scale;
             }
 
-            LC.drawImage({
-                name: weaponCfg?.name || getWeaponConfig(1).name,
-                pos: [screenPosX - swordWidth / 2, screenPosY - swordHeight / 2],
-                size: [swordWidth, swordHeight],
-                rotation: (noSpin || renderQuality.veryFar) ? this.angle : (this.angle + this.angleOffset),
-            });
+            LC.drawImageFast(
+                weaponCfg?.name || getWeaponConfig(1).name,
+                screenPosX - swordWidth / 2,
+                screenPosY - swordHeight / 2,
+                swordWidth,
+                swordHeight,
+                (noSpin || renderQuality.veryFar) ? this.angle : (this.angle + this.angleOffset)
+            );
         } else {
             const projectileCfg = getProjectileVisualConfig(this.type) || dataMap.PROJECTILES[13];
-            let proportions = {
-                ...projectileCfg.imgProportions
-            };
+            const proportions = projectileCfg.imgProportions;
             let drawWidth = proportions[0] * this.radius;
             let drawHeight = proportions[1] * this.radius;
             if (this.type === 13) {
@@ -111,36 +113,15 @@ export class Projectile {
                     drawWidth = this.renderLength;
                 }
             }
-            LC.drawImage({
-                name: projectileCfg.imgName,
-                pos: [screenPosX - (drawWidth / 2), screenPosY - (drawHeight / 2)],
-                size: [drawWidth, drawHeight],
-                rotation: this.angle,
-            });
+            LC.drawImageFast(projectileCfg.imgName, screenPosX - (drawWidth / 2), screenPosY - (drawHeight / 2), drawWidth, drawHeight, this.angle);
         }
 
         if (Settings.drawHitboxes) {
             if (this.type == -1) {
                 let swordWidth = Number.isFinite(this.radius) && this.radius > 0 ? this.radius : 100;
-                LC.drawCircle({
-                    pos: [screenPosX, screenPosY],
-                    radius: swordWidth,
-                    color: 'purple',
-                    transparency: 0.2,
-                    fill: true,
-                    stroke: true,
-                    strokeWidth: 3
-                });
+                LC.drawCircleFast(screenPosX, screenPosY, swordWidth, 'purple', 0.2, true, true, null, 3);
             } else {
-                LC.drawCircle({
-                    pos: [screenPosX, screenPosY],
-                    radius: this.radius,
-                    color: 'purple',
-                    transparency: 0.2,
-                    fill: true,
-                    stroke: true,
-                    strokeWidth: 3
-                });
+                LC.drawCircleFast(screenPosX, screenPosY, this.radius, 'purple', 0.2, true, true, null, 3);
             }
         }
     }

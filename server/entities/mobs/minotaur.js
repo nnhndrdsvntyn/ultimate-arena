@@ -15,7 +15,7 @@ import {
     accessoryItemTypeFromId,
     getSwordSize,
     getWeaponProjectileType,
-    WEAPON_TYPES
+    AXE_10_TYPE
 } from '../../../public/shared/datamap.js';
 import {
     colliding,
@@ -47,10 +47,11 @@ const MAX_DEATH_COIN_DROP = 1500;
 const MIN_DEATH_COIN_STACK = 5;
 const MAX_DEATH_COIN_STACK = 25;
 const DEATH_COIN_SPREAD = 140;
-const MINOTAUR_AXE_V2_DROP_CHANCE = 0.5;
+const SWORD_12_DROP_CHANCE = 0.5;
 const MINOTAUR_HAT_DROP_CHANCE = 0.5;
 const BONUS_DROP_SPREAD = 80;
-const MINOTAUR_SLASH_WEAPON_TYPE = WEAPON_TYPES['minotaur_axe_v2'];
+const MINOTAUR_SLASH_WEAPON_TYPE = AXE_10_TYPE;
+const MINOTAUR_BONUS_DROP_WEAPON_TYPE = AXE_10_TYPE;
 
 export class Minotaur extends Mob {
     constructor(id, x, y) {
@@ -500,8 +501,8 @@ export class Minotaur extends Mob {
     }
 
     rollBonusDrops() {
-        if (Math.random() < MINOTAUR_AXE_V2_DROP_CHANCE) {
-            this.spawnDropAtDeathPosition(MINOTAUR_SLASH_WEAPON_TYPE);
+        if (Math.random() < SWORD_12_DROP_CHANCE) {
+            this.spawnDropAtDeathPosition(MINOTAUR_BONUS_DROP_WEAPON_TYPE);
         }
         if (Math.random() < MINOTAUR_HAT_DROP_CHANCE) {
             this.spawnMinotaurHatDrop();

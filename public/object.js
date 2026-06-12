@@ -11,13 +11,16 @@ import {
 } from "./client.js";
 import {
     dataMap,
-    TPS,
     isWeaponRank,
     isChestObjectType,
     isCoinObjectType,
     getWeaponSize
 } from "./shared/datamap.js";
 import { getRenderQuality } from "./render_quality.js";
+import {
+    getEntityDeltaMs,
+    getTimeLerpFactor
+} from "./interpolation.js";
 
 function getHealthBarColor(healthRatio) {
     if (healthRatio >= 0.5) return '#22c55e';
@@ -72,7 +75,8 @@ export class GameObject {
             this.y = this.newY;
             return;
         }
-        const baseLerpFactor = (TPS.clientCapped / TPS.server) / 10;
+        const dt = getEntityDeltaMs(this);
+        const baseLerpFactor = getTimeLerpFactor(dt, 1);
         const lerpFactor = isEphemeral
             ? Math.min(0.8, Math.max(0.35, baseLerpFactor * 1.8))
             : Math.min(0.72, Math.max(0.3, baseLerpFactor * 1.35));
@@ -97,20 +101,10 @@ export class GameObject {
             const healthColor = getHealthBarColor(healthPercentage);
 
             // Background of the health bar
-            LC.drawRect({
-                pos: [screenPosX - barWidth / 2, screenPosY + this.radius * (proportions[1] / 2) + 5],
-                size: [barWidth, barHeight],
-                color: 'rgba(128, 128, 128, 0.45)',
-                cornerRadius: 2
-            });
+            LC.drawRectFast(screenPosX - barWidth / 2, screenPosY + this.radius * (proportions[1] / 2) + 5, barWidth, barHeight, 'rgba(128, 128, 128, 0.45)', 1, 2);
 
             // Foreground of the health bar
-            LC.drawRect({
-                pos: [screenPosX - barWidth / 2, screenPosY + this.radius * (proportions[1] / 2) + 5],
-                size: [barWidth * healthPercentage, barHeight],
-                color: healthColor,
-                cornerRadius: 2
-            });
+            LC.drawRectFast(screenPosX - barWidth / 2, screenPosY + this.radius * (proportions[1] / 2) + 5, barWidth * healthPercentage, barHeight, healthColor, 1, 2);
         }
 
         // draw image
@@ -135,12 +129,7 @@ export class GameObject {
                 const ox = Math.round(Math.cos(angle) * dist);
                 const oy = Math.round(Math.sin(angle) * dist);
                 const rot = this.rotation + (i - 1) * 0.35;
-                LC.drawImage({
-                    name: this.imgName,
-                    pos: [screenPosX - imgWidth / 2 + ox, screenPosY - imgHeight / 2 + oy],
-                    size: [imgWidth, imgHeight],
-                    rotation: rot
-                });
+                LC.drawImageFast(this.imgName, screenPosX - imgWidth / 2 + ox, screenPosY - imgHeight / 2 + oy, imgWidth, imgHeight, rot);
             }
         } else if (objectCfg?.stackable && !isCoinObjectType(this.type)) {
             const count = Math.max(1, Math.floor(this.amount || 1));
@@ -161,12 +150,7 @@ export class GameObject {
                     const dist = (i === 0) ? 0 : (5 + (this.id + i + bunchIndex) % 7);
                     const ox = Math.cos(angle) * dist;
                     const oy = Math.sin(angle) * dist;
-                    LC.drawImage({
-                        name: this.imgName,
-                        pos: [screenPosX - imgWidth / 2 + bx + ox, screenPosY - imgHeight / 2 + by + oy],
-                        size: [imgWidth, imgHeight],
-                        rotation: 0,
-                    });
+                    LC.drawImageFast(this.imgName, screenPosX - imgWidth / 2 + bx + ox, screenPosY - imgHeight / 2 + by + oy, imgWidth, imgHeight);
                 }
                 bunchIndex++;
                 if (renderQuality.far) break;
@@ -190,23 +174,13 @@ export class GameObject {
                     const ox = Math.cos(angle) * dist;
                     const oy = Math.sin(angle) * dist;
 
-                    LC.drawImage({
-                        name: this.imgName,
-                        pos: [screenPosX - imgWidth / 2 + bx + ox, screenPosY - imgHeight / 2 + by + oy],
-                        size: [imgWidth, imgHeight],
-                        rotation: 0,
-                    });
+                    LC.drawImageFast(this.imgName, screenPosX - imgWidth / 2 + bx + ox, screenPosY - imgHeight / 2 + by + oy, imgWidth, imgHeight);
                 }
                 bunchIndex++;
                 if (renderQuality.far) break;
             }
         } else {
-            LC.drawImage({
-                name: this.imgName,
-                pos: [screenPosX - imgWidth / 2, screenPosY - imgHeight / 2],
-                size: [imgWidth, imgHeight],
-                rotation: isWeaponRank(this.type) ? this.rotation : 0, // only rotate weapon drops
-            });
+            LC.drawImageFast(this.imgName, screenPosX - imgWidth / 2, screenPosY - imgHeight / 2, imgWidth, imgHeight, isWeaponRank(this.type) ? this.rotation : 0);
         }
 
         // Draw chest ID only while hovering in debug mode.
@@ -227,15 +201,7 @@ export class GameObject {
         }
 
         if (Settings.drawHitboxes) {
-            LC.drawCircle({
-                color: 'brown',
-                pos: [screenPosX, screenPosY],
-                radius: this.radius,
-                transparency: 0.2,
-                fill: true,
-                stroke: true,
-                strokeWidth: 3
-            });
+            LC.drawCircleFast(screenPosX, screenPosY, this.radius, 'brown', 0.2, true, true, null, 3);
         }
     }
 }

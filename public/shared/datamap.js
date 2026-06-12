@@ -7,16 +7,36 @@ export const TPS = {
 };
 
 export const DEFAULT_VIEW_RANGE_MULT = 2 / 3;
-export const MAX_LEVEL = 30;
+export const MAX_LEVEL = 45;
 export const BOSS_PORTAL_MIN_SCORE = 1000;
 export const BOSS_PORTAL_MIN_SWORD_TYPE = 4;
 export const BOSS_PORTAL_LOW_SCORE_MESSAGE = 'You are not experienced enough!';
 export const BOSS_PORTAL_LOW_WEAPON_MESSAGE = "Your weapon isn't powerful enough!";
-export const PLANT_SPEAR_RANK = 5;
-export const PLANT_SPEAR_V2_TYPE = 15;
+export const SPEAR_12_TYPE = 29;
+export const SPEAR_11_TYPE = 28;
+export const SPEAR_10_TYPE = 27;
+export const SPEAR_7_TYPE = 24;
+export const SPEAR_2_TYPE = 15;
+export const AXE_7_TYPE = 36;
+export const AXE_10_TYPE = 39;
+export const SWORD_3_TYPE = 4;
+export const SWORD_7_TYPE = 8;
+export const SWORD_9_TYPE = 10;
+export const SWORD_10_TYPE = 11;
+export const SWORD_12_TYPE = 13;
 export const SPEAR_FORWARD_SWING_STEPS = 6;
 export const SPEAR_RETRACT_SWING_STEPS = 6;
-export const xpForLevel = (level) => Math.floor(100 * 1.3 ** (Math.max(1, level | 0) - 1));
+const XP_REQUIREMENTS = [
+    9, 11, 15, 19, 25, 32, 42, 55, 71, 93, 120, 156, 203, 264, 344,
+    447, 581, 755, 981, 1275, 1658, 2156, 2802, 3643, 4736, 6156, 8003,
+    10404, 13525, 17583, 22858, 29716, 38630, 50219, 65285, 84870, 110332,
+    143431, 186460, 242399, 315118, 409654, 532550, 692314
+];
+
+export const xpForLevel = (level) => {
+    const idx = Math.max(1, Math.min(MAX_LEVEL - 1, level | 0)) - 1;
+    return XP_REQUIREMENTS[idx] || 1;
+};
 export const XP_SHOP_ITEMS = [
     { id: 201, name: '1,000 XP', xp: 1000, price: 100 },
     { id: 202, name: '2,500 XP', xp: 2500, price: 250 },
@@ -28,50 +48,167 @@ export const SPECIAL_SHOP_ITEMS = [
 ];
 
 const createAsset = (name, src, type) => ({ name, src, type });
-const PLANT_SPEAR_CONFIG = {
-    category: 'spear',
-    name: 'spears_plant_spear_v1',
-    src: './images/spears/plant_spear_v1.png',
-    size: [170, 43],
-    offset: { x: 42, y: -13 },
-    renderTuning: {
-        rotationOffset: 0,
-        sideOffset: 0.35,
-        forwardOffset: 0.08
-    },
-    swordWidth: 170,
-    swordHeight: 43
-};
+const SWORD_DAMAGE_BY_INDEX = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 70];
+const SPEAR_DAMAGE_BY_INDEX = [10, 13, 16, 19, 22, 25, 28, 31, 34, 38, 44, 50];
+const AXE_DAMAGE_BY_INDEX = SWORD_DAMAGE_BY_INDEX.map(damage => damage * 1.5);
+const BOOMERANG_DAMAGE_BY_INDEX = [9, 13, 17, 21, 25, 29, 34, 39, 44, 49, 55, 62];
+const WEAPON_TOUGHNESS_BY_INDEX = [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4];
+const BOOMERANG_TOUGHNESS_BY_INDEX = WEAPON_TOUGHNESS_BY_INDEX;
+const SWORD_SLASH_BY_INDEX = [
+    'woody',
+    'stony',
+    'metallic',
+    'light_metallic',
+    'light_metallic',
+    'light_metallic',
+    'icy',
+    'light_metallic',
+    'light_metallic',
+    'icy',
+    'light_metallic',
+    'fiery'
+];
+const AXE_SLASH_BY_INDEX = [
+    'woody',
+    'stony',
+    'metallic',
+    'light_metallic',
+    'light_metallic',
+    'metallic',
+    'fiery',
+    'light_metallic',
+    'light_metallic',
+    'fiery',
+    'light_metallic',
+    'fiery'
+];
 
-const PLANT_SPEAR_V2_CONFIG = {
-    category: 'spear',
-    name: 'spears_plant_spear_v2',
-    src: './images/spears/plant_spear_v2.png',
-    size: [350, 88],
-    offset: { x: 74, y: -32 },
-    renderTuning: {
-        rotationOffset: 0,
-        sideOffset: 0.35,
-        forwardOffset: 0.08
-    },
-    swordWidth: 350,
-    swordHeight: 88
-};
+function getSwordType(index) {
+    return index + 1;
+}
+
+function getSpearType(index) {
+    return index <= 6 ? index + 13 : index + 17;
+}
+
+function getAxeType(index) {
+    return index + 29;
+}
+
+function getBoomerangType(index) {
+    return index + 41;
+}
+
+function createWeaponAttack({ type, category, index = 0, damage, projectileType, slashKeyOverride = '', maxDistanceOverride = 0 }) {
+    const slashMap = category === 'axe' ? AXE_SLASH_BY_INDEX : SWORD_SLASH_BY_INDEX;
+    const slashKey = slashKeyOverride || ((category === 'sword' || category === 'axe') && index > 0
+        ? `slashattack_${slashMap[index - 1]}`
+        : 'slashattack_woody');
+    return {
+        radius: index >= 9 ? 15 : 10,
+        speed: 30 + Math.min(60, (index || 0) * 4),
+        damage,
+        maxDistance: maxDistanceOverride > 0 ? maxDistanceOverride : 100 + Math.min(210, (index || 0) * 14),
+        knockbackStrength: 25,
+        imgProportions: [1, 10],
+        imgSrc: `./images/projectiles/${slashKey}.png`,
+        imgName: `projectiles_${slashKey}_${type}`
+    };
+}
 
 const WEAPON_METADATA_DEFINITIONS = [
-    { type: 1, category: 'sword', key: 'bone', displayName: 'Bone', order: 1, shopPrice: 30, sellPrice: 15, projectileType: 41, attack: { radius: 10, speed: 30, damage: 3, maxDistance: 100, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/slash_attack_bone.png', imgName: 'projectiles_slash_attack_bone' } },
-    { type: 2, category: 'sword', key: 'branch', displayName: 'Branch', order: 2, shopPrice: 50, sellPrice: 25, projectileType: 42, attack: { radius: 10, speed: 35, damage: 5, maxDistance: 110, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/slash_attack_branch.png', imgName: 'projectiles_slash_attack_branch' } },
-    { type: 3, category: 'sword', key: 'iron_dagger', displayName: 'Iron Dagger', order: 3, shopPrice: 80, sellPrice: 40, projectileType: 43, attack: { radius: 10, speed: 40, damage: 8, maxDistance: 120, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/slash_attack_iron_dagger.png', imgName: 'projectiles_slash_attack_iron_dagger' } },
-    { type: 4, category: 'sword', key: 'icicle_blade_v1', displayName: 'Icicle Blade V1', order: 4, shopPrice: 150, sellPrice: 75, projectileType: 44, attack: { radius: 10, speed: 45, damage: 12, maxDistance: 130, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/slash_attack_icicle_blade_v1.png', imgName: 'projectiles_slash_attack_icicle_blade_v1' } },
-    { type: 5, category: 'spear', key: 'plant_spear_v1', displayName: 'Plant Spear V1', order: 5, shopPrice: 175, sellPrice: 87, projectileType: 45, attack: { radius: 10, speed: 50, damage: 14, maxDistance: 140, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/slash_attack_branch.png', imgName: 'projectiles_slash_attack_plant_spear_v1' } },
-    { type: 6, category: 'sword', key: 'iron_axe', displayName: 'Iron Axe', order: 6, shopPrice: 200, sellPrice: 100, projectileType: 46, attack: { radius: 10, speed: 55, damage: 16, maxDistance: 150, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/slash_attack_iron_axe.png', imgName: 'projectiles_slash_attack_iron_axe' } },
-    { type: 7, category: 'sword', key: 'iron_saber', displayName: 'Iron Saber', order: 7, shopPrice: 250, sellPrice: 125, projectileType: 47, attack: { radius: 10, speed: 60, damage: 19, maxDistance: 170, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/slash_attack_iron_saber.png', imgName: 'projectiles_slash_attack_iron_saber' } },
-    { type: 8, category: 'sword', key: 'minotaur_axe_v1', displayName: 'Minotaur Axe V1', order: 8, shopPrice: 315, sellPrice: 157, projectileType: 48, attack: { radius: 10, speed: 65, damage: 22, maxDistance: 180, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/slash_attack_minotaur_axe_v1.png', imgName: 'projectiles_slash_attack_minotaur_axe_v1' } },
-    { type: 9, category: 'sword', key: 'iron_scythe', displayName: 'Iron Scythe', order: 9, shopPrice: 375, sellPrice: 187, projectileType: 49, attack: { radius: 15, speed: 70, damage: 25, maxDistance: 200, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/slash_attack_iron_scythe.png', imgName: 'projectiles_slash_attack_iron_scythe' } },
-    { type: 10, category: 'sword', key: 'boulder_blade', displayName: 'Boulder Blade', order: 10, shopPrice: 430, sellPrice: 215, projectileType: 50, attack: { radius: 15, speed: 75, damage: 29, maxDistance: 220, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/slash_attack_boulder_blade.png', imgName: 'projectiles_slash_attack_boulder_blade' } },
-    { type: 15, category: 'spear', key: 'plant_spear_v2', displayName: 'Plant Spear V2', order: 11, shopPrice: null, sellPrice: 240, projectileType: 51, cooldownMult: 1.6, attack: { radius: 26, speed: 78, damage: 33, maxDistance: 235, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/slash_attack_minotaur_axe_v2.png', imgName: 'projectiles_slash_attack_plant_spear_v2' } },
-    { type: 11, category: 'sword', key: 'icicle_blade_v2', displayName: 'Icicle Blade V2', order: 12, shopPrice: null, sellPrice: 250, projectileType: 52, attack: { radius: 15, speed: 80, damage: 36, maxDistance: 240, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/slash_attack_icicle_blade_v2.png', imgName: 'projectiles_slash_attack_icicle_blade_v2' } },
-    { type: 12, category: 'sword', key: 'minotaur_axe_v2', displayName: 'Minotaur Axe V2', order: 13, shopPrice: null, sellPrice: 325, projectileType: 53, cooldownMult: 1.6, attack: { radius: 15, speed: 85, damage: 42, maxDistance: 260, knockbackStrength: 25, imgProportions: [1, 10], imgSrc: './images/projectiles/slash_attack_minotaur_axe_v2.png', imgName: 'projectiles_slash_attack_minotaur_axe_v2' } }
+    {
+        type: 1,
+        category: 'sword',
+        key: 'bone',
+        displayName: 'Bone',
+        order: 5,
+        shopPrice: null,
+        sellPrice: 0,
+        projectileType: 41,
+        toughness: 0,
+        attack: createWeaponAttack({
+            type: 1,
+            category: 'sword',
+            damage: 10,
+            projectileType: 41,
+            slashKeyOverride: 'slashattack_light_metallic',
+            maxDistanceOverride: 100
+        })
+    },
+    ...SWORD_DAMAGE_BY_INDEX.map((damage, idx) => {
+        const index = idx + 1;
+        const type = getSwordType(index);
+        const projectileType = 41 + type;
+        return {
+            type,
+            category: 'sword',
+            key: `sword${index}`,
+            displayName: `sword${index}`,
+            order: damage,
+            shopPrice: 50 + (idx * idx * 35) + (idx * 60),
+            sellPrice: Math.floor((50 + (idx * idx * 35) + (idx * 60)) / 2),
+            projectileType,
+            toughness: WEAPON_TOUGHNESS_BY_INDEX[idx] || 1,
+            attack: createWeaponAttack({ type, category: 'sword', index, damage, projectileType })
+        };
+    }),
+    ...SPEAR_DAMAGE_BY_INDEX.map((damage, idx) => {
+        const index = idx + 1;
+        const type = getSpearType(index);
+        const projectileType = 60 + index;
+        return {
+            type,
+            category: 'spear',
+            key: `spear${index}`,
+            displayName: `spear${index}`,
+            order: damage,
+            shopPrice: 55 + (idx * idx * 28) + (idx * 55),
+            sellPrice: Math.floor((55 + (idx * idx * 28) + (idx * 55)) / 2),
+            projectileType,
+            cooldownMult: index >= 10 ? 1.35 : 1,
+            toughness: WEAPON_TOUGHNESS_BY_INDEX[idx] || 1,
+            attack: createWeaponAttack({ type, category: 'spear', index, damage, projectileType })
+        };
+    }),
+    ...AXE_DAMAGE_BY_INDEX.map((damage, idx) => {
+        const index = idx + 1;
+        const type = getAxeType(index);
+        const projectileType = 80 + index;
+        const shopPrice = Math.floor((50 + (idx * idx * 35) + (idx * 60)) * 1.35);
+        return {
+            type,
+            category: 'axe',
+            key: `axe${index}`,
+            displayName: `axe${index}`,
+            order: damage,
+            shopPrice,
+            sellPrice: Math.floor(shopPrice / 2),
+            projectileType,
+            cooldownMult: 1.5,
+            toughness: WEAPON_TOUGHNESS_BY_INDEX[idx] || 1,
+            attack: createWeaponAttack({ type, category: 'axe', index, damage, projectileType })
+        };
+    }),
+    ...BOOMERANG_DAMAGE_BY_INDEX.map((damage, idx) => {
+        const index = idx + 1;
+        const type = getBoomerangType(index);
+        const projectileType = 100 + index;
+        const shopPrice = Math.floor((50 + (idx * idx * 35) + (idx * 60)) * 1.15);
+        return {
+            type,
+            category: 'boomerang',
+            key: `boomerang${index}`,
+            displayName: `boomerang${index}`,
+            order: damage,
+            shopPrice,
+            sellPrice: Math.floor(shopPrice / 2),
+            projectileType,
+            cooldownMult: 1.1,
+            toughness: BOOMERANG_TOUGHNESS_BY_INDEX[idx] || 1,
+            attack: createWeaponAttack({ type, category: 'boomerang', index, damage, projectileType, maxDistanceOverride: 130 + Math.min(230, index * 16) })
+        };
+    })
 ];
 
 const WEAPON_METADATA_BY_TYPE = new Map(WEAPON_METADATA_DEFINITIONS.map(def => [def.type, def]));
@@ -174,18 +311,66 @@ const OBJECT_DEFINITIONS = [
         imgProportions: [2, 2]
     },
     { key: 'bone_drop', id: 1, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/bone.png', imgName: 'swords_bone', imgProportions: [2, 1] },
-    { key: 'branch_drop', id: 2, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/branch.png', imgName: 'swords_branch', imgProportions: [2, 1] },
-    { key: 'iron_dagger_drop', id: 3, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/iron_dagger.png', imgName: 'swords_iron_dagger', imgProportions: [2, 1] },
-    { key: 'icicle_blade_v1_drop', id: 4, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/icicle_blade_v1.png', imgName: 'swords_icicle_blade_v1', imgProportions: [2, 1] },
-    { key: 'plant_spear_v1_drop', id: 5, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/spears/plant_spear_v1.png', imgName: 'spears_plant_spear_v1', imgProportions: [2, 1] },
-    { key: 'iron_axe_drop', id: 6, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/iron_axe.png', imgName: 'swords_iron_axe', imgProportions: [2, 1] },
-    { key: 'iron_saber_drop', id: 7, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/iron_saber.png', imgName: 'swords_iron_saber', imgProportions: [2, 1] },
-    { key: 'minotaur_axe_v1_drop', id: 8, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/minotaur_axe_v1.png', imgName: 'swords_minotaur_axe_v1', imgProportions: [2, 1] },
-    { key: 'iron_scythe_drop', id: 9, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/iron_scythe.png', imgName: 'swords_iron_scythe', imgProportions: [2, 1] },
-    { key: 'boulder_blade_drop', id: 10, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/boulder_blade.png', imgName: 'swords_boulder_blade', imgProportions: [2, 1] },
-    { key: 'icicle_blade_v2_drop', id: 11, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/icicle_blade_v2.png', imgName: 'swords_icicle_blade_v2', imgProportions: [2, 1] },
-    { key: 'minotaur_axe_v2_drop', id: 12, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/swords/minotaur_axe_v2.png', imgName: 'swords_minotaur_axe_v2', imgProportions: [2, 1] },
-    { key: 'plant_spear_v2_drop', id: 15, category: 'drop', isEphemeral: true, radius: 45, maxHealth: 1, score: 0, imgSrc: './images/spears/plant_spear_v2.png', imgName: 'spears_plant_spear_v2', imgProportions: [2, 1] },
+    ...Array.from({ length: 12 }, (_, idx) => {
+        const index = idx + 1;
+        return {
+            key: `sword${index}_drop`,
+            id: getSwordType(index),
+            category: 'drop',
+            isEphemeral: true,
+            radius: 45,
+            maxHealth: 1,
+            score: 0,
+            imgSrc: `./images/swords/sword${index}.png`,
+            imgName: `swords_sword${index}`,
+            imgProportions: [2, 1]
+        };
+    }),
+    ...Array.from({ length: 12 }, (_, idx) => {
+        const index = idx + 1;
+        return {
+            key: `spear${index}_drop`,
+            id: getSpearType(index),
+            category: 'drop',
+            isEphemeral: true,
+            radius: 45,
+            maxHealth: 1,
+            score: 0,
+            imgSrc: `./images/spears/spear${index}.png`,
+            imgName: `spears_spear${index}`,
+            imgProportions: [2, 1]
+        };
+    }),
+    ...Array.from({ length: 12 }, (_, idx) => {
+        const index = idx + 1;
+        return {
+            key: `axe${index}_drop`,
+            id: getAxeType(index),
+            category: 'drop',
+            isEphemeral: true,
+            radius: 45,
+            maxHealth: 1,
+            score: 0,
+            imgSrc: `./images/axes/axe${index}.png`,
+            imgName: `axes_axe${index}`,
+            imgProportions: [2, 1]
+        };
+    }),
+    ...Array.from({ length: 12 }, (_, idx) => {
+        const index = idx + 1;
+        return {
+            key: `boomerang${index}_drop`,
+            id: getBoomerangType(index),
+            category: 'drop',
+            isEphemeral: true,
+            radius: 45,
+            maxHealth: 1,
+            score: 0,
+            imgSrc: `./images/boomerangs/boomerang${index}.png`,
+            imgName: `boomerangs_boomerang${index}`,
+            imgProportions: [1.25, 1]
+        };
+    }),
     { key: 'bush_cloak_drop', id: 101, category: 'drop', isEphemeral: true, radius: 60, maxHealth: 1, score: 0, imgSrc: './images/accessories/bush_cloak.png', imgName: 'objects_bush_cloak', imgProportions: [1, 1] },
     { key: 'sunglasses_drop', id: 102, category: 'drop', isEphemeral: true, radius: 60, maxHealth: 1, score: 0, imgSrc: './images/accessories/sunglasses.png', imgName: 'objects_sunglasses', imgProportions: [1, 1] },
     { key: 'pirate_hat_drop', id: 103, category: 'drop', isEphemeral: true, radius: 60, maxHealth: 1, score: 0, imgSrc: './images/accessories/pirate_hat.png', imgName: 'objects_pirate_hat', imgProportions: [1, 1] },
@@ -313,11 +498,13 @@ export const dataMap = {
         'heart_beat': { name: 'heart_beat', src: './audios/heart_beat.mp3', defaultTimestamp: 0, defaultVolume: 0.7, defaultSpeed: 1.5 },
         'slash_clash': { name: 'slash_clash', src: './audios/slash_clash.mp3', defaultTimestamp: 0.7, defaultVolume: 0.15 },
         'electric_sfx1': { name: 'electric_sfx1', src: './audios/electric_sfx1.mp3', defaultTimestamp: 0.1, endTime: 0.7, defaultVolume: 0.5 },
+        'ground_impact': { name: 'ground_impact', src: './audios/ground_impact.mp3', defaultTimestamp: 0, defaultVolume: 0.7 },
+        'underwater_explosion': { name: 'underwater_explosion', src: './audios/underwater_explosion.mp3', defaultTimestamp: 0, defaultVolume: 0.7 },
         'ui_tap': { name: 'ui_tap', src: './audios/ui_tap.mp3', defaultTimestamp: 0, defaultVolume: 0.4 },
 
     },
     sfxMap: [
-        0, 'throw', 'sword_slash', 'hurt', 'bubble_pop', 'wood_hit', 'coin_collect', 'heart_beat', 'slash_clash', 'electric_sfx1'
+        0, 'throw', 'sword_slash', 'hurt', 'bubble_pop', 'wood_hit', 'coin_collect', 'heart_beat', 'slash_clash', 'electric_sfx1', 'ground_impact', 'underwater_explosion'
     ],
     UI: {
         'pause_button': { name: 'pause_button', src: './images/ui/pause_button.png' },
@@ -350,24 +537,68 @@ export const dataMap = {
     },
     SWORDS: {
         'imgs': {
-            '0': { category: 'sword', name: 'swords_wipsword', src: './images/swords/wipsword.png', size: [100, 50], offset: { x: 0, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 100, swordHeight: 50 },
+            '0': { category: 'sword', name: 'swords_bone', src: './images/swords/bone.png', size: [100, 50], offset: { x: 0, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 100, swordHeight: 50 },
             '1': { category: 'sword', name: 'swords_bone', src: './images/swords/bone.png', size: [100, 50], offset: { x: -5, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 100, swordHeight: 50 },
-            '2': { category: 'sword', name: 'swords_branch', src: './images/swords/branch.png', size: [110, 55], offset: { x: -1, y: -5 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 110, swordHeight: 55 },
-            '3': { category: 'sword', name: 'swords_iron_dagger', src: './images/swords/iron_dagger.png', size: [120, 40], offset: { x: -4, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 120, swordHeight: 40 },
-            '4': { category: 'sword', name: 'swords_icicle_blade_v1', src: './images/swords/icicle_blade_v1.png', size: [130, 30], offset: { x: -3, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 130, swordHeight: 30 },
-            '6': { category: 'sword', name: 'swords_iron_axe', src: './images/swords/iron_axe.png', size: [140, 70], offset: { x: -5, y: -14 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 140, swordHeight: 70 },
-            '7': { category: 'sword', name: 'swords_iron_saber', src: './images/swords/iron_saber.png', size: [150, 70], offset: { x: -2, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 150, swordHeight: 70 },
-            '8': { category: 'sword', name: 'swords_minotaur_axe_v1', src: './images/swords/minotaur_axe_v1.png', size: [170, 90], offset: { x: -6, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 170, swordHeight: 90 },
-            '9': { category: 'sword', name: 'swords_iron_scythe', src: './images/swords/iron_scythe.png', size: [180, 100], offset: { x: -4, y: 15 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 180, swordHeight: 100 },
-            '10': { category: 'sword', name: 'swords_boulder_blade', src: './images/swords/boulder_blade.png', size: [200, 100], offset: { x: -6, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 200, swordHeight: 100 },
-            '11': { category: 'sword', name: 'swords_icicle_blade_v2', src: './images/swords/icicle_blade_v2.png', size: [210, 40], offset: { x: -5, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 210, swordHeight: 40 },
-            '12': { category: 'sword', name: 'swords_minotaur_axe_v2', src: './images/swords/minotaur_axe_v2.png', size: [290, 155], offset: { x: 0, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 290, swordHeight: 155 },
+            '2': { category: 'sword', name: 'swords_sword1', src: './images/swords/sword1.png', size: [105, 35], offset: { x: -4, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 105, swordHeight: 35 },
+            '3': { category: 'sword', name: 'swords_sword2', src: './images/swords/sword2.png', size: [120, 35], offset: { x: -4, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 120, swordHeight: 35 },
+            '4': { category: 'sword', name: 'swords_sword3', src: './images/swords/sword3.png', size: [135, 35], offset: { x: -4, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 135, swordHeight: 35 },
+            '5': { category: 'sword', name: 'swords_sword4', src: './images/swords/sword4.png', size: [150, 20], offset: { x: -4, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 150, swordHeight: 20 },
+            '6': { category: 'sword', name: 'swords_sword5', src: './images/swords/sword5.png', size: [165, 60], offset: { x: -4, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 165, swordHeight: 60 },
+            '7': { category: 'sword', name: 'swords_sword6', src: './images/swords/sword6.png', size: [180, 50], offset: { x: -4, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 180, swordHeight: 50 },
+            '8': { category: 'sword', name: 'swords_sword7', src: './images/swords/sword7.png', size: [195, 30], offset: { x: -4, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 195, swordHeight: 30 },
+            '9': { category: 'sword', name: 'swords_sword8', src: './images/swords/sword8.png', size: [210, 60], offset: { x: -4, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 210, swordHeight: 60 },
+            '10': { category: 'sword', name: 'swords_sword9', src: './images/swords/sword9.png', size: [225, 60], offset: { x: -4, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 225, swordHeight: 60 },
+            '11': { category: 'sword', name: 'swords_sword10', src: './images/swords/sword10.png', size: [240, 53], offset: { x: -4, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 240, swordHeight: 53 },
+            '12': { category: 'sword', name: 'swords_sword11', src: './images/swords/sword11.png', size: [255, 56], offset: { x: -4, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 255, swordHeight: 56 },
+            '13': { category: 'sword', name: 'swords_sword12', src: './images/swords/sword12.png', size: [300, 65], offset: { x: -4, y: 0 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 300, swordHeight: 65 },
         }
     },
     SPEARS: {
         'imgs': {
-            '5': PLANT_SPEAR_CONFIG,
-            '15': PLANT_SPEAR_V2_CONFIG,
+            '14': { category: 'spear', name: 'spears_spear1', src: './images/spears/spear1.png', size: [165, 30], offset: { x: 46, y: -9 }, renderTuning: { rotationOffset: 0, sideOffset: 0.35, forwardOffset: 0.08 }, swordWidth: 165, swordHeight: 30 },
+            '15': { category: 'spear', name: 'spears_spear2', src: './images/spears/spear2.png', size: [182, 30], offset: { x: 51, y: -9 }, renderTuning: { rotationOffset: 0, sideOffset: 0.35, forwardOffset: 0.08 }, swordWidth: 182, swordHeight: 30 },
+            '16': { category: 'spear', name: 'spears_spear3', src: './images/spears/spear3.png', size: [199, 32], offset: { x: 56, y: -10 }, renderTuning: { rotationOffset: 0, sideOffset: 0.35, forwardOffset: 0.08 }, swordWidth: 199, swordHeight: 32 },
+            '17': { category: 'spear', name: 'spears_spear4', src: './images/spears/spear4.png', size: [216, 35], offset: { x: 60, y: -11 }, renderTuning: { rotationOffset: 0, sideOffset: 0.35, forwardOffset: 0.08 }, swordWidth: 216, swordHeight: 35 },
+            '18': { category: 'spear', name: 'spears_spear5', src: './images/spears/spear5.png', size: [233, 37], offset: { x: 65, y: -11 }, renderTuning: { rotationOffset: 0, sideOffset: 0.35, forwardOffset: 0.08 }, swordWidth: 233, swordHeight: 37 },
+            '19': { category: 'spear', name: 'spears_spear6', src: './images/spears/spear6.png', size: [250, 40], offset: { x: 70, y: -12 }, renderTuning: { rotationOffset: 0, sideOffset: 0.35, forwardOffset: 0.08 }, swordWidth: 250, swordHeight: 40 },
+            '24': { category: 'spear', name: 'spears_spear7', src: './images/spears/spear7.png', size: [267, 43], offset: { x: 75, y: -13 }, renderTuning: { rotationOffset: 0, sideOffset: 0.35, forwardOffset: 0.08 }, swordWidth: 267, swordHeight: 43 },
+            '25': { category: 'spear', name: 'spears_spear8', src: './images/spears/spear8.png', size: [284, 45], offset: { x: 80, y: -14 }, renderTuning: { rotationOffset: 0, sideOffset: 0.35, forwardOffset: 0.08 }, swordWidth: 284, swordHeight: 45 },
+            '26': { category: 'spear', name: 'spears_spear9', src: './images/spears/spear9.png', size: [301, 48], offset: { x: 84, y: -14 }, renderTuning: { rotationOffset: 0, sideOffset: 0.35, forwardOffset: 0.08 }, swordWidth: 301, swordHeight: 48 },
+            '27': { category: 'spear', name: 'spears_spear10', src: './images/spears/spear10.png', size: [318, 80], offset: { x: 89, y: -15 }, renderTuning: { rotationOffset: 0, sideOffset: 0.35, forwardOffset: 0.08 }, swordWidth: 318, swordHeight: 80 },
+            '28': { category: 'spear', name: 'spears_spear11', src: './images/spears/spear11.png', size: [335, 54], offset: { x: 94, y: -16 }, renderTuning: { rotationOffset: 0, sideOffset: 0.35, forwardOffset: 0.08 }, swordWidth: 335, swordHeight: 54 },
+            '29': { category: 'spear', name: 'spears_spear12', src: './images/spears/spear12.png', size: [352, 80], offset: { x: 99, y: -17 }, renderTuning: { rotationOffset: 0, sideOffset: 0.35, forwardOffset: 0.08 }, swordWidth: 352, swordHeight: 80 },
+        }
+    },
+    AXES: {
+        'imgs': {
+            '30': { category: 'axe', name: 'axes_axe1', src: './images/axes/axe1.png', size: [120, 55], offset: { x: -4, y: -5 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 120, swordHeight: 55 },
+            '31': { category: 'axe', name: 'axes_axe2', src: './images/axes/axe2.png', size: [135, 59], offset: { x: -4, y: -5 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 135, swordHeight: 59 },
+            '32': { category: 'axe', name: 'axes_axe3', src: './images/axes/axe3.png', size: [150, 66], offset: { x: -4, y: -5 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 150, swordHeight: 66 },
+            '33': { category: 'axe', name: 'axes_axe4', src: './images/axes/axe4.png', size: [165, 73], offset: { x: -4, y: -13 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 165, swordHeight: 73 },
+            '34': { category: 'axe', name: 'axes_axe5', src: './images/axes/axe5.png', size: [180, 79], offset: { x: -4, y: -5 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 180, swordHeight: 79 },
+            '35': { category: 'axe', name: 'axes_axe6', src: './images/axes/axe6.png', size: [195, 86], offset: { x: -4, y: -15 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 195, swordHeight: 86 },
+            '36': { category: 'axe', name: 'axes_axe7', src: './images/axes/axe7.png', size: [210, 92], offset: { x: -4, y: -15 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 210, swordHeight: 92 },
+            '37': { category: 'axe', name: 'axes_axe8', src: './images/axes/axe8.png', size: [225, 99], offset: { x: -4, y: -25 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 225, swordHeight: 99 },
+            '38': { category: 'axe', name: 'axes_axe9', src: './images/axes/axe9.png', size: [240, 106], offset: { x: -4, y: -25 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 240, swordHeight: 106 },
+            '39': { category: 'axe', name: 'axes_axe10', src: './images/axes/axe10.png', size: [255, 112], offset: { x: -4, y: -25 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 255, swordHeight: 112 },
+            '40': { category: 'axe', name: 'axes_axe11', src: './images/axes/axe11.png', size: [270, 119], offset: { x: -10, y: -35 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 270, swordHeight: 119 },
+            '41': { category: 'axe', name: 'axes_axe12', src: './images/axes/axe12.png', size: [285, 125], offset: { x: -20, y: -60 }, renderTuning: { rotationOffset: 0, sideOffset: 0, forwardOffset: 0 }, swordWidth: 285, swordHeight: 125 },
+        }
+    },
+    BOOMERANGS: {
+        'imgs': {
+            '42': { category: 'boomerang', name: 'boomerangs_boomerang1', src: './images/boomerangs/boomerang1.png', size: [78, 64], offset: { x: -2, y: -3 }, renderTuning: { rotationOffset: -0.35, sideOffset: 0, forwardOffset: 0 }, swordWidth: 78, swordHeight: 64 },
+            '43': { category: 'boomerang', name: 'boomerangs_boomerang2', src: './images/boomerangs/boomerang2.png', size: [86, 70], offset: { x: -2, y: -3 }, renderTuning: { rotationOffset: -0.35, sideOffset: 0, forwardOffset: 0 }, swordWidth: 86, swordHeight: 70 },
+            '44': { category: 'boomerang', name: 'boomerangs_boomerang3', src: './images/boomerangs/boomerang3.png', size: [94, 76], offset: { x: -2, y: -4 }, renderTuning: { rotationOffset: -0.35, sideOffset: 0, forwardOffset: 0 }, swordWidth: 94, swordHeight: 76 },
+            '45': { category: 'boomerang', name: 'boomerangs_boomerang4', src: './images/boomerangs/boomerang4.png', size: [102, 82], offset: { x: -3, y: -4 }, renderTuning: { rotationOffset: -0.35, sideOffset: 0, forwardOffset: 0 }, swordWidth: 102, swordHeight: 82 },
+            '46': { category: 'boomerang', name: 'boomerangs_boomerang5', src: './images/boomerangs/boomerang5.png', size: [110, 88], offset: { x: -3, y: -4 }, renderTuning: { rotationOffset: -0.35, sideOffset: 0, forwardOffset: 0 }, swordWidth: 110, swordHeight: 88 },
+            '47': { category: 'boomerang', name: 'boomerangs_boomerang6', src: './images/boomerangs/boomerang6.png', size: [118, 94], offset: { x: -3, y: -5 }, renderTuning: { rotationOffset: -0.35, sideOffset: 0, forwardOffset: 0 }, swordWidth: 118, swordHeight: 94 },
+            '48': { category: 'boomerang', name: 'boomerangs_boomerang7', src: './images/boomerangs/boomerang7.png', size: [126, 100], offset: { x: -3, y: -5 }, renderTuning: { rotationOffset: -0.35, sideOffset: 0, forwardOffset: 0 }, swordWidth: 126, swordHeight: 100 },
+            '49': { category: 'boomerang', name: 'boomerangs_boomerang8', src: './images/boomerangs/boomerang8.png', size: [134, 106], offset: { x: -4, y: -5 }, renderTuning: { rotationOffset: -0.35, sideOffset: 0, forwardOffset: 0 }, swordWidth: 134, swordHeight: 106 },
+            '50': { category: 'boomerang', name: 'boomerangs_boomerang9', src: './images/boomerangs/boomerang9.png', size: [142, 112], offset: { x: -4, y: -6 }, renderTuning: { rotationOffset: -0.35, sideOffset: 0, forwardOffset: 0 }, swordWidth: 142, swordHeight: 112 },
+            '51': { category: 'boomerang', name: 'boomerangs_boomerang10', src: './images/boomerangs/boomerang10.png', size: [150, 118], offset: { x: -4, y: -6 }, renderTuning: { rotationOffset: -0.35, sideOffset: 0, forwardOffset: 0 }, swordWidth: 150, swordHeight: 118 },
+            '52': { category: 'boomerang', name: 'boomerangs_boomerang11', src: './images/boomerangs/boomerang11.png', size: [158, 124], offset: { x: -4, y: -6 }, renderTuning: { rotationOffset: -0.35, sideOffset: 0, forwardOffset: 0 }, swordWidth: 158, swordHeight: 124 },
+            '53': { category: 'boomerang', name: 'boomerangs_boomerang12', src: './images/boomerangs/boomerang12.png', size: [170, 132], offset: { x: -5, y: -7 }, renderTuning: { rotationOffset: -0.35, sideOffset: 0, forwardOffset: 0 }, swordWidth: 170, swordHeight: 132 },
         }
     },
     MOBS: {
@@ -569,6 +800,12 @@ for (const config of Object.values(dataMap.SWORDS?.imgs || {})) {
 for (const config of Object.values(dataMap.SPEARS?.imgs || {})) {
     ensureMutableWeaponSize(config);
 }
+for (const config of Object.values(dataMap.AXES?.imgs || {})) {
+    ensureMutableWeaponSize(config);
+}
+for (const config of Object.values(dataMap.BOOMERANGS?.imgs || {})) {
+    ensureMutableWeaponSize(config);
+}
 
 export const ACCESSORY_DESCRIPTIONS = {
     'bush_cloak': 'Passive: Melee attacks poison living entities you hit. Active: Poison Blast (F) Poisons entities near you.',
@@ -613,7 +850,9 @@ export function getXpShopItemConfig(type) {
 }
 
 export function getWeaponConfig(weaponType) {
-    return dataMap.SPEARS.imgs[weaponType]
+    return dataMap.BOOMERANGS.imgs[weaponType]
+        || dataMap.AXES.imgs[weaponType]
+        || dataMap.SPEARS.imgs[weaponType]
         || dataMap.SWORDS.imgs[weaponType]
         || dataMap.SWORDS.imgs[1]
         || dataMap.SWORDS.imgs[0]
@@ -670,7 +909,17 @@ export const SPEAR_IDS = Object.keys(dataMap.SPEARS.imgs)
     .filter(id => Number.isFinite(id) && id > 0)
     .sort((a, b) => a - b);
 
-export const WEAPON_IDS = [...new Set([...SWORD_IDS, ...SPEAR_IDS])].sort((a, b) => a - b);
+export const AXE_IDS = Object.keys(dataMap.AXES.imgs)
+    .map(k => parseInt(k))
+    .filter(id => Number.isFinite(id) && id > 0)
+    .sort((a, b) => a - b);
+
+export const BOOMERANG_IDS = Object.keys(dataMap.BOOMERANGS.imgs)
+    .map(k => parseInt(k))
+    .filter(id => Number.isFinite(id) && id > 0)
+    .sort((a, b) => a - b);
+
+export const WEAPON_IDS = [...new Set([...SWORD_IDS, ...SPEAR_IDS, ...AXE_IDS, ...BOOMERANG_IDS])].sort((a, b) => a - b);
 export const WEAPON_TYPES = WEAPON_TYPE_BY_KEY;
 
 for (const weaponType of WEAPON_IDS) {
@@ -682,6 +931,8 @@ for (const weaponType of WEAPON_IDS) {
 const WEAPON_ID_SET = new Set(WEAPON_IDS);
 const SWORD_ID_SET = new Set(SWORD_IDS);
 const SPEAR_ID_SET = new Set(SPEAR_IDS);
+const AXE_ID_SET = new Set(AXE_IDS);
+const BOOMERANG_ID_SET = new Set(BOOMERANG_IDS);
 const CHEST_ID_SET = new Set(dataMap.CHEST_IDS);
 
 export function isWeaponType(weaponType) {
@@ -706,6 +957,22 @@ export function isSpearType(weaponType) {
 
 export function isSpearRank(weaponType) {
     return isSpearType(weaponType);
+}
+
+export function isAxeType(weaponType) {
+    return AXE_ID_SET.has(weaponType);
+}
+
+export function isAxeRank(weaponType) {
+    return isAxeType(weaponType);
+}
+
+export function isBoomerangType(weaponType) {
+    return BOOMERANG_ID_SET.has(weaponType);
+}
+
+export function isBoomerangRank(weaponType) {
+    return isBoomerangType(weaponType);
 }
 
 export function getWeaponMeta(weaponType) {
@@ -752,23 +1019,25 @@ export function getWeaponAttackStats(weaponType) {
     return attack || null;
 }
 
-export function getStrongestInventorySwordDamage(inventory = [], inventoryCounts = []) {
+export function getStrongestInventoryWeaponDamage(inventory = [], inventoryCounts = []) {
     let bestDamage = 0;
     for (let i = 0; i < inventory.length; i++) {
         if ((inventoryCounts[i] || 0) <= 0) continue;
         const rank = (inventory[i] || 0) & 0x7F;
-        if (!isSwordRank(rank)) continue;
+        if (!isWeaponRank(rank)) continue;
         const damage = Number(getWeaponAttackStats(rank)?.damage) || 0;
         if (damage > bestDamage) bestDamage = damage;
     }
     return bestDamage;
 }
 
+export const getStrongestInventorySwordDamage = getStrongestInventoryWeaponDamage;
+
 export function getBossPortalEntryBlockMessage({ score = 0, inventory = [], inventoryCounts = [] } = {}) {
     if ((Number(score) || 0) < BOSS_PORTAL_MIN_SCORE) return BOSS_PORTAL_LOW_SCORE_MESSAGE;
 
     const requiredDamage = Number(getWeaponAttackStats(BOSS_PORTAL_MIN_SWORD_TYPE)?.damage) || 0;
-    if (getStrongestInventorySwordDamage(inventory, inventoryCounts) < requiredDamage) {
+    if (getStrongestInventoryWeaponDamage(inventory, inventoryCounts) < requiredDamage) {
         return BOSS_PORTAL_LOW_WEAPON_MESSAGE;
     }
 
@@ -855,7 +1124,7 @@ export function isSellableItem(type) {
 export function getLevelFromXp(xp) {
     let remaining = Math.max(0, Math.floor(Number.isFinite(xp) ? xp : 0));
     let level = 1;
-    while (level < MAX_LEVEL && remaining > xpForLevel(level)) {
+    while (level < MAX_LEVEL && remaining >= xpForLevel(level)) {
         remaining -= xpForLevel(level);
         level++;
     }

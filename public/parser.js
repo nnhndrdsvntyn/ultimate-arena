@@ -295,6 +295,51 @@ function handleStructureUpdatesSection(reader) {
     }
 }
 
+function skipPlayerDelta(reader, mask) {
+    if (mask & PLAYER_MASK_X) reader.readU16();
+    if (mask & PLAYER_MASK_Y) reader.readU16();
+    if (mask & PLAYER_MASK_ANGLE) reader.readU16();
+    if (mask & PLAYER_MASK_HP) reader.readU16();
+    if (mask & PLAYER_MASK_MAX_HP) reader.readU16();
+    if (mask & PLAYER_MASK_SCORE) reader.readU32();
+    if (mask & PLAYER_MASK_WEAPON) reader.readU8();
+    if (mask & PLAYER_MASK_SWING) reader.readU8();
+    if (mask & PLAYER_MASK_STATUS) reader.readU8();
+    if (mask & PLAYER_MASK_CHAT) reader.readString();
+    if (mask & PLAYER_MASK_USERNAME) reader.readString();
+    if (mask & PLAYER_MASK_ACCESSORY) reader.readU8();
+    if (mask & PLAYER_MASK_FROZEN) reader.readU16();
+}
+
+function skipMobDelta(reader, mask) {
+    if (mask & MOB_MASK_X) reader.readU16();
+    if (mask & MOB_MASK_Y) reader.readU16();
+    if (mask & MOB_MASK_ANGLE) reader.readU16();
+    if (mask & MOB_MASK_HP) reader.readU16();
+    if (mask & MOB_MASK_MAX_HP) reader.readU16();
+    if (mask & MOB_MASK_TYPE) reader.readU8();
+    if (mask & MOB_MASK_SWING) reader.readU8();
+    if (mask & MOB_MASK_FROZEN) reader.readU16();
+}
+
+function skipProjectileDelta(reader, mask) {
+    if (mask & 0x01) reader.readU16();
+    if (mask & 0x02) reader.readU16();
+    if (mask & 0x04) reader.readU16();
+    if (mask & 0x08) reader.readI8();
+    if (mask & 0x10) reader.readU8();
+    if (mask & 0x20) reader.readU16();
+    if (mask & 0x40) reader.readU16();
+}
+
+function skipObjectDelta(reader, mask) {
+    if (mask & 0x01) reader.readU16();
+    if (mask & 0x02) reader.readU16();
+    if (mask & 0x04) reader.readU16();
+    if (mask & 0x08) reader.readI8();
+    if (mask & 0x10) reader.readU32();
+}
+
 export function parsePacket(buffer) {
     const reader = new PacketReader(buffer);
     const packetType = reader.readU8();
@@ -561,7 +606,10 @@ function handleUpdatePacket(reader) {
             applyFrozenRemaining(p, frozenRemainingMs);
             triggerDamageIndicator(prevPlayerHp, hp, x, y, dataMap.PLAYERS.baseRadius);
         } else { // Delta Update
-            if (!p) continue; // Should not happen with well-behaved server
+            if (!p) {
+                skipPlayerDelta(reader, mask);
+                continue;
+            }
             if (mask & PLAYER_MASK_X) p.newX = reader.readU16();
             if (mask & PLAYER_MASK_Y) p.newY = reader.readU16();
             if (mask & PLAYER_MASK_ANGLE) p.newAngle = unpackAngleU16(reader.readU16());
@@ -633,7 +681,10 @@ function handleUpdatePacket(reader) {
             if (m.type !== m.lastType) m.lastType = m.type;
             triggerDamageIndicator(prevMobHp, hp, x, y, dataMap.MOBS[type]?.radius);
         } else { // Delta Update
-            if (!m) continue;
+            if (!m) {
+                skipMobDelta(reader, mask);
+                continue;
+            }
             if (mask & MOB_MASK_X) m.newX = reader.readU16();
             if (mask & MOB_MASK_Y) m.newY = reader.readU16();
             if (mask & MOB_MASK_ANGLE) m.newAngle = unpackAngleU16(reader.readU16());
@@ -677,7 +728,10 @@ function handleUpdatePacket(reader) {
             p.radius = reader.readU16();
             p.renderLength = (type === 13) ? reader.readU16() : 0;
         } else { // Delta Update
-            if (!p) continue;
+            if (!p) {
+                skipProjectileDelta(reader, mask);
+                continue;
+            }
             if (mask & 0x01) p.newX = reader.readU16();
             if (mask & 0x02) p.newY = reader.readU16();
             if (mask & 0x04) p.newAngle = unpackAngleU16(reader.readU16());
@@ -713,7 +767,10 @@ function handleUpdatePacket(reader) {
                 triggerDamageIndicator(prevObjHp, health, x, y, dataMap.OBJECTS[type]?.radius);
             }
         } else { // Delta Update
-            if (!o) continue;
+            if (!o) {
+                skipObjectDelta(reader, mask);
+                continue;
+            }
             if (mask & 0x01) o.newX = reader.readU16();
             if (mask & 0x02) o.newY = reader.readU16();
             if (mask & 0x04) {
@@ -992,6 +1049,11 @@ function handleKickedPacket(reader) {
     Vars.deathSpectateTargetId = 0;
     Vars.deathSpectateUntil = 0;
     startJoinActionCooldown();
+    uiState.pendingJoin = false;
+    uiState.pendingJoinStartedAt = 0;
+    uiState.pendingPause = false;
+    uiState.pendingPauseStartedAt = 0;
+    uiState.isPaused = false;
     uiState.forceHomeScreen = true;
     closeHomeScreenBlockingUI();
     const homeScreen = document.getElementById('home_screen');

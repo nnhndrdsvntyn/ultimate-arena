@@ -9,8 +9,10 @@ import {
 import {
     dataMap,
     getCoinObjectType,
-    getSwordSize,
-    PLANT_SPEAR_V2_TYPE,
+    getWeaponSize,
+    SPEAR_2_TYPE,
+    SPEAR_7_TYPE,
+    SPEAR_10_TYPE,
     getWeaponAttackStats
 } from '../../../public/shared/datamap.js';
 import {
@@ -30,8 +32,9 @@ const BONE_BARRAGE_INTERVAL_MS = 250;
 const BONE_BARRAGE_DAMAGE_MULT = 1;
 const BONE_BARRAGE_SIZE_MULT = 3;
 const BONE_BARRAGE_SPEED_DIVISOR = 1.3;
-const BOULDER_BLADE_COOLDOWN_MS = 18000;
-const BOULDER_BLADE_BURST_COUNT = 3;
+const SWORD_9_BLAST_COOLDOWN_MS = 18000;
+const SWORD_9_BLAST_COUNT = 3;
+const ROOT_WALKER_THROW_WEAPON_TYPE = SPEAR_2_TYPE;
 const ROCK_MEDIUM_TYPE = 2;
 const ROCK_BIG_TYPE = 6;
 const ROCK_SMALL_TYPE = 7;
@@ -51,11 +54,11 @@ export class RootWalker extends Mob {
         this.lastAbilityUseTime = 0;
         this.lastBoneBarrageTime = -Infinity;
         this.lastPoisonSplashTime = -Infinity;
-        this.lastBoulderBladeTime = -Infinity;
+        this.lastSword9BlastTime = -Infinity;
         this._boneBarrageTimer = null;
         this._boneBarrageEndsAt = 0;
-        this._boulderBladeTimer = null;
-        this._boulderBladeEndsAt = 0;
+        this._sword9BlastTimer = null;
+        this._sword9BlastEndsAt = 0;
         this._nextAbilityCheckAt = 0;
         this._roamTargetX = x;
         this._roamTargetY = y;
@@ -133,7 +136,7 @@ export class RootWalker extends Mob {
     resetAlarmState() {
         super.resetAlarmState();
         this.clearBoneBarrage();
-        this.clearBoulderBladeBlast();
+        this.clearSword9Blast();
         this.lastHitById = null;
     }
 
@@ -269,13 +272,13 @@ export class RootWalker extends Mob {
 
     die(killer) {
         this.clearBoneBarrage();
-        this.clearBoulderBladeBlast();
+        this.clearSword9Blast();
         markRootWalkerBossDefeated();
         this.scatterDeathCoins();
         this.scatterAccessoryDrops();
         this.scatterBoneSwords();
-        this.scatterBoulderBlades();
-        this.scatterPlantSpearV2Drops();
+        this.scatterSpear7Drops();
+        this.scatterSpear10Drops();
         this.spawnExitPortal();
         super.die(killer);
     }
@@ -350,7 +353,7 @@ export class RootWalker extends Mob {
         }
     }
 
-    scatterBoulderBlades() {
+    scatterSpear7Drops() {
         const count = getRandomIntInclusive(3, 5);
         const spread = 140;
         for (let i = 0; i < count; i++) {
@@ -358,11 +361,11 @@ export class RootWalker extends Mob {
             const distance = Math.random() * spread;
             const dropX = this.x + Math.cos(angle) * distance;
             const dropY = this.y + Math.sin(angle) * distance;
-            spawnObject(10, dropX, dropY, 1, 'root_walker', this.world || 'main');
+            spawnObject(SPEAR_7_TYPE, dropX, dropY, 1, 'root_walker', this.world || 'main');
         }
     }
 
-    scatterPlantSpearV2Drops() {
+    scatterSpear10Drops() {
         const rollCount = 3;
         const dropChance = 0.5;
         const spread = 140;
@@ -372,7 +375,7 @@ export class RootWalker extends Mob {
             const distance = Math.random() * spread;
             const dropX = this.x + Math.cos(angle) * distance;
             const dropY = this.y + Math.sin(angle) * distance;
-            spawnObject(PLANT_SPEAR_V2_TYPE, dropX, dropY, 1, 'root_walker', this.world || 'main');
+            spawnObject(SPEAR_10_TYPE, dropX, dropY, 1, 'root_walker', this.world || 'main');
         }
     }
 
@@ -389,8 +392,8 @@ export class RootWalker extends Mob {
         if (now - this.lastPoisonSplashTime >= POISON_SPLASH_COOLDOWN_MS) {
             options.push('poison_splash');
         }
-        if (now - this.lastBoulderBladeTime >= BOULDER_BLADE_COOLDOWN_MS) {
-            options.push('boulder_blade');
+        if (now - this.lastSword9BlastTime >= SWORD_9_BLAST_COOLDOWN_MS) {
+            options.push('sword9_blast');
         }
         if (options.length === 0) return;
 
@@ -409,10 +412,10 @@ export class RootWalker extends Mob {
             return;
         }
 
-        if (choice === 'boulder_blade') {
+        if (choice === 'sword9_blast') {
             this.lastAbilityUseTime = now;
-            this.lastBoulderBladeTime = now;
-            this.startBoulderBladeBlast();
+            this.lastSword9BlastTime = now;
+            this.startSword9Blast();
         }
     }
 
@@ -449,23 +452,23 @@ export class RootWalker extends Mob {
         this._boneBarrageEndsAt = 0;
     }
 
-    startBoulderBladeBlast() {
-        this.clearBoulderBladeBlast();
+    startSword9Blast() {
+        this.clearSword9Blast();
         const groupId = Math.random();
         if (!this.getLatestHitter()) return;
         const offsets = [0, -30, 30].map(deg => deg * (Math.PI / 180));
-        for (let i = 0; i < BOULDER_BLADE_BURST_COUNT; i++) {
+        for (let i = 0; i < SWORD_9_BLAST_COUNT; i++) {
             const offset = offsets[i % offsets.length] || 0;
-            this.throwBoulderBlade(groupId, offset);
+            this.throwSword9(groupId, offset);
         }
     }
 
-    clearBoulderBladeBlast() {
-        if (this._boulderBladeTimer) {
-            clearInterval(this._boulderBladeTimer);
-            this._boulderBladeTimer = null;
+    clearSword9Blast() {
+        if (this._sword9BlastTimer) {
+            clearInterval(this._sword9BlastTimer);
+            this._sword9BlastTimer = null;
         }
-        this._boulderBladeEndsAt = 0;
+        this._sword9BlastEndsAt = 0;
     }
 
     getLatestHitter() {
@@ -496,9 +499,9 @@ export class RootWalker extends Mob {
         proj.rockPushTypes = new Set([ROCK_MEDIUM_TYPE, ROCK_SMALL_TYPE]);
     }
 
-    throwBoulderBlade(groupId, angleOffset = 0) {
+    throwSword9(groupId, angleOffset = 0) {
         const angle = this.angle + angleOffset;
-        const rank = 10;
+        const rank = ROOT_WALKER_THROW_WEAPON_TYPE;
         const projId = getId('PROJECTILES');
         ENTITIES.newEntity({
             entityType: 'projectile',
@@ -514,7 +517,7 @@ export class RootWalker extends Mob {
         const proj = ENTITIES.PROJECTILES[projId];
         if (!proj) return;
         const stats = getWeaponAttackStats(rank) || getWeaponAttackStats(1) || {};
-        const swordCfg = dataMap.SWORDS?.imgs?.[rank] || dataMap.SWORDS?.imgs?.[1];
+        const weaponCfg = dataMap.SPEARS?.imgs?.[rank] || dataMap.SWORDS?.imgs?.[1];
         const baseDamage = (this.strength + (stats?.damage || 0)) * 1.15;
         proj.damage = baseDamage / 1.5;
         proj.speed = (stats?.speed || proj.speed || 0) / 1.25;
@@ -522,8 +525,8 @@ export class RootWalker extends Mob {
         if (this.inWater) {
             proj.speed *= 0.4;
         }
-        if (swordCfg) {
-            const [swordWidth] = getSwordSize(rank);
+        if (weaponCfg) {
+            const [swordWidth] = getWeaponSize(rank);
             proj.radius = swordWidth * 2;
         }
         proj.weaponRank = (rank | 0x80);

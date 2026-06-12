@@ -1,5 +1,5 @@
 import { Mob } from "./mob.js";
-import { dataMap, getCoinObjectType } from '../../../public/shared/datamap.js';
+import { SWORD_7_TYPE, SWORD_10_TYPE, SPEAR_11_TYPE, dataMap, getCoinObjectType } from '../../../public/shared/datamap.js';
 import { getWorldCenter, getWorldMapSize, WORLD_YETI_DIMENSION } from '../../../public/shared/worlds.js';
 import { ENTITIES, markYetiBossDefeated, spawnObject } from '../../game.js';
 import { cmdRun, emitPoisonAoeFx, getId } from '../../helpers.js';
@@ -10,8 +10,6 @@ const SNOWBALL_PROJECTILE_TYPE = 16;
 const ROCK_MEDIUM_TYPE = 2;
 const ROCK_BIG_TYPE = 6;
 const ROCK_SMALL_TYPE = 7;
-const ICICLE_BLADE_V1_TYPE = 4;
-const ICICLE_BLADE_V2_TYPE = 11;
 const GLOBAL_ABILITY_COOLDOWN_MS = 5000;
 const ICICLE_BLAST_COOLDOWN_MS = 15000;
 const SNOWBALL_BLAST_COOLDOWN_MS = 15000;
@@ -119,8 +117,9 @@ export class Yeti extends Mob {
         this.clearSnowballBlast();
         markYetiBossDefeated();
         this.scatterDeathCoins();
-        this.scatterIcicleBladeV1Drops();
-        this.scatterIcicleBladeV2Drops();
+        this.scatterSword7Drops();
+        this.scatterSword10Drops();
+        this.scatterSpear11Drop();
         this.spawnExitPortal();
         super.die(killer);
     }
@@ -147,14 +146,18 @@ export class Yeti extends Mob {
         }
     }
 
-    scatterIcicleBladeV1Drops() {
+    scatterSword7Drops() {
         const count = getRandomIntInclusive(5, 10);
-        this.scatterWeaponDrops(ICICLE_BLADE_V1_TYPE, count);
+        this.scatterWeaponDrops(SWORD_7_TYPE, count);
     }
 
-    scatterIcicleBladeV2Drops() {
+    scatterSword10Drops() {
         const count = getRandomIntInclusive(3, 5);
-        this.scatterWeaponDrops(ICICLE_BLADE_V2_TYPE, count);
+        this.scatterWeaponDrops(SWORD_10_TYPE, count);
+    }
+
+    scatterSpear11Drop() {
+        this.scatterWeaponDrops(SPEAR_11_TYPE, 1);
     }
 
     scatterWeaponDrops(itemType, count) {

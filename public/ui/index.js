@@ -88,8 +88,11 @@ export function initializeUI() {
         if (target.closest('#chatInput, #chat_command_list, #chat_suggest_list')) return true;
         return false;
     };
+    let lastCursorClass = '';
     const setCursorClass = (cls) => {
         if (!cursorEl) return;
+        if (cls === lastCursorClass) return;
+        lastCursorClass = cls || '';
         cursorEl.classList.remove('pointer', 'palm', 'palm_clenched');
         if (cls) cursorEl.classList.add(cls);
     };
@@ -173,31 +176,24 @@ export function initializeUI() {
     };
     const showCursor = () => { if (cursorEl) cursorEl.style.display = 'block'; };
     const hideCursor = () => { if (cursorEl) cursorEl.style.display = 'none'; };
-    let pendingCursorFrame = 0;
-    let pendingCursorX = 0;
-    let pendingCursorY = 0;
-    let pendingCursorTarget = null;
+    let lastCursorTarget = null;
     const updateCursorPos = (x, y, target) => {
         if (!cursorEl) return;
         showCursor();
         window._lastCursorX = x;
         window._lastCursorY = y;
         cursorEl.style.transform = `translate3d(${x - 6}px, ${y - 6}px, 0)`;
+        if (target !== lastCursorTarget) lastCursorTarget = target;
         updateCursorStyle(target);
     };
-    const flushCursorUpdate = () => {
-        pendingCursorFrame = 0;
-        updateCursorPos(pendingCursorX, pendingCursorY, pendingCursorTarget);
-    };
     if (!isMobile) {
-        document.addEventListener('pointermove', (e) => {
-            pendingCursorX = e.clientX;
-            pendingCursorY = e.clientY;
-            pendingCursorTarget = e.target;
-            if (!pendingCursorFrame) {
-                pendingCursorFrame = requestAnimationFrame(flushCursorUpdate);
-            }
-        }, true);
+        const handleCursorMove = (e) => {
+            updateCursorPos(e.clientX, e.clientY, e.target);
+        };
+        document.addEventListener('pointermove', handleCursorMove, { capture: true, passive: true });
+        if ('onpointerrawupdate' in window) {
+            document.addEventListener('pointerrawupdate', handleCursorMove, { capture: true, passive: true });
+        }
         document.addEventListener('mouseover', (e) => updateCursorStyle(e.target));
         window.addEventListener('wheel', () => {
             updateCursorStyle(document.elementFromPoint(window._lastCursorX || 0, window._lastCursorY || 0));

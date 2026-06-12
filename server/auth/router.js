@@ -1,5 +1,6 @@
 import express from 'express';
 import { loginAccount, registerAccount } from './service.js';
+import { isServerStartupGracePeriodActive } from '../constants.js';
 
 const ACCOUNT_CREATION_LIMIT = 3;
 const ACCOUNT_CREATION_WINDOW_MS = 5 * 60 * 1000;
@@ -49,6 +50,23 @@ export function createAuthRouter({ getClientIp }) {
     router.post('/register', async (req, res) => {
         const ip = getClientIp(req);
         const now = Date.now();
+        if (isServerStartupGracePeriodActive(now)) {
+            try {
+                const result = await registerAccount(req.body?.username, req.body?.password);
+                if (!result.ok) {
+                    res.status(result.status).json(result);
+                    return;
+                }
+                res.status(200).json(result);
+            } catch (error) {
+                console.error('Register account failed:', error);
+                res.status(500).json({
+                    ok: false,
+                    message: 'Something went wrong while creating your account. Please try again.'
+                });
+            }
+            return;
+        }
         const recentCreations = pruneCreationHistory(ip, now);
         if (recentCreations.length >= ACCOUNT_CREATION_LIMIT) {
             res.status(429).json({
@@ -80,6 +98,19 @@ export function createAuthRouter({ getClientIp }) {
     router.post('/login', async (req, res) => {
         const ip = getClientIp(req);
         const now = Date.now();
+        if (isServerStartupGracePeriodActive(now)) {
+            try {
+                const result = await loginAccount(req.body?.username, req.body?.password);
+                res.status(result.status).json(result);
+            } catch (error) {
+                console.error('Login account failed:', error);
+                res.status(500).json({
+                    ok: false,
+                    message: 'Something went wrong while logging you in. Please try again.'
+                });
+            }
+            return;
+        }
         if (isLoginBlocked(ip, now)) {
             res.status(429).json({
                 ok: false,

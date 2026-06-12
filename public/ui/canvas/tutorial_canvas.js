@@ -58,7 +58,7 @@ export function drawTutorialObjective(ctx) {
         2: 'Tap THROW to throw your weapon.',
         3: 'Attack & break this chest.',
         4: 'Walk over the coins to collect them.',
-        5: 'Open the shop and buy the Branch Sword.',
+        5: 'Open the shop and buy sword1.',
         6: 'Tap the slot with the new sword to equip it.',
         7: 'Eliminate the pig.',
         8: 'Tutorial complete.'
@@ -656,7 +656,7 @@ export function updateTutorialGuidedShopFocus(ctx) {
         const targetVisible = !!rect && rect.width > 0 && rect.height > 0 && rect.top >= (viewportTop + margin) && rect.bottom <= (viewportBottom - margin);
         if (!targetVisible) {
             hideTutorialFocus(ctx); // Do not block touches while user scrolls the shop.
-            showTutorialScrollHint(ctx, 'Scroll to find the Branch Sword, then tap Buy.');
+            showTutorialScrollHint(ctx, 'Scroll to find sword1, then tap Buy.');
             return;
         }
     }

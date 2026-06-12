@@ -18,6 +18,7 @@ import { createPlayerMonitorServer } from './server/pmonitor.js';
 import { createAuthRouter } from './server/auth/router.js';
 import { updateAccountSessionStats } from './server/auth/service.js';
 import { buildAccountLeaderboardPacket, createLeaderboardRouter, finalizePlayerLeaderboardRun } from './server/leaderboards.js';
+import { isServerStartupGracePeriodActive } from './server/constants.js';
 
 const app = express();
 const PORT = 3000;
@@ -64,6 +65,7 @@ function getClientDevice(req) {
 }
 
 function isIpBlocked(ip, now = Date.now()) {
+    if (isServerStartupGracePeriodActive(now)) return false;
     if (isLocalDevIp(ip)) return false;
     const blockedUntil = ipBlockedUntil.get(ip);
     if (!blockedUntil) return false;
@@ -122,6 +124,7 @@ async function sendAntibotWebhook(ip, eventCount, trigger) {
 function recordIpConnectionAttempt(ip, label) {
     if (isLocalDevIp(ip)) return;
     const now = Date.now();
+    if (isServerStartupGracePeriodActive(now)) return;
     const previousAttempts = ipAttemptHistory.get(ip) || [];
     const attempts = previousAttempts.filter(ts => now - ts <= CONNECTION_ATTEMPT_WINDOW_MS);
     attempts.push(now);
@@ -311,6 +314,7 @@ wss.on('connection', (ws, req) => {
     ws.packetWriter = new PacketWriter(4096);
 
     ws.kick = (msg) => {
+        if (isServerStartupGracePeriodActive()) return;
         ws.packetWriter.reset();
         ws.packetWriter.writeU8(8);
         ws.packetWriter.writeStr(msg);
