@@ -24,6 +24,8 @@ export const SWORD_7_TYPE = 8;
 export const SWORD_9_TYPE = 10;
 export const SWORD_10_TYPE = 11;
 export const SWORD_12_TYPE = 13;
+export const BOOMERANG_7_TYPE = 48;
+export const BOOMERANG_10_TYPE = 51;
 export const SPEAR_FORWARD_SWING_STEPS = 6;
 export const SPEAR_RETRACT_SWING_STEPS = 6;
 const XP_REQUIREMENTS = [
@@ -48,10 +50,35 @@ export const SPECIAL_SHOP_ITEMS = [
 ];
 
 const createAsset = (name, src, type) => ({ name, src, type });
-const SWORD_DAMAGE_BY_INDEX = [10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 70];
-const SPEAR_DAMAGE_BY_INDEX = [10, 13, 16, 19, 22, 25, 28, 31, 34, 38, 44, 50];
-const AXE_DAMAGE_BY_INDEX = SWORD_DAMAGE_BY_INDEX.map(damage => damage * 1.5);
-const BOOMERANG_DAMAGE_BY_INDEX = [9, 13, 17, 21, 25, 29, 34, 39, 44, 49, 55, 62];
+const SWORD_MELEE_DAMAGE_BY_INDEX = [6, 9, 12, 15, 19, 24, 29, 34, 40, 47, 54, 62];
+const SPEAR_MELEE_DAMAGE_BY_INDEX = [5, 7, 10, 13, 16, 20, 24, 29, 34, 40, 47, 54];
+const AXE_MELEE_DAMAGE_BY_INDEX = [8, 12, 15, 19, 24, 30, 36, 42, 49, 56, 63, 70];
+const BOOMERANG_MELEE_DAMAGE_BY_INDEX = [3, 4, 5, 6, 8, 10, 12, 15, 18, 21, 24, 28];
+const AXE_MELEE_MAX_DISTANCE_BY_INDEX = AXE_MELEE_DAMAGE_BY_INDEX.map((_, idx) => 100 + Math.min(210, (idx + 1) * 14));
+const BOOMERANG_MELEE_MAX_DISTANCE_BY_INDEX = [
+    AXE_MELEE_MAX_DISTANCE_BY_INDEX[0] * 0.5,
+    AXE_MELEE_MAX_DISTANCE_BY_INDEX[0] * 0.5,
+    AXE_MELEE_MAX_DISTANCE_BY_INDEX[0] * 0.75,
+    AXE_MELEE_MAX_DISTANCE_BY_INDEX[0] * 0.75,
+    AXE_MELEE_MAX_DISTANCE_BY_INDEX[0],
+    AXE_MELEE_MAX_DISTANCE_BY_INDEX[0],
+    AXE_MELEE_MAX_DISTANCE_BY_INDEX[1],
+    AXE_MELEE_MAX_DISTANCE_BY_INDEX[1],
+    AXE_MELEE_MAX_DISTANCE_BY_INDEX[2],
+    AXE_MELEE_MAX_DISTANCE_BY_INDEX[2],
+    AXE_MELEE_MAX_DISTANCE_BY_INDEX[3],
+    AXE_MELEE_MAX_DISTANCE_BY_INDEX[3]
+];
+const SWORD_THROW_DAMAGE_BY_INDEX = [3, 4, 5, 7, 9, 11, 14, 17, 20, 24, 28, 33];
+const SPEAR_THROW_DAMAGE_BY_INDEX = [5, 7, 10, 13, 16, 20, 24, 29, 34, 40, 47, 54];
+const AXE_THROW_DAMAGE_BY_INDEX = [5, 7, 10, 13, 16, 20, 24, 29, 34, 40, 47, 54];
+const BOOMERANG_THROW_DAMAGE_BY_INDEX = [6, 9, 12, 15, 19, 24, 29, 34, 40, 47, 54, 62];
+const WEAPON_COOLDOWN_MULT_BY_CATEGORY = {
+    axe: 1.5,
+    sword: 1,
+    boomerang: 1,
+    spear: 0.75
+};
 const WEAPON_TOUGHNESS_BY_INDEX = [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4];
 const BOOMERANG_TOUGHNESS_BY_INDEX = WEAPON_TOUGHNESS_BY_INDEX;
 const SWORD_SLASH_BY_INDEX = [
@@ -99,15 +126,16 @@ function getBoomerangType(index) {
     return index + 41;
 }
 
-function createWeaponAttack({ type, category, index = 0, damage, projectileType, slashKeyOverride = '', maxDistanceOverride = 0 }) {
+function createWeaponAttack({ type, category, index = 0, damage, throwDamage = damage, projectileType, slashKeyOverride = '', maxDistanceOverride = 0 }) {
     const slashMap = category === 'axe' ? AXE_SLASH_BY_INDEX : SWORD_SLASH_BY_INDEX;
-    const slashKey = slashKeyOverride || ((category === 'sword' || category === 'axe') && index > 0
+    const slashKey = slashKeyOverride || ((category === 'sword' || category === 'axe' || category === 'boomerang') && index > 0
         ? `slashattack_${slashMap[index - 1]}`
         : 'slashattack_woody');
     return {
         radius: index >= 9 ? 15 : 10,
         speed: 30 + Math.min(60, (index || 0) * 4),
         damage,
+        throwDamage,
         maxDistance: maxDistanceOverride > 0 ? maxDistanceOverride : 100 + Math.min(210, (index || 0) * 14),
         knockbackStrength: 25,
         imgProportions: [1, 10],
@@ -130,13 +158,14 @@ const WEAPON_METADATA_DEFINITIONS = [
         attack: createWeaponAttack({
             type: 1,
             category: 'sword',
-            damage: 10,
+            damage: 3,
+            throwDamage: 2,
             projectileType: 41,
             slashKeyOverride: 'slashattack_light_metallic',
             maxDistanceOverride: 100
         })
     },
-    ...SWORD_DAMAGE_BY_INDEX.map((damage, idx) => {
+    ...SWORD_MELEE_DAMAGE_BY_INDEX.map((damage, idx) => {
         const index = idx + 1;
         const type = getSwordType(index);
         const projectileType = 41 + type;
@@ -149,11 +178,12 @@ const WEAPON_METADATA_DEFINITIONS = [
             shopPrice: 50 + (idx * idx * 35) + (idx * 60),
             sellPrice: Math.floor((50 + (idx * idx * 35) + (idx * 60)) / 2),
             projectileType,
+            cooldownMult: WEAPON_COOLDOWN_MULT_BY_CATEGORY.sword,
             toughness: WEAPON_TOUGHNESS_BY_INDEX[idx] || 1,
-            attack: createWeaponAttack({ type, category: 'sword', index, damage, projectileType })
+            attack: createWeaponAttack({ type, category: 'sword', index, damage, throwDamage: SWORD_THROW_DAMAGE_BY_INDEX[idx] || damage, projectileType })
         };
     }),
-    ...SPEAR_DAMAGE_BY_INDEX.map((damage, idx) => {
+    ...SPEAR_MELEE_DAMAGE_BY_INDEX.map((damage, idx) => {
         const index = idx + 1;
         const type = getSpearType(index);
         const projectileType = 60 + index;
@@ -166,12 +196,12 @@ const WEAPON_METADATA_DEFINITIONS = [
             shopPrice: 55 + (idx * idx * 28) + (idx * 55),
             sellPrice: Math.floor((55 + (idx * idx * 28) + (idx * 55)) / 2),
             projectileType,
-            cooldownMult: index >= 10 ? 1.35 : 1,
+            cooldownMult: WEAPON_COOLDOWN_MULT_BY_CATEGORY.spear,
             toughness: WEAPON_TOUGHNESS_BY_INDEX[idx] || 1,
-            attack: createWeaponAttack({ type, category: 'spear', index, damage, projectileType })
+            attack: createWeaponAttack({ type, category: 'spear', index, damage, throwDamage: SPEAR_THROW_DAMAGE_BY_INDEX[idx] || damage, projectileType })
         };
     }),
-    ...AXE_DAMAGE_BY_INDEX.map((damage, idx) => {
+    ...AXE_MELEE_DAMAGE_BY_INDEX.map((damage, idx) => {
         const index = idx + 1;
         const type = getAxeType(index);
         const projectileType = 80 + index;
@@ -185,12 +215,12 @@ const WEAPON_METADATA_DEFINITIONS = [
             shopPrice,
             sellPrice: Math.floor(shopPrice / 2),
             projectileType,
-            cooldownMult: 1.5,
+            cooldownMult: WEAPON_COOLDOWN_MULT_BY_CATEGORY.axe,
             toughness: WEAPON_TOUGHNESS_BY_INDEX[idx] || 1,
-            attack: createWeaponAttack({ type, category: 'axe', index, damage, projectileType })
+            attack: createWeaponAttack({ type, category: 'axe', index, damage, throwDamage: AXE_THROW_DAMAGE_BY_INDEX[idx] || damage, projectileType })
         };
     }),
-    ...BOOMERANG_DAMAGE_BY_INDEX.map((damage, idx) => {
+    ...BOOMERANG_MELEE_DAMAGE_BY_INDEX.map((damage, idx) => {
         const index = idx + 1;
         const type = getBoomerangType(index);
         const projectileType = 100 + index;
@@ -204,9 +234,17 @@ const WEAPON_METADATA_DEFINITIONS = [
             shopPrice,
             sellPrice: Math.floor(shopPrice / 2),
             projectileType,
-            cooldownMult: 1.1,
+            cooldownMult: WEAPON_COOLDOWN_MULT_BY_CATEGORY.boomerang,
             toughness: BOOMERANG_TOUGHNESS_BY_INDEX[idx] || 1,
-            attack: createWeaponAttack({ type, category: 'boomerang', index, damage, projectileType, maxDistanceOverride: 130 + Math.min(230, index * 16) })
+            attack: createWeaponAttack({
+                type,
+                category: 'boomerang',
+                index,
+                damage,
+                throwDamage: BOOMERANG_THROW_DAMAGE_BY_INDEX[idx] || damage,
+                projectileType,
+                maxDistanceOverride: BOOMERANG_MELEE_MAX_DISTANCE_BY_INDEX[idx]
+            })
         };
     })
 ];
@@ -501,6 +539,7 @@ export const dataMap = {
         'ground_impact': { name: 'ground_impact', src: './audios/ground_impact.mp3', defaultTimestamp: 0, defaultVolume: 0.7 },
         'underwater_explosion': { name: 'underwater_explosion', src: './audios/underwater_explosion.mp3', defaultTimestamp: 0, defaultVolume: 0.7 },
         'ui_tap': { name: 'ui_tap', src: './audios/ui_tap.mp3', defaultTimestamp: 0, defaultVolume: 0.4 },
+        'wheel_click': { name: 'wheel_click', src: './audios/wheel_click.mp3', defaultTimestamp: 0, defaultVolume: 0.35 },
 
     },
     sfxMap: [
@@ -607,18 +646,19 @@ export const dataMap = {
         '3': { radius: 60, speed: 7, baseHealth: 150, score: 75, isNeutral: true, alarmDuration: Infinity, damage: 15, imgProportions: [3, 2.5], imgSrc: './images/mobs/cow.png', imgName: 'mobs_cow', deathAction: (killer) => { const maxScore = 400; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
         '4': { radius: 45, speed: 9, baseHealth: 50, score: 10, alarmDuration: 10000, imgProportions: [2, 2], imgSrc: './images/mobs/hearty.png', imgName: 'mobs_hearty', deathAction: (killer) => { const maxScore = 100; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1); killer.health = Math.min(killer.health + 50, killer.maxHealth) } },
         '5': { radius: 65, speed: 9, baseHealth: 250, score: 150, isNeutral: true, alarmDuration: 10000, damage: 15, imgProportions: [3, 2.5], imgSrc: './images/mobs/polar_bear.png', imgName: 'mobs_polar_bear', deathAction: (killer) => { const maxScore = 700; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
-        '6': { radius: 110, speed: 7, baseHealth: 600, score: 200, alarmDuration: 20000, damage: 20, imgProportions: [3, 3.5], imgSrc: './images/mobs/minotaur.png', imgName: 'mobs_minotaur', deathAction: (killer) => { const maxScore = 10000; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
+        '6': { radius: 73, speed: 7, baseHealth: 600, score: 200, alarmDuration: 20000, damage: 20, imgProportions: [3, 3.5], imgSrc: './images/mobs/minotaur.png', imgName: 'mobs_minotaur', deathAction: (killer) => { const maxScore = 10000; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
         '7': { radius: 188, speed: 7, baseHealth: 1800, score: 200, alarmDuration: 20000, damage: 20, imgProportions: [3, 3.5], imgSrc: './images/mobs/root_walker.png', imgName: 'mobs_root_walker', deathAction: (killer) => { const maxScore = 10000; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
         '8': { radius: 188, speed: 7, baseHealth: 1800, score: 200, alarmDuration: 20000, damage: 20, imgProportions: [3, 3.5], imgSrc: './images/mobs/the_yeti.png', imgName: 'mobs_the_yeti', deathAction: (killer) => { const maxScore = 10000; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
         '9': { radius: 25, speed: 7, baseHealth: 15, score: 10, alarmDuration: 5000, imgProportions: [2, 2], imgSrc: './images/mobs/bunny.png', imgName: 'mobs_bunny', deathAction: (killer) => { const maxScore = 50; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
-        '10': { radius: 35, speed: 7, baseHealth: 50, score: 25, alarmDuration: 5000, imgProportions: [3, 2], imgSrc: './images/mobs/iguana.png', imgName: 'mobs_iguana', deathAction: (killer) => { const maxScore = 100; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
-        '11': { radius: 35, speed: 7, baseHealth: 50, score: 25, isNeutral: true, alarmDuration: 5000, damage: 10, imgProportions: [3, 2], imgSrc: './images/mobs/fox.png', imgName: 'mobs_fox', deathAction: (killer) => { const maxScore = 100; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
-        '12': { radius: 35, speed: 7, baseHealth: 50, score: 25, alarmDuration: 5000, imgProportions: [3, 3], imgSrc: './images/mobs/ostrich.png', imgName: 'mobs_ostrich', deathAction: (killer) => { const maxScore = 100; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
+        '10': { radius: 50, speed: 7, baseHealth: 50, score: 25, alarmDuration: 5000, imgProportions: [3, 2], imgSrc: './images/mobs/iguana.png', imgName: 'mobs_iguana', deathAction: (killer) => { const maxScore = 100; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
+        '11': { radius: 35, speed: 7, baseHealth: 50, score: 25, isNeutral: true, alarmDuration: 5000, damage: 10, imgProportions: [3.75, 2], imgSrc: './images/mobs/fox.png', imgName: 'mobs_fox', deathAction: (killer) => { const maxScore = 100; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
+        '12': { radius: 45, speed: 7, baseHealth: 50, score: 25, alarmDuration: 5000, imgProportions: [3, 3], imgSrc: './images/mobs/ostrich.png', imgName: 'mobs_ostrich', deathAction: (killer) => { const maxScore = 100; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
         '13': { radius: 100, speed: 10, baseHealth: 300, score: 200, isNeutral: true, alarmDuration: 10000, damage: 18, imgProportions: [3, 2.25], imgSrc: './images/mobs/elephant.png', imgName: 'mobs_elephant', deathAction: (killer) => { const maxScore = 850; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
         '14': { radius: 20, speed: 8, baseHealth: 15, score: 5, alarmDuration: 5000, imgProportions: [2.5, 2], imgSrc: './images/mobs/rat.png', imgName: 'mobs_rat', deathAction: (killer) => { const maxScore = 50; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
-        '15': { radius: 35, speed: 2, baseHealth: 15, score: 20, alarmDuration: 5000, imgProportions: [2.5, 2], imgSrc: './images/mobs/tortoise.png', imgName: 'mobs_tortoise', deathAction: (killer) => { const maxScore = 50; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
+        '15': { radius: 20, speed: 2, baseHealth: 15, score: 20, alarmDuration: 5000, imgProportions: [2.5, 2], imgSrc: './images/mobs/tortoise.png', imgName: 'mobs_tortoise', deathAction: (killer) => { const maxScore = 50; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
         '16': { radius: 188, speed: 7, baseHealth: 1800, score: 200, alarmDuration: 20000, damage: 20, imgProportions: [3, 3.5], imgSrc: './images/mobs/dune_behemoth.png', imgName: 'mobs_dune_behemoth', deathAction: (killer) => { const maxScore = 10000; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
-        '17': { radius: 188, speed: 7, baseHealth: 1800, score: 200, alarmDuration: 20000, damage: 20, imgProportions: [3, 3.5], imgSrc: './images/mobs/inferno_beast.png', imgName: 'mobs_inferno_beast', deathAction: (killer) => { const maxScore = 10000; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } }
+        '17': { radius: 188, speed: 7, baseHealth: 1800, score: 200, alarmDuration: 20000, damage: 20, imgProportions: [3, 3.5], imgSrc: './images/mobs/inferno_beast.png', imgName: 'mobs_inferno_beast', deathAction: (killer) => { const maxScore = 10000; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } },
+        '18': { radius: 45, speed: 9, baseHealth: 50, score: 10, isNeutral: true, alarmDuration: 15000, damage: 7, imgProportions: [2, 3], imgSrc: './images/mobs/sandling.png', imgName: 'mobs_sandling', deathAction: (killer) => { const maxScore = 100; killer.addScore(Math.floor(Math.random() * maxScore / 2) + maxScore / 2 + 1) } }
     },
     PROJECTILES: {
         '13': { radius: 30, speed: 100, damage: 20, maxDistance: 500, knockbackStrength: 25, imgProportions: [10, 2.5], imgSrc: './images/projectiles/lightning_black_red.png', imgName: 'projectiles_lightning_black_red'},

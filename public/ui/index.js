@@ -17,6 +17,8 @@ import { uiState, uiRefs } from './context.js';
 import {
     createComboText,
     createHomeBlurButton,
+    createHomeWheel,
+    setupHomeOverlays,
     setupVersion,
     setupUpdateLog,
     setupDidYouKnowBox,
@@ -24,14 +26,15 @@ import {
     updateHUDVisibility,
     updateShieldUI,
     setHomeLeaderboardsLoading,
-    updateHomeLeaderboards
+    updateHomeLeaderboards,
+    handleHomeWheelSpinResult
 } from './hud.js';
 import { ACCESSORY_KEYS } from '../shared/datamap.js';
 import { createSettingsModal, updateSettingsBody, toggleSettingsModal } from './settings.js';
 import { createShopModal, updateShopBody, toggleShopModal } from './shop.js';
-import { isHudUpgradePlusAtClientPos, isHudUpgradeHeaderAtClientPos, isTopBarButtonAtClientPos, isLeaderboardToggleAtClientPos, isMinimapToggleAtClientPos, isSettingsCanvasInteractiveAtClientPos, isShopCanvasInteractiveAtClientPos } from '../client.js';
+import { isForgotControlsCanvasAtClientPos, isInfoBoxToggleAtClientPos, isHudUpgradePlusAtClientPos, isHudUpgradeHeaderAtClientPos, isTopBarButtonAtClientPos, isLeaderboardToggleAtClientPos, isMinimapToggleAtClientPos, isSettingsCanvasInteractiveAtClientPos, isShopCanvasInteractiveAtClientPos } from '../client.js';
 import { createTopBarHint } from './hud.js';
-import { createChatUI, closeChatInput, closeChatDrawer, appendChatMessage, drawChatOverlay, isChatCanvasInteractiveAtClientPos, handleChatCanvasPointerDown, handleChatCanvasWheel } from './chat.js';
+import { createChatUI, closeChatInput, closeChatDrawer, appendChatMessage, syncChatOverlay, isChatHistoryInteractiveAtClientPos, handleChatHistoryPointerDown, handleChatHistoryWheel } from './chat.js';
 import {
     setupKeyboardControls,
     setupDesktopControls,
@@ -53,10 +56,14 @@ document.addEventListener('pointerdown', (e) => {
     if (target && (
         target.tagName === 'BUTTON' ||
         target.closest('button') ||
+        target.closest('[role="button"]') ||
         target.closest('input[type="range"]') ||
+        target.closest('select') ||
         target.classList.contains('toggle_switch') ||
         target.classList.contains('toggle_knob') ||
         target.classList.contains('settings_tab') ||
+        target.classList.contains('chat_command_item') ||
+        target.closest('.chat_command_item') ||
         target.closest('.shop_tab') ||
         target.closest('.shop_sell_all') ||
         target.closest('.shop_sell_row') ||
@@ -67,7 +74,7 @@ document.addEventListener('pointerdown', (e) => {
     )) {
         playUITapSound();
     }
-});
+}, { capture: true, passive: true });
 
 // --- UI Initialization ---
 export function initializeUI() {
@@ -85,7 +92,7 @@ export function initializeUI() {
         if (!target) return false;
         if (target.closest('button, input, select, textarea, a, label')) return true;
         if (target.closest('.settings_modal, .shop_item, .settings_tab, .toggle_switch, .hotbar_slot, #hotbar')) return true;
-        if (target.closest('#chatInput, #chat_command_list, #chat_suggest_list')) return true;
+        if (target.closest('#chatInput, #chat_command_list, #chat_suggest_list, #chat_history_panel')) return true;
         return false;
     };
     let lastCursorClass = '';
@@ -128,6 +135,14 @@ export function initializeUI() {
             return;
         }
         if (isTopBarButtonAtClientPos(cx, cy)) {
+            setCursorClass('pointer');
+            return;
+        }
+        if (isForgotControlsCanvasAtClientPos(cx, cy)) {
+            setCursorClass('pointer');
+            return;
+        }
+        if (isInfoBoxToggleAtClientPos(cx, cy)) {
             setCursorClass('pointer');
             return;
         }
@@ -226,6 +241,8 @@ export function initializeUI() {
     createTopBarHint(hudContainer);
     createComboText(hudContainer);
     createHomeBlurButton();
+    createHomeWheel(uiRefs.homeScreen);
+    setupHomeOverlays();
     createChatUI(hudContainer);
     createSettingsModal(hudContainer);
     createShopModal(hudContainer);
@@ -252,9 +269,6 @@ export function closeHomeScreenBlockingUI() {
 // --- Periodic Updates ---
 let lastShownVikingComboCount = 0;
 setInterval(() => {
-    if (uiState.isSettingsOpen && uiState.activeTab === 'Stats') {
-        updateSettingsBody();
-    }
     if (uiRefs.comboText) {
         const myPlayer = ENTITIES.PLAYERS[Vars.myId];
         const accessoryKey = ACCESSORY_KEYS[myPlayer?.accessoryId || 0];
@@ -310,10 +324,11 @@ export {
     setHomeLeaderboardsLoading,
     updateHomeLeaderboards,
     appendChatMessage,
-    drawChatOverlay,
-    isChatCanvasInteractiveAtClientPos,
-    handleChatCanvasPointerDown,
-    handleChatCanvasWheel,
+    syncChatOverlay,
+    isChatHistoryInteractiveAtClientPos,
+    handleChatHistoryPointerDown,
+    handleChatHistoryWheel,
     getInventoryPointerTargets,
-    updateMobileUIState
+    updateMobileUIState,
+    handleHomeWheelSpinResult
 };

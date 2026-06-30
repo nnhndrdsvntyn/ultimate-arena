@@ -1,7 +1,8 @@
 import {
     ENTITIES,
     deleteWorldState,
-    buildInitPacket
+    buildInitPacket,
+    spawnObject
 } from './game.js';
 import {
     validateUsername,
@@ -32,7 +33,9 @@ import {
     accessoryIdFromItemType,
     isXpShopItemType,
     isWeaponRank,
-    isCoinObjectType
+    isCoinObjectType,
+    MAX_LEVEL,
+    xpForLevel
 } from '../public/shared/datamap.js';
 import { getAccountAdminState, getAccountProfile, setAccountAdminState, verifyAccountSessionToken } from './auth/service.js';
 import { buildAccountLeaderboardPacket } from './leaderboards.js';
@@ -72,12 +75,22 @@ const PACKET_TYPES = {
     ADMIN_STATE: 37,
     ACCOUNT_PROFILE: 38,
     SERVER_NOTICE: 39,
-    COIN_SNAPSHOT_REQUEST: 40
+    COIN_SNAPSHOT_REQUEST: 40,
+    HOME_WHEEL_SPIN: 45
 };
 
 const PACKET_COIN_SNAPSHOT = 42;
+const PACKET_HOME_WHEEL_SPIN_RESULT = 45;
 const UPDATE_SEND_BUFFER = 120;
 const SPECTATOR_RANGE_DIVISOR = 1.5;
+const HOME_WHEEL_SEGMENT_CHANCES = [35, 22, 15, 12, 7, 5, 3, 1];
+const HOME_WHEEL_TOTAL_CHANCE = HOME_WHEEL_SEGMENT_CHANCES.reduce((sum, chance) => sum + chance, 0);
+const HOME_WHEEL_REWARD_COIN_500_INDEX = 0;
+const HOME_WHEEL_REWARD_COIN_5000_INDEX = 5;
+const HOME_WHEEL_REWARD_LEVELS_INDEX = 6;
+const HOME_WHEEL_REWARD_ALL_RANK_12_INDEX = 7;
+const HOME_WHEEL_LEVEL_REWARD_COUNT = 15;
+const HOME_WHEEL_RANK_12_WEAPON_TYPES = [13, 29, 41, 53];
 
 export function parsePacket(buffer, ws) {
     const reader = new PacketReader(buffer);
@@ -100,6 +113,11 @@ export function parsePacket(buffer, ws) {
 
     if (packetType === PACKET_TYPES.ACCOUNT_LEADERBOARD_REQUEST) {
         void sendAccountLeaderboardPacket(ws);
+        return;
+    }
+
+    if (packetType === PACKET_TYPES.HOME_WHEEL_SPIN) {
+        handleHomeWheelSpinPacket(ws);
         return;
     }
 
@@ -206,6 +224,109 @@ export function parsePacket(buffer, ws) {
 
 // --- Packet Handlers ---
 
+function getWeightedHomeWheelSegmentIndex() {
+    const roll = Math.random() * HOME_WHEEL_TOTAL_CHANCE;
+    let runningTotal = 0;
+    for (let i = 0; i < HOME_WHEEL_SEGMENT_CHANCES.length; i++) {
+        runningTotal += HOME_WHEEL_SEGMENT_CHANCES[i];
+        if (roll < runningTotal) return i;
+    }
+    return HOME_WHEEL_SEGMENT_CHANCES.length - 1;
+}
+
+function getScoreForLevel(level) {
+    const safeLevel = Math.max(1, Math.min(MAX_LEVEL, Math.floor(Number(level) || 1)));
+    let score = 0;
+    for (let l = 1; l < safeLevel; l++) {
+        score += xpForLevel(l);
+    }
+    return score;
+}
+
+function addItemToPlayerInventory(player, itemType, amount = 1) {
+    if (!player?.inventory || !player?.inventoryCounts) return false;
+    const safeType = Math.max(0, Math.floor(Number(itemType) || 0));
+    let remaining = Math.max(1, Math.floor(Number(amount) || 1));
+    const stackLimit = isWeaponRank(safeType) ? 256 : 1;
+    let changed = false;
+
+    if (stackLimit > 1) {
+        for (let i = 0; i < player.inventory.length && remaining > 0; i++) {
+            if (player.inventory[i] !== safeType) continue;
+            const currentCount = Math.max(0, Math.floor(player.inventoryCounts[i] || 0));
+            if (currentCount >= stackLimit) continue;
+            const toAdd = Math.min(stackLimit - currentCount, remaining);
+            player.inventory[i] = safeType;
+            player.inventoryCounts[i] = currentCount + toAdd;
+            remaining -= toAdd;
+            changed = true;
+        }
+    }
+
+    for (let i = 0; i < player.inventory.length && remaining > 0; i++) {
+        if (player.inventory[i] !== 0) continue;
+        const toAdd = Math.min(stackLimit, remaining);
+        player.inventory[i] = safeType;
+        player.inventoryCounts[i] = toAdd;
+        remaining -= toAdd;
+        changed = true;
+    }
+
+    if (remaining > 0) {
+        spawnObject(safeType, player.x, player.y, remaining, 'player', player.world || 'main');
+    }
+
+    return changed;
+}
+
+function applyHomeWheelReward(player, segmentIndex) {
+    if (!player) return;
+
+    switch (segmentIndex) {
+        case HOME_WHEEL_REWARD_COIN_500_INDEX:
+            player.addGoldCoins?.(500);
+            break;
+        case HOME_WHEEL_REWARD_COIN_5000_INDEX:
+            player.addGoldCoins?.(5000);
+            break;
+        case HOME_WHEEL_REWARD_LEVELS_INDEX: {
+            const currentLevel = Math.max(1, Math.min(MAX_LEVEL, Math.floor(player.level || 1)));
+            const targetLevel = Math.min(MAX_LEVEL, currentLevel + HOME_WHEEL_LEVEL_REWARD_COUNT);
+            const targetScore = getScoreForLevel(targetLevel);
+            if ((player.score || 0) < targetScore) {
+                player.setScore(targetScore);
+                player.sendStatsUpdate?.();
+            }
+            break;
+        }
+        case HOME_WHEEL_REWARD_ALL_RANK_12_INDEX: {
+            let changed = false;
+            for (const itemType of HOME_WHEEL_RANK_12_WEAPON_TYPES) {
+                changed = addItemToPlayerInventory(player, itemType, 1) || changed;
+            }
+            if (changed) {
+                player.sendInventoryUpdate?.();
+                player.sendStatsUpdate?.();
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+function handleHomeWheelSpinPacket(ws) {
+    if (!ws || ws.readyState !== 1) return;
+    const player = ENTITIES.PLAYERS[ws.id];
+    const segmentIndex = getWeightedHomeWheelSegmentIndex();
+    applyHomeWheelReward(player, segmentIndex);
+    const writer = ws.packetWriter || new PacketWriter(8);
+    writer.reset();
+    writer.writeU8(PACKET_HOME_WHEEL_SPIN_RESULT);
+    writer.writeU8(segmentIndex);
+    ws.send(writer.getBuffer());
+}
+
 async function handleJoinPacket(reader, ws) {
     const player = ENTITIES.PLAYERS[ws.id];
     if (player && player.isAlive) {
@@ -262,8 +383,8 @@ async function handleJoinPacket(reader, ws) {
     const wantsTutorialWorld = (ws.world || '').startsWith('tutorial');
     if (wantsTutorialWorld) {
         const previousWorld = ws.world;
-        ws.world = `tutorial-${ws.id}-${Date.now()}`;
-        if (previousWorld && previousWorld.startsWith('tutorial')) {
+        ws.world = `tutorial-${ws.id}`;
+        if (previousWorld && previousWorld.startsWith('tutorial') && previousWorld !== ws.world) {
             deleteWorldState(previousWorld);
             clearWorldCaches(previousWorld);
         }
@@ -938,13 +1059,13 @@ function handleUseItemPacket(player) {
 function handleTutorialEventPacket(reader, player) {
     if (!player || !player.tutorial) return;
     const eventType = reader.readU8();
-    if (eventType === 1 && player.tutorial.stage === 5) {
+    if (eventType === 1 && player.tutorial.stage === 2 && player.tutorial.sequenceIndex >= 2) {
         player.tutorial.shopClosedAfterBuy = true;
     } else if (eventType === 3 && player.tutorial.stage === 0 && !player.tutorial.desktopMovementSequenceEnabled) {
         player.tutorial.desktopMovementSequenceEnabled = true;
         player.tutorial.movementHoldIndex = 0;
         player.tutorial.movementHoldStartedAt = 0;
-        player.sendTutorialObjective('Hold the "W" key on your keyboard for 2 seconds (your player will move NORTH)', 0, 0);
+        player.sendTutorialObjective('Hold the W key on your keyboard for 2 seconds.', 0, 0);
     }
 }
 

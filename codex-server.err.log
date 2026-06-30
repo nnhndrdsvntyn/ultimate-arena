@@ -1,101 +1,33 @@
-Failed to write monthly leaderboard: TypeError: fetch failed
-    at node:internal/deps/undici/undici:13510:13
-    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    at async writeScopeRecord (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:63:22)
-    at async tryWriteScopeRecord (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:75:9)
-    at async flushScope (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:148:5) {
-  [cause]: Error: read ECONNRESET
-      at TLSWrap.onStreamRead (node:internal/stream_base_commons:216:20) {
-    errno: -4077,
-    code: 'ECONNRESET',
-    syscall: 'read'
-  }
-}
-Failed to write weekly leaderboard: TypeError: fetch failed
-    at node:internal/deps/undici/undici:13510:13
-    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    at async writeScopeRecord (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:63:22)
-    at async tryWriteScopeRecord (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:75:9)
-    at async flushScope (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:148:5) {
-  [cause]: Error: read ECONNRESET
-      at TLSWrap.onStreamRead (node:internal/stream_base_commons:216:20) {
-    errno: -4077,
-    code: 'ECONNRESET',
-    syscall: 'read'
-  }
-}
-Failed to write daily leaderboard: TypeError: fetch failed
-    at node:internal/deps/undici/undici:13510:13
-    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    at async writeScopeRecord (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:63:22)
-    at async tryWriteScopeRecord (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:75:9)
-    at async flushScope (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:148:5) {
-  [cause]: Error: read ECONNRESET
-      at TLSWrap.onStreamRead (node:internal/stream_base_commons:216:20) {
-    errno: -4077,
-    code: 'ECONNRESET',
-    syscall: 'read'
-  }
-}
-Failed to create player monitor webhook message: TypeError: fetch failed
-    at node:internal/deps/undici/undici:13510:13
-    at async createWebhookMessage (file:///C:/Users/imthe/Desktop/ultimate-arena/server/pmonitor.js:84:21)
-    at async file:///C:/Users/imthe/Desktop/ultimate-arena/server/pmonitor.js:260:13 {
-  [cause]: Error: write ECONNABORTED
-      at WriteWrap.onWriteComplete [as oncomplete] (node:internal/stream_base_commons:87:19)
-      at writevGeneric (node:internal/stream_base_commons:137:26)
-      at Socket._writeGeneric (node:net:969:11)
-      at Socket._writev (node:net:978:8)
-      at doWrite (node:internal/streams/writable:596:12)
-      at clearBuffer (node:internal/streams/writable:775:5)
-      at Writable.uncork (node:internal/streams/writable:531:7)
-      at AsyncWriter.write (node:internal/deps/undici/undici:6739:16)
-      at writeIterable (node:internal/deps/undici/undici:6673:23) {
-    errno: -4079,
-    code: 'ECONNABORTED',
-    syscall: 'write'
-  }
-}
-Failed to write daily leaderboard: TypeError: fetch failed
-    at node:internal/deps/undici/undici:13510:13
-    at processTicksAndRejections (node:internal/process/task_queues:105:5)
-    at runNextTicks (node:internal/process/task_queues:69:3)
-    at process.processImmediate (node:internal/timers:453:9)
-    at async writeScopeRecord (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:63:22)
-    at async tryWriteScopeRecord (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:75:9)
-    at async flushScope (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:148:5) {
-  [cause]: ConnectTimeoutError: Connect Timeout Error (attempted addresses: 34.120.206.254:443, timeout: 10000ms)
-      at onConnectTimeout (node:internal/deps/undici/undici:2602:28)
-      at Immediate._onImmediate (node:internal/deps/undici/undici:2568:35)
-      at process.processImmediate (node:internal/timers:485:21) {
-    code: 'UND_ERR_CONNECT_TIMEOUT'
-  }
-}
-Failed to write monthly leaderboard: TypeError: fetch failed
-    at node:internal/deps/undici/undici:13510:13
-    at processTicksAndRejections (node:internal/process/task_queues:105:5)
-    at runNextTicks (node:internal/process/task_queues:69:3)
-    at process.processImmediate (node:internal/timers:453:9)
-    at async writeScopeRecord (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:63:22)
-    at async tryWriteScopeRecord (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:75:9)
-    at async flushScope (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:148:5) {
-  [cause]: ConnectTimeoutError: Connect Timeout Error (attempted addresses: 34.120.206.254:443, timeout: 10000ms)
-      at onConnectTimeout (node:internal/deps/undici/undici:2602:28)
-      at Immediate._onImmediate (node:internal/deps/undici/undici:2568:35)
-      at process.processImmediate (node:internal/timers:485:21) {
-    code: 'UND_ERR_CONNECT_TIMEOUT'
-  }
-}
-Failed to write weekly leaderboard: TypeError: fetch failed
-    at node:internal/deps/undici/undici:13510:13
-    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
-    at async writeScopeRecord (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:63:22)
-    at async tryWriteScopeRecord (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:75:9)
-    at async flushScope (file:///C:/Users/imthe/Desktop/ultimate-arena/server/leaderboards.js:148:5) {
-  [cause]: ConnectTimeoutError: Connect Timeout Error (attempted addresses: 34.120.206.254:443, timeout: 10000ms)
-      at onConnectTimeout (node:internal/deps/undici/undici:2602:28)
-      at Immediate._onImmediate (node:internal/deps/undici/undici:2568:35)
-      at process.processImmediate (node:internal/timers:485:21) {
-    code: 'UND_ERR_CONNECT_TIMEOUT'
-  }
-}
+Webhook message creation failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found
+Player monitor webhook create failed: 404 Not Found

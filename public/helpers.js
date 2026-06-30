@@ -132,6 +132,14 @@ export function sendCoinSnapshotRequestPacket() {
     return true;
 }
 
+export function sendHomeWheelSpinRequestPacket() {
+    if (!ws || ws.readyState !== ws.OPEN) return false;
+    writer.reset();
+    writer.writeU8(45);
+    ws.send(writer.getBuffer());
+    return true;
+}
+
 
 export function sendChat(chatStr) {
     writer.reset();

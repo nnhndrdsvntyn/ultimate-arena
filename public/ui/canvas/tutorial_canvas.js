@@ -1,11 +1,87 @@
 const TUTORIAL_WORLD_TARGET_CACHE_MS = 150;
+const TUTORIAL_CELEBRATION_FADE_IN_MS = 420;
+const TUTORIAL_CELEBRATION_HOLD_MS = 560;
+const TUTORIAL_CELEBRATION_FADE_OUT_MS = 520;
 const tutorialWorldTargetCache = {
     world: '',
     playerId: 0,
     step: -1,
+    objectiveKey: '',
     expiresAt: 0,
     target: null
 };
+const tutorialCelebrationUi = {
+    active: false,
+    startedAt: 0,
+    text: '',
+    step: -1,
+    status: 0
+};
+
+function normalizeTutorialObjectiveText(text) {
+    return String(text || '').trim().toLowerCase();
+}
+
+function getTutorialObjectiveMode(ctx) {
+    const text = normalizeTutorialObjectiveText(ctx?.Vars?.tutorialObjectiveText);
+    if (!text) return '';
+    if (text.includes('cow')) return 'cow';
+    if (text.includes('select')) return 'select';
+    if (text.includes('shop')) return 'shop';
+    if (text.includes('buy')) return 'buy';
+    if (text.includes('coin') || text.includes('collect')) return 'coins';
+    if (text.includes('chest')) return 'chest';
+    if (text.includes('move') || text.includes('hold the')) return 'movement';
+    return '';
+}
+
+export function startTutorialCelebration(status, step, text) {
+    if (status !== 1) {
+        resetTutorialCelebration();
+        return;
+    }
+
+    tutorialCelebrationUi.active = true;
+    tutorialCelebrationUi.startedAt = performance.now();
+    tutorialCelebrationUi.text = String(text || '').trim() || (Math.random() < 0.5 ? 'NICE!' : 'PERFECT!');
+    tutorialCelebrationUi.step = step | 0;
+    tutorialCelebrationUi.status = 1;
+}
+
+export function resetTutorialCelebration() {
+    tutorialCelebrationUi.active = false;
+    tutorialCelebrationUi.startedAt = 0;
+    tutorialCelebrationUi.text = '';
+    tutorialCelebrationUi.step = -1;
+    tutorialCelebrationUi.status = 0;
+}
+
+export function isTutorialCelebrationActive() {
+    if (!tutorialCelebrationUi.active) return false;
+    const total = TUTORIAL_CELEBRATION_FADE_IN_MS + TUTORIAL_CELEBRATION_HOLD_MS + TUTORIAL_CELEBRATION_FADE_OUT_MS;
+    if ((performance.now() - tutorialCelebrationUi.startedAt) > total) {
+        resetTutorialCelebration();
+        return false;
+    }
+    return true;
+}
+
+function getTutorialCelebrationAlpha(now = performance.now()) {
+    if (!tutorialCelebrationUi.active) return 0;
+    const elapsed = now - tutorialCelebrationUi.startedAt;
+    if (elapsed <= TUTORIAL_CELEBRATION_FADE_IN_MS) {
+        return Math.max(0, Math.min(1, elapsed / TUTORIAL_CELEBRATION_FADE_IN_MS));
+    }
+    if (elapsed <= (TUTORIAL_CELEBRATION_FADE_IN_MS + TUTORIAL_CELEBRATION_HOLD_MS)) {
+        return 1;
+    }
+    if (elapsed <= (TUTORIAL_CELEBRATION_FADE_IN_MS + TUTORIAL_CELEBRATION_HOLD_MS + TUTORIAL_CELEBRATION_FADE_OUT_MS)) {
+        const fadeOutElapsed = elapsed - TUTORIAL_CELEBRATION_FADE_IN_MS - TUTORIAL_CELEBRATION_HOLD_MS;
+        return 1 - Math.max(0, Math.min(1, fadeOutElapsed / TUTORIAL_CELEBRATION_FADE_OUT_MS));
+    }
+    resetTutorialCelebration();
+    return 0;
+}
 
 function findNearestTutorialWorldTarget(entities, matcher, localPlayer) {
     let best = null;
@@ -44,6 +120,7 @@ export function drawTutorialObjective(ctx) {
 
     if (CURRENT_WORLD !== WORLD_TUTORIAL) return;
     if (!Vars.tutorialObjectiveVisible || !Vars.tutorialObjectiveText) return;
+    if (isTutorialCelebrationActive()) return;
 
     const topBar = document.getElementById('top_left_bar');
     const contentRect = LC.getContentDisplayRect();
@@ -52,20 +129,10 @@ export function drawTutorialObjective(ctx) {
         : 0;
     const panelHeight = isMobile ? 64 : 56;
     const panelY = Math.max(18, Math.floor(topBarBottom + 10));
-    const mobileTextByStep = {
-        0: 'Use the joystick to move.',
-        1: 'Tap & Hold ATTACK to swing.',
-        2: 'Tap THROW to throw your weapon.',
-        3: 'Attack & break this chest.',
-        4: 'Walk over the coins to collect them.',
-        5: 'Open the shop and buy sword1.',
-        6: 'Tap the slot with the new sword to equip it.',
-        7: 'Eliminate the pig.',
-        8: 'Tutorial complete.'
-    };
     let desktopMovementProgress = null;
     if (!isMobile && Vars.tutorialObjectiveStep === 0) {
-        const stepIndex = TUTORIAL_DESKTOP_MOVEMENT_SEQUENCE.findIndex(step => step.text === Vars.tutorialObjectiveText);
+        const objectiveText = normalizeTutorialObjectiveText(Vars.tutorialObjectiveText);
+        const stepIndex = TUTORIAL_DESKTOP_MOVEMENT_SEQUENCE.findIndex(step => normalizeTutorialObjectiveText(step.text) === objectiveText);
         if (stepIndex >= 0) {
             if (tutorialMovementUi.stepIndex !== stepIndex) {
                 tutorialMovementUi.stepIndex = stepIndex;
@@ -92,9 +159,7 @@ export function drawTutorialObjective(ctx) {
         tutorialMovementUi.stepIndex = -1;
         tutorialMovementUi.holdStartedAt = 0;
     }
-    const objectiveText = isMobile
-        ? (mobileTextByStep[Vars.tutorialObjectiveStep] || Vars.tutorialObjectiveText)
-        : Vars.tutorialObjectiveText;
+    const objectiveText = Vars.tutorialObjectiveText;
     const font = isMobile ? '700 20px Inter' : '700 22px Inter';
     const textMetrics = LC.measureText({ text: objectiveText, font });
     const horizontalPadding = isMobile ? 36 : 42;
@@ -278,28 +343,31 @@ function getTutorialWorldTarget(ctx, step) {
     const localPlayer = ENTITIES.PLAYERS[Vars.myId];
     if (!localPlayer) return null;
     const now = performance.now();
+    const objectiveKey = normalizeTutorialObjectiveText(Vars.tutorialObjectiveText);
     if (
         tutorialWorldTargetCache.world === CURRENT_WORLD &&
         tutorialWorldTargetCache.playerId === Vars.myId &&
         tutorialWorldTargetCache.step === step &&
+        tutorialWorldTargetCache.objectiveKey === objectiveKey &&
         tutorialWorldTargetCache.expiresAt > now
     ) {
         return tutorialWorldTargetCache.target;
     }
 
     let target = null;
-
-    if (step === 3) {
+    const mode = getTutorialObjectiveMode(ctx);
+    if (mode === 'chest') {
         target = findNearestTutorialWorldTarget(ENTITIES.OBJECTS, (o) => isChestObjectType(o.type), localPlayer);
-    } else if (step === 4) {
+    } else if (mode === 'coins') {
         target = findNearestTutorialWorldTarget(ENTITIES.OBJECTS, (o) => isCoinObjectType(o.type), localPlayer);
-    } else if (step === 7) {
-        target = findNearestTutorialWorldTarget(ENTITIES.MOBS, (m) => m.type === 2, localPlayer);
+    } else if (mode === 'cow') {
+        target = findNearestTutorialWorldTarget(ENTITIES.MOBS, (m) => m.type === 3, localPlayer);
     }
 
     tutorialWorldTargetCache.world = CURRENT_WORLD;
     tutorialWorldTargetCache.playerId = Vars.myId;
     tutorialWorldTargetCache.step = step;
+    tutorialWorldTargetCache.objectiveKey = objectiveKey;
     tutorialWorldTargetCache.expiresAt = now + TUTORIAL_WORLD_TARGET_CACHE_MS;
     tutorialWorldTargetCache.target = target;
     return target;
@@ -311,8 +379,6 @@ function getTutorialUiTarget(ctx, step) {
         WORLD_TUTORIAL,
         isMobile,
         LC,
-        ATTACK_BTN_CONFIG,
-        THROW_BTN_CONFIG,
         uiState,
         Vars,
         getTopBarButtonClientRect,
@@ -321,18 +387,8 @@ function getTutorialUiTarget(ctx, step) {
     } = ctx;
 
     if (CURRENT_WORLD !== WORLD_TUTORIAL) return null;
-    if (isMobile) {
-        const toScreen = (lx, ly) => LC.logicalToClient(lx, ly);
-        if (step === 1) {
-            const p = toScreen(LC.width - ATTACK_BTN_CONFIG.xOffset, LC.height - ATTACK_BTN_CONFIG.yOffset);
-            return { screenX: p.x, screenY: p.y, rectWidth: ATTACK_BTN_CONFIG.radius * 2, rectHeight: ATTACK_BTN_CONFIG.radius * 2 };
-        }
-        if (step === 2) {
-            const p = toScreen(LC.width - THROW_BTN_CONFIG.xOffset, LC.height - THROW_BTN_CONFIG.yOffset);
-            return { screenX: p.x, screenY: p.y, rectWidth: THROW_BTN_CONFIG.radius * 2, rectHeight: THROW_BTN_CONFIG.radius * 2 };
-        }
-    }
-    const allowShopStep = step === 5 || (step === 6 && uiState.isShopOpen);
+    const mode = getTutorialObjectiveMode(ctx);
+    const allowShopStep = mode === 'shop' || mode === 'buy' || mode === 'select';
     if (!allowShopStep) return null;
 
     const hasRank2 = hasRank2SwordInInventory(ctx);
@@ -340,12 +396,18 @@ function getTutorialUiTarget(ctx, step) {
     let targetRect = null;
     if (!uiState.isShopOpen) {
         if (!hasRank2) targetRect = getTopBarButtonClientRect('shop');
+        else targetRect = getTopBarButtonClientRect('shop');
     } else if (!hasRank2) {
         targetRect = getShopCanvasBuyButtonClientRect(2) || null;
         targetEl = targetRect ? null : document.querySelector('.shop_modal .buy_button[data-shop_item-type="2"]');
     } else {
         targetRect = getCanvasShopCloseRect(ctx) || null;
         targetEl = document.getElementById('shopCloseBtn') || document.querySelector('.shop_modal .close_settings');
+    }
+    if (!targetRect && !targetEl && isMobile) {
+        targetEl = !uiState.isShopOpen && !hasRank2
+            ? document.getElementById('shopBtn') || document.querySelector('#top_left_bar button[data-button-id="shop"]')
+            : targetEl;
     }
     if (isMobile && targetEl) {
         const elRect = targetEl.getBoundingClientRect();
@@ -383,9 +445,13 @@ export function drawTutorialTargetIndicator(ctx) {
 
     if (CURRENT_WORLD !== WORLD_TUTORIAL) return;
     if (!Vars.tutorialObjectiveVisible) return;
+    if (isTutorialCelebrationActive()) {
+        drawTutorialCelebrationOverlay(ctx, indicatorCtx);
+        return;
+    }
 
     const step = Vars.tutorialObjectiveStep;
-    if (!isMobile && step === 6) {
+    if (getTutorialObjectiveMode(ctx) === 'select') {
         drawTutorialHotbarSlotIndicators(ctx, indicatorCtx);
         return;
     }
@@ -422,6 +488,47 @@ export function drawTutorialTargetIndicator(ctx) {
     const tipX = centerX + ux * orbitRadius;
     const tipY = centerY + uy * orbitRadius;
     drawTutorialArrow(indicatorCtx, tipX, tipY, ux, uy);
+}
+
+function drawTutorialCelebrationOverlay(ctx, canvasCtx) {
+    const { tutorialIndicatorUi, normalizeCanvasFont } = ctx;
+    const now = performance.now();
+    const alpha = getTutorialCelebrationAlpha(now);
+    if (alpha <= 0) return;
+
+    const w = tutorialIndicatorUi.width;
+    const h = tutorialIndicatorUi.height;
+    canvasCtx.save();
+    canvasCtx.clearRect(0, 0, w, h);
+    canvasCtx.fillStyle = `rgba(0, 0, 0, ${Math.min(1, alpha * 0.98)})`;
+    canvasCtx.fillRect(0, 0, w, h);
+
+    const panelW = Math.min(440, Math.max(280, Math.floor(w * 0.34)));
+    const panelH = Math.min(150, Math.max(112, Math.floor(h * 0.14)));
+    const panelX = Math.floor((w - panelW) / 2);
+    const panelY = Math.floor((h - panelH) / 2);
+    const glow = Math.min(1, alpha * 1.15);
+
+    canvasCtx.shadowColor = `rgba(34, 197, 94, ${0.4 * glow})`;
+    canvasCtx.shadowBlur = 30;
+    canvasCtx.fillStyle = `rgba(5, 28, 14, ${Math.min(0.92, 0.2 + (alpha * 0.7))})`;
+    canvasCtx.strokeStyle = `rgba(74, 222, 128, ${Math.min(1, 0.7 + (alpha * 0.3))})`;
+    canvasCtx.lineWidth = 3;
+    roundRect(canvasCtx, panelX, panelY, panelW, panelH, 18);
+    canvasCtx.fill();
+    canvasCtx.stroke();
+    canvasCtx.shadowBlur = 0;
+
+    canvasCtx.textAlign = 'center';
+    canvasCtx.textBaseline = 'middle';
+    canvasCtx.fillStyle = `rgba(255, 255, 255, ${Math.min(1, 0.76 + (alpha * 0.24))})`;
+    canvasCtx.font = normalizeCanvasFont('900 34px Nunito, sans-serif');
+    canvasCtx.fillText(tutorialCelebrationUi.text || 'NICE!', w / 2, panelY + (panelH / 2) - 12);
+
+    canvasCtx.fillStyle = `rgba(134, 239, 172, ${Math.min(1, 0.86 + (alpha * 0.14))})`;
+    canvasCtx.font = normalizeCanvasFont('800 14px Nunito, sans-serif');
+    canvasCtx.fillText('Keep going', w / 2, panelY + (panelH / 2) + 22);
+    canvasCtx.restore();
 }
 
 function ensureTutorialFocusUi(ctx) {
@@ -467,13 +574,14 @@ function ensureTutorialFocusUi(ctx) {
         transform: 'translateX(-50%)',
         maxWidth: 'min(92vw, 420px)',
         padding: '10px 14px',
-        borderRadius: '10px',
-        border: '1px solid rgba(255,255,255,0.3)',
-        background: 'rgba(8, 15, 35, 0.82)',
+        borderRadius: '12px',
+        border: '4px solid #111827',
+        background: '#243249',
+        boxShadow: '0 5px 0 #111827',
         color: 'white',
-        font: '700 13px Inter, sans-serif',
+        font: '900 13px Nunito, sans-serif',
         textAlign: 'center',
-        letterSpacing: '0.01rem',
+        letterSpacing: '0.02rem',
         pointerEvents: 'none',
         display: 'none'
     });
@@ -601,8 +709,14 @@ export function updateTutorialGuidedShopFocus(ctx) {
         hideTutorialFocus(ctx);
         return;
     }
+    if (isTutorialCelebrationActive()) {
+        ctx.tutorialFocusUi.closeAckSent = false;
+        hideTutorialFocus(ctx);
+        return;
+    }
+    const mode = getTutorialObjectiveMode(ctx);
     const wantsShopFocus = Vars.tutorialObjectiveVisible
-        && (Vars.tutorialObjectiveStep === 5 || (Vars.tutorialObjectiveStep === 6 && uiState.isShopOpen));
+        && (mode === 'shop' || mode === 'buy' || (mode === 'select' && uiState.isShopOpen));
     if (!wantsShopFocus) {
         ctx.tutorialFocusUi.closeAckSent = false;
         const shopModalEl = document.querySelector('.shop_modal');
@@ -620,7 +734,7 @@ export function updateTutorialGuidedShopFocus(ctx) {
     let targetEl = null;
     let targetRect = null;
     if (!uiState.isShopOpen) {
-        if (!hasRank2) {
+        if (!hasRank2 && (mode === 'shop' || mode === 'buy')) {
             targetRect = getTopBarButtonClientRect('shop');
         }
     } else if (!hasRank2) {

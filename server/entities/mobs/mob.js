@@ -143,8 +143,11 @@ export class Mob extends Entity {
         if (this.type === 5 || this.type === 9 || this.type === 11) {
             return { x: w * 0.75, y: h * 0.25 }; // polar bear top-right biome center-ish
         }
-        if (this.type === 12 || this.type === 13 || this.type === 14 || this.type === 15) {
+        if (this.type === 12 || this.type === 13 || this.type === 15 || this.type === 18) {
             return { x: w * 0.25, y: h * 0.75 }; // desert biome center-ish
+        }
+        if (this.type === 14) {
+            return { x: w * 0.75, y: h * 0.75 }; // volcano biome center-ish
         }
         return { x: w * 0.25, y: h * 0.25 }; // top-left biome center-ish
     }
@@ -244,6 +247,12 @@ export class Mob extends Entity {
         // activate the mobs death action
         if (killer && typeof killer.addScore === 'function' && typeof dataMap.MOBS[this.type].deathAction === 'function') {
             dataMap.MOBS[this.type].deathAction(killer);
+        }
+        if (this.type === 3 && this.tutorialOwnerId) {
+            const tutorialOwner = ENTITIES.PLAYERS[this.tutorialOwnerId];
+            if (tutorialOwner?.tutorial && tutorialOwner.tutorial.cowId === this.id) {
+                tutorialOwner.tutorial.cowKilled = true;
+            }
         }
         this.lastDiedTime = performance.now();
         if (killer?.isBot) {
@@ -396,10 +405,22 @@ export class Mob extends Entity {
             }
         }
 
-        // Ostrich, elephant, rat, tortoise: bottom-left only.
-        if (this.type === 12 || this.type === 13 || this.type === 14 || this.type === 15) {
+        // Ostrich, elephant, tortoise, sandling: bottom-left only.
+        if (this.type === 12 || this.type === 13 || this.type === 15 || this.type === 18) {
             if (this.x > leftLimit) {
                 this.x = leftLimit;
+                constrained = true;
+            }
+            if (this.y < bottomLimit) {
+                this.y = bottomLimit;
+                constrained = true;
+            }
+        }
+
+        // Rat: bottom-right only.
+        if (this.type === 14) {
+            if (this.x < rightLimit) {
+                this.x = rightLimit;
                 constrained = true;
             }
             if (this.y < bottomLimit) {

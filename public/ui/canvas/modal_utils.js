@@ -51,29 +51,18 @@ export function drawCanvasModalBackdrop(LC, color) {
     LC.ctx.restore();
 }
 
-export function drawCanvasModalPanel(LC, rect, color) {
-    LC.drawRect({
-        pos: [rect.x, rect.y],
-        size: [rect.width, rect.height],
-        color,
-        stroke: 'rgba(255, 255, 255, 0.12)',
-        strokeWidth: 2,
-        cornerRadius: 18
-    });
-}
-
 export function drawCanvasModalCloseButton(LC, x, y, size = 26) {
     LC.drawRect({
         pos: [x, y],
         size: [size, size],
-        color: 'rgba(255,255,255,0.1)',
+        color: 'transparent',
         cornerRadius: 8
     });
     LC.drawText({
-        text: '×',
+        text: '✕',
         pos: [x + size / 2, y + size / 2 + 6],
-        font: '900 22px Inter',
-        color: 'white',
+        font: '900 20px Nunito',
+        color: '#ef4444',
         textAlign: 'center'
     });
 
@@ -101,14 +90,16 @@ export function drawCanvasModalTabs(LC, tabs, activeTab, { x, y, width, height }
         LC.drawRect({
             pos: [tx, y],
             size: [tabW - 8, height],
-            color: isActive ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.06)',
-            cornerRadius: 8
+            color: isActive ? '#3b82f6' : '#334155',
+            stroke: '#111827',
+            strokeWidth: 4,
+            cornerRadius: 10
         });
         LC.drawText({
             text: tab.toUpperCase(),
             pos: [tx + (tabW - 8) / 2, y + 20],
-            font: '700 12px Inter',
-            color: isActive ? '#ffffff' : 'rgba(255,255,255,0.7)',
+            font: '900 12px Nunito',
+            color: '#ffffff',
             textAlign: 'center'
         });
     });

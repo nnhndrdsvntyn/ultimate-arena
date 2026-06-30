@@ -1,23 +1,23 @@
 import { Mob } from "./mob.js";
-import { AXE_7_TYPE, AXE_10_TYPE, SWORD_3_TYPE, dataMap, getCoinObjectType, isRockStructureType } from '../../../public/shared/datamap.js';
+import { SWORD_7_TYPE, BOOMERANG_7_TYPE, BOOMERANG_10_TYPE, dataMap, getCoinObjectType, isRockStructureType } from '../../../public/shared/datamap.js';
 import { getWorldCenter, getWorldMapSize, WORLD_DUNE_DIMENSION } from '../../../public/shared/worlds.js';
 import { ENTITIES, markDuneBossDefeated, spawnObject } from '../../game.js';
 import { getId, cmdRun, playSfx, pushEntityOutOfSafeZone } from '../../helpers.js';
 import { DunePortal } from '../structures/boss_shrine.js';
 
-const RAT_MOB_TYPE = 14;
-const RAT_SPAWN_ABILITY = 1;
-const RAT_SPAWN_COOLDOWN_MS = 30000;
-const RAT_SPAWN_INTERVAL_MS = 150;
-const RAT_SPAWN_FULL_DURATION_MS = 10000;
-const RAT_SPAWN_ENRAGED_DURATION_MS = 5000;
-const RAT_SPAWN_SPEED_MULT = 1.5;
-const RAT_SPAWN_BURST_SPEED_MULT = 4.25;
-const RAT_SPAWN_BURST_DURATION_MS = 320;
-const RAT_SPAWN_HP_MULT = 2;
-const RAT_SPAWN_ENRAGED_HP_MULT = 5;
-const RAT_SPAWN_DAMAGE = 5;
-const RAT_SPAWN_ENRAGED_DAMAGE = 7;
+const SANDLING_MOB_TYPE = 18;
+const SANDLING_SPAWN_ABILITY = 1;
+const SANDLING_SPAWN_COOLDOWN_MS = 30000;
+const SANDLING_SPAWN_INTERVAL_MS = 150 * 5;
+const SANDLING_SPAWN_FULL_DURATION_MS = 10000;
+const SANDLING_SPAWN_ENRAGED_DURATION_MS = 5000;
+const SANDLING_SPAWN_SPEED_MULT = 1.5;
+const SANDLING_SPAWN_BURST_SPEED_MULT = 4.25;
+const SANDLING_SPAWN_BURST_DURATION_MS = 320;
+const SANDLING_SPAWN_HP_MULT = 2;
+const SANDLING_SPAWN_ENRAGED_HP_MULT = 5;
+const SANDLING_SPAWN_DAMAGE = 7;
+const SANDLING_SPAWN_ENRAGED_DAMAGE = 7;
 const SANDSPIN_ABILITY = 2;
 const SANDSPIN_COOLDOWN_MS = 150000;
 const SANDSPIN_WINDUP_MS = 250;
@@ -86,12 +86,12 @@ export class DuneBehemoth extends Mob {
         this._roamTargetY = y;
         this._nextRoamRetargetAt = 0;
         this.lastAbilityUseTime = 0;
-        this.lastRatSpawnTime = -Infinity;
+        this.lastSandlingSpawnTime = -Infinity;
         this.lastSandspinTime = -Infinity;
         this.lastRockTornadoTime = -Infinity;
         this.lastRockCannonTime = -Infinity;
-        this._ratSpawnTimer = null;
-        this._ratSpawnEndsAt = 0;
+        this._sandlingSpawnTimer = null;
+        this._sandlingSpawnEndsAt = 0;
         this._nextAbilityCheckAt = 0;
         this._sandspinState = null;
         this._rockTornadoState = null;
@@ -160,15 +160,15 @@ export class DuneBehemoth extends Mob {
     }
 
     die(killer) {
-        this.clearRatSpawn();
+        this.clearSandlingSpawn();
         this.clearSandspin();
         this.clearRockTornado();
         this.clearRockCannon();
         markDuneBossDefeated();
         this.scatterDeathCoins();
-        this.scatterSword3Drops();
-        this.scatterAxe7Drops();
-        this.scatterAxe10Drop();
+        this.scatterBoomerang7Drops();
+        this.scatterSword7Drops();
+        this.scatterBoomerang10Drop();
         this.spawnExitPortal();
         super.die(killer);
     }
@@ -195,18 +195,18 @@ export class DuneBehemoth extends Mob {
         }
     }
 
-    scatterSword3Drops() {
+    scatterBoomerang7Drops() {
         const count = getRandomIntInclusive(5, 10);
-        this.scatterWeaponDrops(SWORD_3_TYPE, count);
+        this.scatterWeaponDrops(BOOMERANG_7_TYPE, count);
     }
 
-    scatterAxe7Drops() {
+    scatterSword7Drops() {
         const count = getRandomIntInclusive(3, 5);
-        this.scatterWeaponDrops(AXE_7_TYPE, count);
+        this.scatterWeaponDrops(SWORD_7_TYPE, count);
     }
 
-    scatterAxe10Drop() {
-        this.scatterWeaponDrops(AXE_10_TYPE, 1);
+    scatterBoomerang10Drop() {
+        this.scatterWeaponDrops(BOOMERANG_10_TYPE, 1);
     }
 
     scatterWeaponDrops(itemType, count) {
@@ -330,11 +330,11 @@ export class DuneBehemoth extends Mob {
         if (this._rockTornadoState) return false;
         if (this._rockCannonState) return false;
 
-        if (ability === RAT_SPAWN_ABILITY) {
-            if (respectCooldowns && now - this.lastRatSpawnTime < RAT_SPAWN_COOLDOWN_MS) return false;
+        if (ability === SANDLING_SPAWN_ABILITY) {
+            if (respectCooldowns && now - this.lastSandlingSpawnTime < SANDLING_SPAWN_COOLDOWN_MS) return false;
             this.lastAbilityUseTime = now;
-            this.lastRatSpawnTime = now;
-            this.startRatSpawn(now);
+            this.lastSandlingSpawnTime = now;
+            this.startSandlingSpawn(now);
             return true;
         }
 
@@ -368,45 +368,45 @@ export class DuneBehemoth extends Mob {
         return false;
     }
 
-    startRatSpawn(now = performance.now()) {
-        this.clearRatSpawn();
+    startSandlingSpawn(now = performance.now()) {
+        this.clearSandlingSpawn();
 
         const enraged = this.hp <= (this.maxHp || dataMap.MOBS[this.type].baseHealth) * 0.5;
-        const durationMs = enraged ? RAT_SPAWN_ENRAGED_DURATION_MS : RAT_SPAWN_FULL_DURATION_MS;
-        const hpMult = enraged ? RAT_SPAWN_ENRAGED_HP_MULT : RAT_SPAWN_HP_MULT;
-        const damage = enraged ? RAT_SPAWN_ENRAGED_DAMAGE : RAT_SPAWN_DAMAGE;
+        const durationMs = enraged ? SANDLING_SPAWN_ENRAGED_DURATION_MS : SANDLING_SPAWN_FULL_DURATION_MS;
+        const hpMult = enraged ? SANDLING_SPAWN_ENRAGED_HP_MULT : SANDLING_SPAWN_HP_MULT;
+        const damage = dataMap.MOBS[SANDLING_MOB_TYPE]?.damage || SANDLING_SPAWN_DAMAGE;
         const endsAt = now + durationMs;
 
         this.freezeUntil = Math.max(this.freezeUntil || 0, endsAt);
         this.speed = 0;
-        this._ratSpawnEndsAt = endsAt;
+        this._sandlingSpawnEndsAt = endsAt;
 
         const spawn = () => {
             if (this.hp <= 0 || (this.world || 'main') !== WORLD_DUNE_DIMENSION) {
-                this.clearRatSpawn();
+                this.clearSandlingSpawn();
                 return;
             }
             if (performance.now() >= endsAt) {
-                this.clearRatSpawn();
+                this.clearSandlingSpawn();
                 return;
             }
-            this.spawnRatSpawnRat(hpMult, damage);
+            this.spawnSandlingSpawn(hpMult, damage);
         };
 
         spawn();
-        this._ratSpawnTimer = setInterval(spawn, RAT_SPAWN_INTERVAL_MS);
+        this._sandlingSpawnTimer = setInterval(spawn, SANDLING_SPAWN_INTERVAL_MS);
     }
 
-    clearRatSpawn() {
-        if (this._ratSpawnTimer) {
-            clearInterval(this._ratSpawnTimer);
-            this._ratSpawnTimer = null;
+    clearSandlingSpawn() {
+        if (this._sandlingSpawnTimer) {
+            clearInterval(this._sandlingSpawnTimer);
+            this._sandlingSpawnTimer = null;
         }
-        this._ratSpawnEndsAt = 0;
+        this._sandlingSpawnEndsAt = 0;
     }
 
     startSandspin(now = performance.now()) {
-        this.clearRatSpawn();
+        this.clearSandlingSpawn();
         this._sandspinState = {
             startedAt: now,
             lastTickAt: now,
@@ -432,7 +432,7 @@ export class DuneBehemoth extends Mob {
     }
 
     startRockTornado(now = performance.now()) {
-        this.clearRatSpawn();
+        this.clearSandlingSpawn();
         const rocks = this.getDuneRockTornadoRocks(now);
         if (rocks.length === 0) return false;
 
@@ -453,7 +453,7 @@ export class DuneBehemoth extends Mob {
     }
 
     startRockCannon(now = performance.now()) {
-        this.clearRatSpawn();
+        this.clearSandlingSpawn();
         const target = this.getLiveTarget(true) || this.findPreferredTarget();
         if (!target) return false;
         const rock = this.findNearestRockCannonRock();
@@ -1237,52 +1237,52 @@ export class DuneBehemoth extends Mob {
         return target;
     }
 
-    spawnRatSpawnRat(hpMult, damage) {
-        const origin = this.getRatSpawnOrigin();
+    spawnSandlingSpawn(hpMult, damage) {
+        const origin = this.getSandlingSpawnOrigin();
         const angle = Math.random() * Math.PI * 2;
         const originRadius = Math.max(0, origin.radius || 0);
         const spawnDistance = origin.kind === 'rock'
             ? Math.sqrt(Math.random()) * originRadius * 0.45
             : Math.max(0, originRadius * (0.18 + Math.random() * 0.34));
-        const ratId = getId('MOBS');
+        const sandlingId = getId('MOBS');
         ENTITIES.newEntity({
             entityType: 'mob',
-            id: ratId,
+            id: sandlingId,
             x: origin.x + Math.cos(angle) * spawnDistance,
             y: origin.y + Math.sin(angle) * spawnDistance,
-            type: RAT_MOB_TYPE,
+            type: SANDLING_MOB_TYPE,
             source: this,
             world: this.world || 'main'
         });
 
-        const rat = ENTITIES.MOBS[ratId];
-        if (!rat) return;
+        const sandling = ENTITIES.MOBS[sandlingId];
+        if (!sandling) return;
 
-        const ratBase = dataMap.MOBS[RAT_MOB_TYPE];
-        const hp = Math.max(1, Math.round((ratBase?.baseHealth || rat.hp || 1) * hpMult));
-        rat.hp = hp;
-        rat.maxHp = hp;
-        rat.spawnBaseSpeedOverride = (ratBase?.speed || rat.speed || 0) * RAT_SPAWN_SPEED_MULT;
-        rat.speedOverride = rat.spawnBaseSpeedOverride;
-        rat.spawnBurstSpeed = (ratBase?.speed || rat.speed || 0) * RAT_SPAWN_BURST_SPEED_MULT;
-        rat.spawnBurstUntil = performance.now() + RAT_SPAWN_BURST_DURATION_MS;
-        rat.lastDuneRatLungeTime = rat.spawnBurstUntil;
-        rat.speed = rat.speedOverride;
-        rat.contactDamage = damage;
-        rat.angle = angle;
-        rat.aggroTowardPlayers = true;
-        rat.noRespawn = true;
+        const sandlingBase = dataMap.MOBS[SANDLING_MOB_TYPE];
+        const hp = Math.max(1, Math.round((sandlingBase?.baseHealth || sandling.hp || 1) * hpMult));
+        sandling.hp = hp;
+        sandling.maxHp = hp;
+        sandling.spawnBaseSpeedOverride = (sandlingBase?.speed || sandling.speed || 0) * SANDLING_SPAWN_SPEED_MULT;
+        sandling.speedOverride = sandling.spawnBaseSpeedOverride;
+        sandling.spawnBurstSpeed = (sandlingBase?.speed || sandling.speed || 0) * SANDLING_SPAWN_BURST_SPEED_MULT;
+        sandling.spawnBurstUntil = performance.now() + SANDLING_SPAWN_BURST_DURATION_MS;
+        sandling.lastDuneSandlingLungeTime = sandling.spawnBurstUntil;
+        sandling.speed = sandling.speedOverride;
+        sandling.contactDamage = damage;
+        sandling.angle = angle;
+        sandling.aggroTowardPlayers = true;
+        sandling.noRespawn = true;
 
-        const target = this.findNearestPlayerForRat(rat);
+        const target = this.findNearestPlayerForSandling(sandling);
         if (target) {
-            rat.target = target;
-            rat.isAlarmed = true;
-            rat.alarmReason = 'rat_spawn';
-            rat.startHuntingTime = performance.now();
+            sandling.target = target;
+            sandling.isAlarmed = true;
+            sandling.alarmReason = 'sandling_spawn';
+            sandling.startHuntingTime = performance.now();
         }
     }
 
-    getRatSpawnOrigin() {
+    getSandlingSpawnOrigin() {
         const world = this.world || 'main';
         const rocks = [];
         for (const id in ENTITIES.STRUCTURES) {
@@ -1310,8 +1310,8 @@ export class DuneBehemoth extends Mob {
         };
     }
 
-    findNearestPlayerForRat(rat) {
-        const world = rat.world || this.world || 'main';
+    findNearestPlayerForSandling(sandling) {
+        const world = sandling.world || this.world || 'main';
         let nearest = null;
         let nearestDistSq = Infinity;
         for (const id in ENTITIES.PLAYERS) {
@@ -1319,8 +1319,8 @@ export class DuneBehemoth extends Mob {
             if (!player || !player.isAlive) continue;
             if ((player.world || 'main') !== world) continue;
             if (player.isInvisible) continue;
-            const dx = player.x - rat.x;
-            const dy = player.y - rat.y;
+            const dx = player.x - sandling.x;
+            const dy = player.y - sandling.y;
             const distSq = dx * dx + dy * dy;
             if (distSq >= nearestDistSq) continue;
             nearest = player;
@@ -1342,7 +1342,7 @@ export class DuneBehemoth extends Mob {
         if (now - this.lastAbilityUseTime < GLOBAL_ABILITY_COOLDOWN_MS) return false;
 
         const options = [];
-        if (now - this.lastRatSpawnTime >= RAT_SPAWN_COOLDOWN_MS) options.push(RAT_SPAWN_ABILITY);
+        if (now - this.lastSandlingSpawnTime >= SANDLING_SPAWN_COOLDOWN_MS) options.push(SANDLING_SPAWN_ABILITY);
         if (now - this.lastSandspinTime >= SANDSPIN_COOLDOWN_MS) options.push(SANDSPIN_ABILITY);
         if (this.canUseRockTornado() && now - this.lastRockTornadoTime >= ROCK_TORNADO_COOLDOWN_MS) options.push(ROCK_TORNADO_ABILITY);
         if (now - this.lastRockCannonTime >= ROCK_CANNON_COOLDOWN_MS && this.findNearestRockCannonRock()) options.push(ROCK_CANNON_ABILITY);

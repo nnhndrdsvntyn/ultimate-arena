@@ -1,4 +1,6 @@
 const ACCOUNT_SESSION_STORAGE_KEY = 'ultimateArenaAccountSession';
+const LIBERATION_USERNAME = 'Liberation';
+const OTHER_ADMIN_NAME_COLOR = '#7f1d1d';
 
 let accountSession = loadStoredAccountSession();
 let authUiRefs = null;
@@ -164,6 +166,31 @@ export function getStoredAccountUsername() {
 
 export function hasStoredAccountSession() {
     return !!accountSession?.token;
+}
+
+export function getCurrentAuthenticatedAccountNameStyle(username, isAdmin = false, now = performance.now()) {
+    if (!accountSession?.token) return null;
+
+    const sessionUsername = String(accountSession.username || '').trim();
+    const targetUsername = String(username || '').trim();
+    if (!sessionUsername || targetUsername !== sessionUsername) return null;
+
+    if (sessionUsername === LIBERATION_USERNAME) {
+        const hue = Math.floor((Number(now) || performance.now()) / 28) % 360;
+        return {
+            kind: 'rainbow',
+            color: `hsl(${hue} 100% 65%)`
+        };
+    }
+
+    if (isAdmin) {
+        return {
+            kind: 'admin',
+            color: OTHER_ADMIN_NAME_COLOR
+        };
+    }
+
+    return null;
 }
 
 export function clearStoredAccountSession() {

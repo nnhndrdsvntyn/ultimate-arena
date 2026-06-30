@@ -1,24 +1,23 @@
 import { parsePacket } from './parser.js';
 import { LibCanvas, normalizeCanvasFont } from './libcanvas.js';
-import { ENTITIES, MAP_SIZE } from './game.js';
-import { dataMap, TPS, ACCESSORY_KEYS, ACCESSORY_DESCRIPTIONS, isAccessoryItemType, accessoryIdFromItemType, accessoryItemTypeFromId, DEFAULT_VIEW_RANGE_MULT, isCoinObjectType, getCoinObjectType, isChestObjectType, xpForLevel, MAX_LEVEL, WEAPON_IDS, isWeaponRank, isWeaponTypeStronger, isSellableItem, getWeaponConfig, getWeaponSize, getStructureImageName, BOSS_PORTAL_MIN_SCORE, getBossPortalEntryBlockMessage, isRockStructureType, isBoomerangType } from './shared/datamap.js';
+import { ENTITIES, MAP_SIZE, STRUCTURE_STATE_VERSION } from './game.js';
+import { dataMap, TPS, ACCESSORY_KEYS, ACCESSORY_DESCRIPTIONS, isAccessoryItemType, accessoryIdFromItemType, accessoryItemTypeFromId, DEFAULT_VIEW_RANGE_MULT, isCoinObjectType, getCoinObjectType, isChestObjectType, xpForLevel, MAX_LEVEL, WEAPON_IDS, isWeaponRank, isWeaponTypeStronger, isSellableItem, getWeaponConfig, getWeaponSize, getStructureImageName, BOSS_PORTAL_MIN_SCORE, getBossPortalEntryBlockMessage, isRockStructureType } from './shared/datamap.js';
 import { getCenterDiagonalBridgeSegments } from './shared/river.js';
 import { worldHasRivers, worldIsGrassOnly, worldIsSnowOnly, worldIsDesertOnly, worldIsMagmaOnly, WORLD_ROOT_DIMENSION, WORLD_YETI_DIMENSION, WORLD_DUNE_DIMENSION, WORLD_INFERNO_DIMENSION } from './shared/worlds.js';
 import {
     initializeUI, updateShieldUI, updateHUDVisibility,
     THROW_BTN_CONFIG, PICKUP_BTN_CONFIG, DROP_BTN_CONFIG, ATTACK_BTN_CONFIG,
-    isMobile, HOTBAR_CONFIG, INVENTORY_CONFIG, ACCESSORY_SLOT_CONFIG, uiState, uiRefs, closeHomeScreenBlockingUI, drawChatOverlay
+    isMobile, HOTBAR_CONFIG, INVENTORY_CONFIG, ACCESSORY_SLOT_CONFIG, uiState, uiRefs, closeHomeScreenBlockingUI, syncChatOverlay
 } from './ui.js';
 import { BACK_BUFFER_QUALITIES, BACK_BUFFER_DEFAULT, BACK_BUFFER_STORAGE_KEY } from './ui/config.js';
-import { encodeUsername, sendTutorialEvent, sendUpgradePacket, sendAdminKey, sendBuyPacket, sendSellAllPacket, sendUiPanelVisibilityPacket, sendAuthSessionPacket, sendCoinSnapshotRequestPacket } from './helpers.js';
+import { encodeUsername, sendTutorialEvent, sendUpgradePacket, sendBuyPacket, sendSellAllPacket, sendUiPanelVisibilityPacket, sendAuthSessionPacket, sendCoinSnapshotRequestPacket } from './helpers.js';
 import { uiInput } from './ui/context.js';
 import { drawTutorialObjective, drawTutorialTargetIndicator, updateTutorialGuidedShopFocus } from './ui/canvas/tutorial_canvas.js';
 import { showNotification } from './ui/notifications.js';
-import { getStoredAccountAuthToken, getStoredAccountUsername, setupAccountAuthUI } from './auth/client_auth.js';
+import { getCurrentAuthenticatedAccountNameStyle, getStoredAccountAuthToken, getStoredAccountUsername, setupAccountAuthUI } from './auth/client_auth.js';
 
 // --- Configuration & Settings ---
 export const Settings = {
-    renderGrid: false,
     debugMode: false,
     _drawHitboxes: false,
     get drawHitboxes() {
@@ -33,8 +32,6 @@ export const Settings = {
     set showHitboxes(value) {
         this.debugMode = Boolean(value);
     },
-    showMobsOnMinimap: false,
-    showChestsOnMinimap: false,
 };
 window.Settings = Settings;
 
@@ -104,6 +101,9 @@ const IS_FIRST_TUTORIAL_RUN = (() => {
 const VIEW_RANGE_STORAGE_KEY = 'ua_view_range_multiplier';
 const KEY_HINT_NEVER_SHOW_STORAGE_KEY = 'ua_never_show_key_hints';
 const HAS_UPGRADED_STORAGE_KEY = 'ua_has_upgraded';
+const GENERAL_VOLUME_STORAGE_KEY = 'ua_general_volume';
+const UI_VOLUME_STORAGE_KEY = 'ua_ui_volume';
+const IN_GAME_SOUND_VOLUME_STORAGE_KEY = 'ua_in_game_sound_volume';
 const PLAYER_SKIN_TONES = ['#e9c6a5', '#d8a77e', '#b97c56', '#8d5a3c', '#5c3b2e'];
 const DEFAULT_PLAYER_SKIN = 2;
 
@@ -138,10 +138,57 @@ const setStoredBoolean = (key, value) => {
     }
 };
 
+const clampVolume = (value) => Math.max(0, Math.min(1, Number(value) || 0));
+
+const getStoredVolume = (key, fallback = 1) => {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return fallback;
+    try {
+        const raw = window.localStorage.getItem(key);
+        const parsed = raw == null ? NaN : Number(raw);
+        return Number.isFinite(parsed) ? clampVolume(parsed) : fallback;
+    } catch (e) {
+        return fallback;
+    }
+};
+
+const setStoredVolume = (key, value) => {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return;
+    try {
+        window.localStorage.setItem(key, clampVolume(value).toString());
+    } catch (e) {
+        // Ignore storage failures
+    }
+};
+
 const defaultDeviceViewRange = isMobile ? VIEW_RANGE_MOBILE_DEFAULT : VIEW_RANGE_PC_DEFAULT;
 const initialViewRange = getStoredViewRange() ?? defaultDeviceViewRange;
 
 const withCacheKey = (src) => src;
+
+export function refreshHudDerivedState() {
+    let bestRank = 0;
+    for (let i = 0; i < Vars.myInventory.length; i++) {
+        if ((Vars.myInventoryCounts[i] || 0) <= 0) continue;
+        const rank = Vars.myInventory[i] & 0x7F;
+        if (isWeaponRank(rank) && isWeaponTypeStronger(rank, bestRank)) {
+            bestRank = rank;
+        }
+    }
+
+    const coins = Math.max(0, Vars.myStats.goldCoins || 0);
+    let hasAffordableUpgrade = false;
+    for (let i = 0; i < dataMap.SHOP_ITEMS.length; i++) {
+        const item = dataMap.SHOP_ITEMS[i];
+        if (!isWeaponTypeStronger(item.id, bestRank)) continue;
+        if (coins >= item.price) {
+            hasAffordableUpgrade = true;
+            break;
+        }
+    }
+
+    Vars.bestInventoryWeaponRank = bestRank;
+    Vars.hasAffordableWeaponUpgrade = hasAffordableUpgrade;
+}
 
 const getStoredBackBufferQuality = () => {
     if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return null;
@@ -163,8 +210,32 @@ let leaderboardOpen = true;
 const leaderboardCanvasState = {
     rect: null,
     toggleRect: null,
-    open: leaderboardOpen
+    open: leaderboardOpen,
+    reveal: 1,
+    pendingClear: false
 };
+const PANEL_SLIDE_LERP = 0.18;
+const PANEL_SLIDE_EPSILON = 0.01;
+const lerp = (a, b, t) => a + ((b - a) * t);
+const ARCADE_UI = {
+    panel: '#243249',
+    panelDark: '#1e293b',
+    ink: '#111827',
+    title: '#dbeafe',
+    muted: '#94a3b8',
+    green: '#10b981',
+    greenShadow: '#047857',
+    blue: '#3b82f6',
+    red: '#ef4444',
+    white: '#ffffff'
+};
+const arcadePanel = (alpha = 1) => `rgba(36, 50, 73, ${alpha})`;
+const arcadePanelDark = (alpha = 1) => `rgba(30, 41, 59, ${alpha})`;
+const HUD_TEXT = '#f8fafc';
+const HUD_ACCENT = '#dbeafe';
+const HUD_MUTED = '#a8b4c7';
+const HUD_STROKE = 'rgba(15, 23, 42, 0.62)';
+const HUD_SHADOW = 'rgba(15, 23, 42, 0.34)';
 
 export const Vars = {
     lastDiedTime: 0,
@@ -191,20 +262,16 @@ export const Vars = {
     mouseWorldX: 0,
     mouseWorldY: 0,
     myStats: {
-        dmgHit: 0,
-        dmgThrow: 0,
-        speed: 0,
-        hp: 100,
-        maxHp: 100,
         goldCoins: 0,
         kills: 0,
         level: 1,
         availablePoints: 0,
         buffStrength: 0,
         buffMaxHealth: 0,
-        buffRegenSpeed: 0,
-        regenPerTick: 5
+        buffRegenSpeed: 0
     },
+    bestInventoryWeaponRank: 0,
+    hasAffordableWeaponUpgrade: false,
     inCombat: false,
     onlineCount: 0,
     vikingComboCount: 0,
@@ -241,9 +308,9 @@ export const Vars = {
     bossIntroHudFadeUntil: 0,
     bossIntroOriginalViewRangeMult: 1,
     bossIntroFightViewRangeMult: 1,
-    generalVolume: 1,
-    uiVolume: 1,
-    inGameSoundVolume: 1
+    generalVolume: getStoredVolume(GENERAL_VOLUME_STORAGE_KEY, 1),
+    uiVolume: getStoredVolume(UI_VOLUME_STORAGE_KEY, 1),
+    inGameSoundVolume: getStoredVolume(IN_GAME_SOUND_VOLUME_STORAGE_KEY, 1)
 };
 
 const SIMULATED_PING_MAX_MS = 10000;
@@ -463,6 +530,14 @@ const keyHintUi = {
     containerEl: null,
     neverShowCheckboxEl: null
 };
+const forgotControlsCanvasState = {
+    rect: null
+};
+const infoBoxCanvasState = {
+    minimized: false,
+    progress: 0,
+    toggleRect: null
+};
 const tutorialFocusUi = {
     rootEl: null,
     blocks: [],
@@ -487,14 +562,30 @@ const dragOverlayUi = {
 };
 const TUTORIAL_DESKTOP_MOVEMENT_HOLD_MS = 2000;
 const TUTORIAL_DESKTOP_MOVEMENT_SEQUENCE = [
-    { key: 'w', text: 'Hold the "W" key on your keyboard for 2 seconds (your player will move NORTH)' },
-    { key: 'a', text: 'Hold the "A" key on your keyboard for 2 seconds (your player will move WEST)' },
-    { key: 's', text: 'Hold the "S" key on your keyboard for 2 seconds (your player will move SOUTH)' },
-    { key: 'd', text: 'Hold the "D" key on your keyboard for 2 seconds (your player will move EAST)' }
+    { key: 'w', text: 'Hold the W key on your keyboard for 2 seconds.' },
+    { key: 'a', text: 'Hold the A key on your keyboard for 2 seconds.' },
+    { key: 's', text: 'Hold the S key on your keyboard for 2 seconds.' },
+    { key: 'd', text: 'Hold the D key on your keyboard for 2 seconds.' }
 ];
 const tutorialMovementUi = {
     stepIndex: -1,
     holdStartedAt: 0
+};
+const TUTORIAL_INTRO_STORAGE_KEY = 'ua_tutorial_intro_seen';
+const tutorialIntroUi = {
+    rootEl: null,
+    panelEl: null,
+    titleEl: null,
+    bodyEl: null,
+    buttonEl: null,
+    onComplete: null
+};
+const tutorialCompleteUi = {
+    rootEl: null,
+    panelEl: null,
+    titleEl: null,
+    bodyEl: null,
+    buttonEl: null
 };
 let fullWorldAssetsLoaded = !IS_FIRST_TUTORIAL_RUN;
 let worldChoiceInProgress = false;
@@ -505,7 +596,7 @@ let hudUpgradesExpanded = true;
 let hudUpgradeSlideOffset = 0;
 const HUD_UPGRADE_LAYOUT = {
     x: 20,
-    topY: 296,
+    topY: 336,
     rowHeight: 30,
     rowGap: 10,
     totalWidth: 330,
@@ -549,7 +640,9 @@ const minimapBackgroundCache = {
 };
 const minimapCanvasState = {
     toggleRect: null,
-    open: true
+    open: true,
+    reveal: 1,
+    pendingClear: false
 };
 const minimapCoachUi = {
     active: false,
@@ -573,6 +666,9 @@ const UI_PANEL_IDS = {
     leaderboard: 1,
     minimap: 2
 };
+function getMinimapHudSlideOffset() {
+    return (1 - minimapCanvasState.reveal) * (MINIMAP_UI.size - 4);
+}
 const settingsCanvasState = {
     visible: false,
     rect: null,
@@ -652,6 +748,20 @@ export function playUITapSound() {
     });
 }
 
+export function playWheelClickSound() {
+    const sfxCfg = dataMap.AUDIO['wheel_click'] || {};
+    const finalVolume = (sfxCfg.defaultVolume ?? 1) * Vars.generalVolume * Vars.uiVolume;
+    if (finalVolume <= 0) return;
+
+    LC.playAudio({
+        name: 'wheel_click',
+        timestamp: sfxCfg.defaultTimestamp ?? 0,
+        endTime: sfxCfg.defaultEndTime ?? sfxCfg.endTime ?? null,
+        volume: finalVolume,
+        speed: sfxCfg.defaultSpeed ?? 1
+    });
+}
+
 export function addDamageIndicator(worldX, worldY, amount) {
     if (!Number.isFinite(worldX) || !Number.isFinite(worldY)) return;
     const rounded = Math.round(amount);
@@ -663,7 +773,7 @@ export function addDamageIndicator(worldX, worldY, amount) {
         y: worldY,
         start: performance.now(),
         duration: DAMAGE_INDICATOR_DURATION,
-        font: 'bold 16px Inter',
+        font: '900 16px Nunito',
         color: '#ff0000',
         rise: DAMAGE_INDICATOR_RISE
     });
@@ -677,7 +787,7 @@ export function addCriticalHitIndicator(worldX, worldY) {
         y: worldY - 18,
         start: performance.now(),
         duration: 900,
-        font: '900 18px Inter',
+        font: '900 18px Nunito',
         color: '#ffd166',
         rise: DAMAGE_INDICATOR_RISE + 10
     });
@@ -1024,6 +1134,27 @@ export function setBackBufferQuality(value, { persist = true } = {}) {
     return option;
 }
 
+export function setGeneralVolume(value, { persist = true } = {}) {
+    const next = clampVolume(value);
+    Vars.generalVolume = next;
+    if (persist) setStoredVolume(GENERAL_VOLUME_STORAGE_KEY, next);
+    return next;
+}
+
+export function setUiVolume(value, { persist = true } = {}) {
+    const next = clampVolume(value);
+    Vars.uiVolume = next;
+    if (persist) setStoredVolume(UI_VOLUME_STORAGE_KEY, next);
+    return next;
+}
+
+export function setInGameSoundVolume(value, { persist = true } = {}) {
+    const next = clampVolume(value);
+    Vars.inGameSoundVolume = next;
+    if (persist) setStoredVolume(IN_GAME_SOUND_VOLUME_STORAGE_KEY, next);
+    return next;
+}
+
 export const camera = {
     x: 0, y: 0,
     target: { x: 0, y: 0 },
@@ -1250,7 +1381,7 @@ async function loadAssets() {
             { data: dataMap.PLAYERS.imgs, type: 'image' },
             { data: tutorialSwords, type: 'image' },
             { data: dataMap.BOOMERANGS?.imgs || {}, type: 'image' },
-            { data: { '2': dataMap.MOBS['2'] }, type: 'image', rename: true }
+            { data: { '2': dataMap.MOBS['2'], '3': dataMap.MOBS['3'] }, type: 'image', rename: true }
         );
     } else {
         try {
@@ -1421,15 +1552,15 @@ function drawLoadingScreen() {
     LC.drawRect({ pos: [x, y], size: [barWidth, barHeight], color: 'rgba(255, 255, 255, 0.1)', cornerRadius: 6 });
     LC.drawRect({ pos: [x, y], size: [barWidth * loadingState.progress, barHeight], color: '#22c55e', cornerRadius: 6 });
 
-    LC.drawText({ text: loadingState.header.toUpperCase(), pos: [LC.width / 2, y - 45], font: '900 32px Inter, sans-serif', color: 'white', textAlign: 'center' });
+    LC.drawText({ text: loadingState.header.toUpperCase(), pos: [LC.width / 2, y - 45], font: '900 32px Nunito, sans-serif', color: 'white', textAlign: 'center' });
     LC.drawText({
         text: `${Math.min(loadingState.loadedAssets, loadingState.totalAssets)}/${Math.max(loadingState.totalAssets, 0)}`,
         pos: [LC.width / 2, y - 15],
-        font: '400 13px Inter, sans-serif',
+        font: '700 13px Nunito, sans-serif',
         color: 'rgba(255, 255, 255, 0.42)',
         textAlign: 'center'
     });
-    LC.drawText({ text: `${Math.floor(loadingState.progress * 100)}%`, pos: [LC.width / 2, y + 36], font: '600 12px Inter, sans-serif', color: 'rgba(134, 239, 172, 0.82)', textAlign: 'center' });
+    LC.drawText({ text: `${Math.floor(loadingState.progress * 100)}%`, pos: [LC.width / 2, y + 36], font: '900 12px Nunito, sans-serif', color: 'rgba(134, 239, 172, 0.82)', textAlign: 'center' });
 
     if (loadingState.fadeOut) {
         loadingState.alpha -= 0.05;
@@ -1456,9 +1587,9 @@ function drawDisconnectedScreen() {
 
     drawFPS();
 
-    LC.drawText({ text: disconnectedState.header.toUpperCase(), pos: [LC.width / 2, y - 20], font: '900 32px Inter, sans-serif', color: '#ef4444', textAlign: 'center' });
+    LC.drawText({ text: disconnectedState.header.toUpperCase(), pos: [LC.width / 2, y - 20], font: '900 32px Nunito, sans-serif', color: '#ef4444', textAlign: 'center' });
     if (disconnectedState.subText) {
-        LC.drawText({ text: disconnectedState.subText, pos: [LC.width / 2, y + 14], font: '600 15px Inter, sans-serif', color: 'rgba(248, 113, 113, 0.92)', textAlign: 'center' });
+        LC.drawText({ text: disconnectedState.subText, pos: [LC.width / 2, y + 14], font: '800 15px Nunito, sans-serif', color: 'rgba(248, 113, 113, 0.92)', textAlign: 'center' });
     }
 
     LC.ctx.restore();
@@ -1818,7 +1949,6 @@ function drawBackground() {
         LC.ctx.fillStyle = 'rgba(20, 80, 150, 1)';
         LC.ctx.fill(riverClipPath);
         LC.ctx.clip(riverClipPath);
-
         const tileLeft = staticViewRect.left - 200;
         const tileRight = staticViewRect.right + 200;
         const riverBoundsTop = Math.floor((staticViewRect.top - waterOffset - segmentH) / segmentH) * segmentH;
@@ -2135,7 +2265,7 @@ function drawBlindnessOverlays() {
     LC.ctx.save();
     LC.ctx.fillStyle = `rgba(0, 0, 0, ${maxAlpha})`;
     LC.ctx.fillRect(0, 0, LC.width, LC.height);
-    LC.ctx.font = '800 20px Inter, sans-serif';
+    LC.ctx.font = '900 20px Nunito, sans-serif';
     LC.ctx.textAlign = 'center';
     LC.ctx.textBaseline = 'middle';
     LC.ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
@@ -2170,7 +2300,7 @@ function drawBossIntroCountdown() {
     LC.ctx.shadowBlur = 26;
     LC.ctx.shadowOffsetY = 5;
     LC.ctx.fillStyle = 'rgba(255, 255, 255, 0.98)';
-    LC.ctx.font = `900 ${fontSize}px Inter, sans-serif`;
+    LC.ctx.font = `900 ${fontSize}px Nunito, sans-serif`;
     LC.ctx.fillText(String(seconds), 0, 0);
     LC.ctx.restore();
 }
@@ -2374,7 +2504,6 @@ function render(frameTime = performance.now()) {
     LC.setImageScale((LC.scaleX || 1) * LC.zoom, (LC.scaleY || 1) * LC.zoom);
 
     drawBackground();
-    if (Settings.renderGrid) drawGrid(localPlayer);
 
     // Entities (Z-ordering implied by draw order)
     visibleTreeRenderQueue.length = 0;
@@ -2498,9 +2627,8 @@ function render(frameTime = performance.now()) {
 function drawTiledImageInRect(name, worldX, worldY, width, height, tileSize, viewRect, transparency = 1) {
     if (tileSize <= 0 || width <= 0 || height <= 0) return;
     if (!isRectVisible(worldX, worldY, width, height, viewRect)) return;
-
     // Anchor tile origin to the global grid, not the biome edge.
-    // This prevents phase-jumps when crossing non-grid-aligned biome boundaries.
+    // This keeps terrain visually attached to world coordinates while scrolling.
     const startX = Math.floor(Math.max(viewRect.left, worldX) / tileSize) * tileSize;
     const startY = Math.floor(Math.max(viewRect.top, worldY) / tileSize) * tileSize;
     const endX = Math.min(worldX + width, viewRect.right + tileSize);
@@ -2510,7 +2638,6 @@ function drawTiledImageInRect(name, worldX, worldY, width, height, tileSize, vie
     const screenY = worldY - camera.y;
     LC.ctx.save();
     const prevSmoothing = LC.ctx.imageSmoothingEnabled;
-    // Prevent sub-pixel filtering seams between repeated terrain tiles.
     LC.ctx.imageSmoothingEnabled = false;
     LC.ctx.beginPath();
     LC.ctx.rect(screenX, screenY, width, height);
@@ -2520,7 +2647,6 @@ function drawTiledImageInRect(name, worldX, worldY, width, height, tileSize, vie
         for (let y = startY; y < endY; y += tileSize) {
             LC.drawImage({
                 name,
-                // Keep tiles edge-aligned in world space; overlap with alpha causes visible grid lines.
                 pos: [x - camera.x, y - camera.y],
                 size: [tileSize, tileSize],
                 transparency
@@ -2603,7 +2729,7 @@ function drawFPS() {
     LC.drawText({
         text: `${TPS.clientReal} FPS`,
         pos: [15, LC.height - 15],
-        font: '600 14px Inter, sans-serif',
+        font: '800 14px Nunito, sans-serif',
         color: isLocalPlayerInSnowBiome() ? 'rgba(55, 65, 81, 0.82)' : 'rgba(255, 255, 255, 0.4)',
         textAlign: 'left'
     });
@@ -2628,7 +2754,7 @@ function drawDamageIndicators() {
         const rise = (indicator.rise || DAMAGE_INDICATOR_RISE) * progress;
         const screenX = indicator.x - camera.x;
         const screenY = indicator.y - camera.y - rise;
-        LC.drawTextFast(indicator.text, screenX, screenY, indicator.font || 'bold 16px Inter', indicator.color || '#ff0000', 'center', 'alphabetic', transparency);
+        LC.drawTextFast(indicator.text, screenX, screenY, indicator.font || '900 16px Nunito', indicator.color || '#ff0000', 'center', 'alphabetic', transparency);
     }
 }
 
@@ -2655,18 +2781,43 @@ function drawGrid(lp) {
     }
 }
 
+const STRUCTURE_PROXIMITY_CACHE_CELL_SIZE = 32;
+const nearbyStructureContextCache = {
+    version: -1,
+    world: '',
+    cellX: NaN,
+    cellY: NaN,
+    context: {
+        safeZone: null,
+        nearbyBossShrine: null,
+        nearbyBossPortal: null
+    }
+};
+
 function getNearbyStructureContext(lp) {
+    const emptyContext = nearbyStructureContextCache.context;
+    if (!lp) return emptyContext;
+
+    const cellX = Math.floor((lp.x || 0) / STRUCTURE_PROXIMITY_CACHE_CELL_SIZE);
+    const cellY = Math.floor((lp.y || 0) / STRUCTURE_PROXIMITY_CACHE_CELL_SIZE);
+    const version = STRUCTURE_STATE_VERSION;
+    if (nearbyStructureContextCache.version === version &&
+        nearbyStructureContextCache.world === CURRENT_WORLD &&
+        nearbyStructureContextCache.cellX === cellX &&
+        nearbyStructureContextCache.cellY === cellY) {
+        return nearbyStructureContextCache.context;
+    }
+
     const context = {
         safeZone: null,
         nearbyBossShrine: null,
         nearbyBossPortal: null
     };
-    if (!lp) return context;
-
     let shrineDistSq = Math.max(1, dataMap.STRUCTURES?.[4]?.radius || 90);
     shrineDistSq *= shrineDistSq;
     let portalDistSq = Math.max(1, dataMap.STRUCTURES?.[5]?.radius || 90);
     portalDistSq *= portalDistSq;
+
     forEachEntity(ENTITIES.STRUCTURES, (structure) => {
         if (!structure || (structure.world || CURRENT_WORLD) !== CURRENT_WORLD) return;
 
@@ -2691,6 +2842,11 @@ function getNearbyStructureContext(lp) {
         }
     });
 
+    nearbyStructureContextCache.version = version;
+    nearbyStructureContextCache.world = CURRENT_WORLD;
+    nearbyStructureContextCache.cellX = cellX;
+    nearbyStructureContextCache.cellY = cellY;
+    nearbyStructureContextCache.context = context;
     return context;
 }
 
@@ -2708,6 +2864,8 @@ function getBossPortalDimensionName(portal = null) {
 function suppressBossIntroHudInteractions() {
     keyHintUi.visible = false;
     if (keyHintUi.containerEl) keyHintUi.containerEl.style.display = 'none';
+    forgotControlsCanvasState.rect = null;
+    infoBoxCanvasState.toggleRect = null;
     topBarCanvasState.visible = false;
     topBarCanvasState.buttons = [];
     topBarCanvasState.barRect = null;
@@ -2721,6 +2879,16 @@ function suppressBossIntroHudInteractions() {
 }
 
 function updateHUD(lp) {
+    forgotControlsCanvasState.rect = null;
+    infoBoxCanvasState.toggleRect = null;
+    if (tutorialIntroUi.rootEl?.style.display === 'flex') {
+        const homeScreen = uiRefs.homeScreen || document.getElementById('home_screen');
+        const respawnScreen = uiRefs.respawnScreen || document.getElementById('respawn_screen');
+        setElementDisplay(homeScreen, 'none');
+        setElementDisplay(respawnScreen, 'none');
+        updateHomeOnlineCount(false);
+        return;
+    }
     const isAlive = lp?.isAlive;
     const now = performance.now();
     const isDimensionSwitching = now < (uiState.dimensionTransitionUntil || 0);
@@ -2732,6 +2900,7 @@ function updateHUD(lp) {
     const shouldShowMinimapCoach = CURRENT_WORLD === WORLD_MAIN
         && !!isAlive
         && minimapCanvasState.open
+        && minimapCanvasState.reveal > 0.95
         && !hasSeenMinimapCoach()
         && !minimapCoachUi.dismissed;
 
@@ -2765,7 +2934,11 @@ function updateHUD(lp) {
         uiRefs.topBar.showFullscreen = true;
         uiRefs.topBar.showShop = true;
         if (CURRENT_WORLD === WORLD_TUTORIAL) {
-            const shopUnlocked = Vars.tutorialObjectiveStep >= 5;
+            const tutorialObjective = String(Vars.tutorialObjectiveText || '').toLowerCase();
+            const shopUnlocked = Vars.tutorialObjectiveStep >= 2
+                || tutorialObjective.includes('shop')
+                || tutorialObjective.includes('buy')
+                || tutorialObjective.includes('select');
             uiRefs.topBar.shopDisabled = !shopUnlocked;
         } else {
             uiRefs.topBar.shopDisabled = false;
@@ -2813,21 +2986,8 @@ function updateHUD(lp) {
             hintVisible = true;
             upgradeHintActive = true;
         } else {
-            let bestRank = 0;
-            for (let i = 0; i < Vars.myInventory.length; i++) {
-                if (Vars.myInventoryCounts[i] <= 0) continue;
-                const rank = Vars.myInventory[i] & 0x7F;
-                if (isWeaponRank(rank) && isWeaponTypeStronger(rank, bestRank)) bestRank = rank;
-            }
-            const coins = Vars.myStats.goldCoins || 0;
-            let hasAffordableUpgrade = false;
-            for (const item of dataMap.SHOP_ITEMS) {
-                if (!isWeaponTypeStronger(item.id, bestRank)) continue;
-                if (coins >= item.price) {
-                    hasAffordableUpgrade = true;
-                    break;
-                }
-            }
+            const bestRank = Vars.bestInventoryWeaponRank || 0;
+            const hasAffordableUpgrade = !!Vars.hasAffordableWeaponUpgrade;
             const score = Math.max(0, Math.floor(lp?.score || 0));
             const availablePoints = Math.max(0, Math.floor(Vars.myStats.availablePoints || 0));
             const hasUpgraded = hasUpgradedStats;
@@ -2968,7 +3128,7 @@ function updateHUD(lp) {
         if (isMobile || Settings.forceMobileUI) drawMobileButtons(lp);
         drawTopLeftBarButtons();
         drawTopLeftHint();
-        drawChatOverlay();
+        syncChatOverlay();
         drawDraggedItem();
         LC.ctx.restore();
         updateTutorialGuidedShopFocus(tutorialCtx);
@@ -3032,13 +3192,13 @@ function drawTopLeftBarButtons() {
         setElementSize(topLeftBar, barWidth, barHeight);
     }
 
-    LC.drawRect({
-        pos: [barX, barY],
-        size: [barWidth, barHeight],
-        color: 'rgba(15, 23, 42, 0.55)',
-        stroke: 'rgba(255, 255, 255, 0.15)',
-        strokeWidth: 1,
-        cornerRadius: TOP_BAR_CONFIG.cornerRadius
+    drawArcadeRect(barX, barY, barWidth, barHeight, {
+        color: ARCADE_UI.panel,
+        stroke: ARCADE_UI.ink,
+        strokeWidth: 4,
+        radius: TOP_BAR_CONFIG.cornerRadius,
+        shadow: 5,
+        shadowColor: ARCADE_UI.ink
     });
 
     topBarCanvasState.visible = true;
@@ -3055,6 +3215,16 @@ function drawTopLeftBarButtons() {
         const iconX = bx + (size - iconSize) / 2;
         const iconY = by + (size - iconSize) / 2;
         const alpha = btn.disabled ? 0.45 : 1;
+        const buttonColor = btn.disabled ? '#475569' : ARCADE_UI.panelDark;
+
+        drawArcadeRect(bx, by, size, size, {
+            color: buttonColor,
+            stroke: ARCADE_UI.ink,
+            strokeWidth: 3,
+            radius: Math.max(8, Math.min(12, size * 0.28)),
+            shadow: Math.max(2, Math.round(size * 0.1)),
+            shadowColor: ARCADE_UI.ink
+        });
 
         LC.drawImage({
             name: btn.img,
@@ -3111,7 +3281,7 @@ function drawTopLeftBarButtons() {
 function drawTopLeftHint() {
     if (!topLeftHintState.visible || !topLeftHintState.text) return;
     const text = topLeftHintState.text;
-    const font = '700 14px Inter';
+    const font = '900 14px Nunito';
     const maxWidth = Math.min(520, LC.width - 40);
     const padX = 14;
     const padY = 10;
@@ -3148,13 +3318,13 @@ function drawTopLeftHint() {
     const panelX = Math.max(12, (LC.width - panelW) / 2);
     const panelY = Math.max(12, (barRect ? (barRect.y + barRect.height + 10) : 20));
 
-    LC.drawRect({
-        pos: [panelX, panelY],
-        size: [panelW, panelH],
-        color: 'rgba(0, 0, 0, 0.55)',
-        stroke: 'rgba(255, 255, 255, 0.22)',
-        strokeWidth: 1,
-        cornerRadius: 10
+    drawArcadeRect(panelX, panelY, panelW, panelH, {
+        color: arcadePanel(0.46),
+        stroke: HUD_STROKE,
+        strokeWidth: 4,
+        radius: 12,
+        shadow: 4,
+        shadowColor: HUD_SHADOW
     });
 
     for (let i = 0; i < lines.length; i++) {
@@ -3162,7 +3332,7 @@ function drawTopLeftHint() {
             text: lines[i],
             pos: [panelX + padX, panelY + padY + (i + 1) * lineH - 4],
             font,
-            color: 'white',
+            color: ARCADE_UI.white,
             textAlign: 'left'
         });
     }
@@ -3214,6 +3384,13 @@ export function suppressNextKeyHintAutoShow() {
     syncKeyHintElementVisibility();
 }
 
+export function showKeyHintOverlay() {
+    ensureKeyHintElement();
+    keyHintUi.visible = true;
+    keyHintUi.suppressNextAutoShow = false;
+    syncKeyHintElementVisibility();
+}
+
 function ensureKeyHintElement() {
     if (keyHintUi.containerEl || typeof document === 'undefined') return;
 
@@ -3239,7 +3416,7 @@ function ensureKeyHintElement() {
         boxSizing: 'border-box',
         padding: '16px 16px 14px 16px',
         color: 'white',
-        fontFamily: 'Inter, sans-serif',
+        fontFamily: 'Nunito, sans-serif',
         pointerEvents: 'auto',
         backdropFilter: 'blur(6px)'
     });
@@ -3267,7 +3444,7 @@ function ensureKeyHintElement() {
         borderRadius: '7px',
         background: 'rgba(255,255,255,0.12)',
         color: 'white',
-        font: '600 13px Inter, sans-serif',
+        font: '800 13px Nunito, sans-serif',
         padding: '6px 12px',
         cursor: 'pointer'
     });
@@ -3278,12 +3455,13 @@ function ensureKeyHintElement() {
 
     const controlsList = document.createElement('div');
     controlsList.innerHTML = `
-        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;"><span style="color: #22c55e; font-weight: 800;">Left Click / Space Bar</span><span style="color: white;">: Attack</span></div>
-        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;"><span style="color: #22c55e; font-weight: 800;">E</span><span style="color: white;">: Throw Weapon / Use or Consume held item</span></div>
-        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;"><span style="color: #22c55e; font-weight: 800;">Q</span><span style="color: white;">: Drop Item</span></div>
-        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;"><span style="color: #22c55e; font-weight: 800;">R</span><span style="color: white;">: Pick Up Item</span></div>
-        <div style="margin: 6px 0; font: 600 15px Inter, sans-serif;"><span style="color: #22c55e; font-weight: 800;">F</span><span style="color: white;">: Activate Ability (Must be wearing an accessory that has an ability.)</span></div>
-        <div style="margin: 6px 0 10px 0; font: 600 15px Inter, sans-serif;"><span style="color: #22c55e; font-weight: 800;">Enter</span><span style="color: white;">: Chat</span></div>
+        <div style="margin: 6px 0; font: 800 15px Nunito, sans-serif;"><span style="color: #22c55e; font-weight: 900;">Left Click / Space Bar</span><span style="color: white;">: Attack</span></div>
+        <div style="margin: 6px 0; font: 800 15px Nunito, sans-serif;"><span style="color: #22c55e; font-weight: 900;">E</span><span style="color: white;">: Throw Weapon / Use or Consume held item</span></div>
+        <div style="margin: 6px 0; font: 800 15px Nunito, sans-serif;"><span style="color: #22c55e; font-weight: 900;">Q</span><span style="color: white;">: Drop Item</span></div>
+        <div style="margin: 6px 0; font: 800 15px Nunito, sans-serif;"><span style="color: #22c55e; font-weight: 900;">I</span><span style="color: white;">: Toggle Extended Inventory</span></div>
+        <div style="margin: 6px 0; font: 800 15px Nunito, sans-serif;"><span style="color: #22c55e; font-weight: 900;">R</span><span style="color: white;">: Pick Up Item</span></div>
+        <div style="margin: 6px 0; font: 800 15px Nunito, sans-serif;"><span style="color: #22c55e; font-weight: 900;">F</span><span style="color: white;">: Activate Ability (Must be wearing an accessory that has an ability.)</span></div>
+        <div style="margin: 6px 0 10px 0; font: 800 15px Nunito, sans-serif;"><span style="color: #22c55e; font-weight: 900;">Enter</span><span style="color: white;">: Chat</span></div>
     `;
 
     const checkboxWrap = document.createElement('label');
@@ -3291,7 +3469,7 @@ function ensureKeyHintElement() {
         display: 'flex',
         alignItems: 'center',
         gap: '8px',
-        font: '600 13px Inter, sans-serif',
+        font: '800 13px Nunito, sans-serif',
         color: 'rgba(255,255,255,0.9)',
         userSelect: 'none',
         cursor: 'pointer'
@@ -3910,9 +4088,10 @@ function drawBurstLightningBolt(centerX, centerY, worldX, worldY, angle, startRa
 }
 
 function drawInfoBox(lp) {
-    const font = '16px Inter';
-    const paddingX = 10;
-    const minBoxWidth = 155;
+    const labelFont = '900 11px Nunito';
+    const valueFont = '900 14px Nunito';
+    const paddingX = 14;
+    const minBoxWidth = Settings.debugMode ? 178 : 154;
     const targetScore = Math.max(0, Math.floor(lp.score || 0));
     if (targetScore <= hudInfoBoxScore) {
         hudInfoBoxScore = targetScore;
@@ -3923,35 +4102,178 @@ function drawInfoBox(lp) {
         }
     }
     const scoreText = Math.floor(hudInfoBoxScore).toLocaleString();
-    const text = [
-        `x: ${lp.x.toFixed(0)}`,
-        `y: ${lp.y.toFixed(0)}`,
-        `score: ${scoreText}`
+    const rows = [
+        ['X', lp.x.toFixed(0), true],
+        ['Y', lp.y.toFixed(0), true],
+        ['SCORE', scoreText, true]
     ];
     if (Settings.debugMode) {
         const displayPing = simulatedPingMs > 0
             ? Math.round((Vars.ping || 0) + (simulatedPingDisplayMs || simulatedPingMs))
             : Vars.ping;
-        text.push(`ping: ${displayPing}`);
-        text.push(`TPS: ${Vars.netTps}`);
-        text.push(`PPS: ${Vars.netPps}`);
-        text.push(`AUPBS: ${Vars.netAupbs}`);
-        text.push(`LUPBS: ${Vars.netLupbs}`);
+        rows.push(['PING', displayPing, false]);
+        rows.push(['TPS', Vars.netTps, false]);
+        rows.push(['PPS', Vars.netPps, false]);
+        rows.push(['AUPBS', Vars.netAupbs, false]);
+        rows.push(['LUPBS', Vars.netLupbs, false]);
     }
-    const rowHeight = 25;
-    const topPadding = 20;
-    const bottomPadding = 15;
-    const boxHeight = topPadding + bottomPadding + (rowHeight * (text.length - 1));
-    const contentWidth = text.reduce((maxWidth, line) => {
-        const { width } = LC.measureText({ text: line, font });
+    const rowHeight = 19;
+    const topPadding = 14;
+    const bottomPadding = 12;
+    const labelColumnWidth = rows.reduce((maxWidth, row) => {
+        const { width } = LC.measureText({ text: String(row[0]), font: labelFont });
         return Math.max(maxWidth, width);
     }, 0);
-    const boxWidth = Math.max(minBoxWidth, Math.ceil(contentWidth + paddingX * 2));
-    const boxX = LC.width - 265 - boxWidth;
-    const textX = boxX + paddingX;
+    const valueColumnWidth = rows.reduce((maxWidth, row) => {
+        const { width } = LC.measureText({ text: String(row[1]), font: valueFont });
+        return Math.max(maxWidth, width);
+    }, 0);
+    const columnGap = 18;
+    const contentWidth = labelColumnWidth + columnGap + valueColumnWidth;
+    const expandedBoxHeight = topPadding + bottomPadding + (rowHeight * rows.length);
+    const expandedBoxWidth = Math.max(minBoxWidth, Math.ceil(contentWidth + paddingX * 2));
+    const minimizedBoxWidth = 0;
+    const minimizedBoxHeight = 0;
+    const targetProgress = infoBoxCanvasState.minimized ? 1 : 0;
+    infoBoxCanvasState.progress += (targetProgress - infoBoxCanvasState.progress) * PANEL_SLIDE_LERP;
+    if (Math.abs(targetProgress - infoBoxCanvasState.progress) < PANEL_SLIDE_EPSILON) {
+        infoBoxCanvasState.progress = targetProgress;
+    }
+    const collapseProgress = infoBoxCanvasState.progress;
+    const contentAlpha = Math.max(0, Math.min(1, 1 - (collapseProgress * 1.35)));
+    const boxWidth = lerp(expandedBoxWidth, minimizedBoxWidth, collapseProgress);
+    const boxHeight = lerp(expandedBoxHeight, minimizedBoxHeight, collapseProgress);
+    const leaderboardOffset = Math.max(0, Math.round(205 * (1 - leaderboardCanvasState.reveal)));
+    const boxX = (LC.width - 265 - boxWidth) + leaderboardOffset;
+    const labelX = boxX + paddingX;
+    const valueX = boxX + boxWidth - paddingX;
+    const boxY = 5;
 
-    LC.drawRect({ pos: [boxX, 5], size: [boxWidth, boxHeight], color: 'rgba(0, 0, 0, 0.4)', cornerRadius: 5 });
-    text.forEach((t, i) => LC.drawText({ text: t, pos: [textX, topPadding + 5 + i * rowHeight], font, color: 'white' }));
+    if (collapseProgress < 0.99) {
+        drawArcadeRect(boxX, boxY, boxWidth, boxHeight, {
+            color: arcadePanel(0.48),
+            radius: 12,
+            shadow: 4,
+            shadowColor: HUD_SHADOW,
+            stroke: HUD_STROKE,
+            strokeWidth: 3
+        });
+    }
+    if (contentAlpha > 0.01) {
+        rows.forEach((row, i) => {
+            const y = boxY + topPadding + 12 + i * rowHeight;
+            const primary = row[2];
+            LC.drawText({
+                text: String(row[0]),
+                pos: [labelX, y],
+                font: labelFont,
+                color: primary ? HUD_ACCENT : HUD_MUTED,
+                textAlign: 'left',
+                transparency: contentAlpha
+            });
+            LC.drawText({
+                text: String(row[1]),
+                pos: [valueX, y],
+                font: valueFont,
+                color: primary ? HUD_TEXT : HUD_MUTED,
+                textAlign: 'right',
+                transparency: contentAlpha
+            });
+        });
+        if (CURRENT_WORLD !== WORLD_TUTORIAL) {
+            drawForgotControlsCanvasButton(boxX, boxY + boxHeight + 12, boxWidth, contentAlpha);
+        } else {
+            forgotControlsCanvasState.rect = null;
+        }
+    } else {
+        forgotControlsCanvasState.rect = null;
+    }
+    drawInfoBoxToggleButton(boxX, boxY + boxHeight, infoBoxCanvasState.minimized);
+}
+
+function drawInfoBoxToggleButton(centerX, centerY, minimized) {
+    const size = 21;
+    const x = centerX - (size / 2);
+    const y = centerY - (size / 2);
+    const cursorX = window._lastCursorX ?? -9999;
+    const cursorY = window._lastCursorY ?? -9999;
+    const cursorHud = clientToHud(cursorX, cursorY);
+    const rect = { x, y, width: size, height: size };
+    const hovering = cursorHud.x >= rect.x &&
+        cursorHud.x <= rect.x + rect.width &&
+        cursorHud.y >= rect.y &&
+        cursorHud.y <= rect.y + rect.height;
+
+    infoBoxCanvasState.toggleRect = rect;
+    drawArcadeRect(x, y, size, size, {
+        color: hovering ? 'rgba(59, 130, 246, 0.64)' : 'rgba(30, 41, 59, 0.54)',
+        radius: 7,
+        shadow: 1,
+        shadowColor: HUD_SHADOW,
+        stroke: hovering ? 'rgba(219, 234, 254, 0.62)' : HUD_STROKE,
+        strokeWidth: 2
+    });
+    LC.drawTextFast(minimized ? '+' : '-', x + (size / 2), y + 15, '900 17px Nunito', HUD_TEXT, 'center');
+}
+
+function drawForgotControlsCanvasButton(x, y, width, alpha = 1) {
+    const text = 'Forgot controls?';
+    const font = '900 12px Nunito';
+    const height = 25;
+    const cursorX = window._lastCursorX ?? -9999;
+    const cursorY = window._lastCursorY ?? -9999;
+    const cursorHud = clientToHud(cursorX, cursorY);
+    const rect = { x, y, width, height };
+    const hovering = cursorHud.x >= rect.x &&
+        cursorHud.x <= rect.x + rect.width &&
+        cursorHud.y >= rect.y &&
+        cursorHud.y <= rect.y + rect.height;
+
+    forgotControlsCanvasState.rect = alpha > 0.5 ? rect : null;
+    drawArcadeRect(x, y, width, height, {
+        color: hovering ? `rgba(30, 41, 59, ${0.62 * alpha})` : `rgba(30, 41, 59, ${0.38 * alpha})`,
+        radius: 9,
+        shadow: 2,
+        shadowColor: `rgba(15, 23, 42, ${0.34 * alpha})`,
+        stroke: hovering ? `rgba(219, 234, 254, ${0.55 * alpha})` : `rgba(15, 23, 42, ${0.62 * alpha})`,
+        strokeWidth: 2
+    });
+    LC.drawText({
+        text,
+        pos: [x + (width / 2), y + 17],
+        font,
+        color: hovering ? HUD_TEXT : HUD_ACCENT,
+        textAlign: 'center',
+        transparency: alpha
+    });
+}
+
+export function isInfoBoxToggleAtClientPos(clientX, clientY) {
+    const rect = infoBoxCanvasState.toggleRect;
+    if (!rect) return false;
+    const { x, y } = LC.clientToLogical(clientX, clientY);
+    return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+}
+
+export function handleInfoBoxToggleClick(clientX, clientY) {
+    if (!isInfoBoxToggleAtClientPos(clientX, clientY)) return false;
+    playUITapSound();
+    infoBoxCanvasState.minimized = !infoBoxCanvasState.minimized;
+    return true;
+}
+
+export function isForgotControlsCanvasAtClientPos(clientX, clientY) {
+    const rect = forgotControlsCanvasState.rect;
+    if (!rect) return false;
+    const { x, y } = LC.clientToLogical(clientX, clientY);
+    return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+}
+
+export function handleForgotControlsCanvasClick(clientX, clientY) {
+    if (!isForgotControlsCanvasAtClientPos(clientX, clientY)) return false;
+    playUITapSound();
+    showKeyHintOverlay();
+    return true;
 }
 
 function updateHomeOnlineCount(shouldShow) {
@@ -3975,14 +4297,63 @@ function resetTopLeaderState() {
     Vars.topLeader.score = 0;
 }
 
+function drawArcadeRect(x, y, width, height, {
+    color = ARCADE_UI.panel,
+    stroke = ARCADE_UI.ink,
+    strokeWidth = 5,
+    radius = 16,
+    shadow = 8,
+    shadowColor = ARCADE_UI.ink
+} = {}) {
+    if (shadow > 0) {
+        LC.drawRect({
+            pos: [x, y + shadow],
+            size: [width, height],
+            color: shadowColor,
+            cornerRadius: radius
+        });
+    }
+    LC.drawRect({
+        pos: [x, y],
+        size: [width, height],
+        color,
+        stroke,
+        strokeWidth,
+        cornerRadius: radius
+    });
+}
+
+function drawArcadeHeader(x, y, width, height, title, { closeText = null, closeX = null, closeY = null, color = ARCADE_UI.panelDark, titleColor = ARCADE_UI.title } = {}) {
+    drawArcadeRect(x, y, width, height, {
+        color,
+        radius: 14,
+        shadow: 0
+    });
+    LC.drawText({
+        text: title,
+        pos: [x + 14, y + Math.floor(height * 0.68)],
+        font: '900 15px Nunito',
+        color: titleColor,
+        textAlign: 'left'
+    });
+    if (closeText) {
+        LC.drawText({
+            text: closeText,
+            pos: [closeX ?? (x + width - 18), closeY ?? (y + Math.floor(height * 0.68))],
+            font: '900 18px Nunito',
+            color: ARCADE_UI.red,
+            textAlign: 'center'
+        });
+    }
+}
+
 function setLeaderboardOpenState(isOpen, notifyServer = true) {
     const next = Boolean(isOpen);
     if (leaderboardOpen === next) return leaderboardOpen;
     leaderboardOpen = next;
     leaderboardCanvasState.open = next;
-    if (!next) {
-        ENTITIES.leaderboard = [];
-    }
+    leaderboardCanvasState.pendingClear = !next;
+    if (next) leaderboardCanvasState.pendingClear = false;
     if (notifyServer) {
         sendUiPanelVisibilityPacket(UI_PANEL_IDS.leaderboard, next);
     }
@@ -3993,11 +4364,8 @@ function setMinimapOpenState(isOpen, notifyServer = true) {
     const next = Boolean(isOpen);
     if (minimapCanvasState.open === next) return minimapCanvasState.open;
     minimapCanvasState.open = next;
-    if (!next) {
-        Vars.minimapPlayers = [];
-        resetTopLeaderState();
-        updateMinimapCoachOverlay(false);
-    }
+    minimapCanvasState.pendingClear = !next;
+    if (next) minimapCanvasState.pendingClear = false;
     if (notifyServer) {
         sendUiPanelVisibilityPacket(UI_PANEL_IDS.minimap, next);
     }
@@ -4008,26 +4376,10 @@ function drawLeaderboard() {
     const buttonSize = 24;
     const buttonX = LC.width - 44;
     const buttonY = 14;
-
-    if (!leaderboardOpen) {
-        leaderboardCanvasState.open = false;
-        leaderboardCanvasState.rect = { x: buttonX, y: buttonY, width: buttonSize, height: buttonSize };
-        leaderboardCanvasState.toggleRect = { x: buttonX, y: buttonY, width: buttonSize, height: buttonSize };
-        LC.drawCircle({
-            pos: [buttonX + buttonSize / 2, buttonY + buttonSize / 2],
-            radius: buttonSize / 2,
-            color: 'rgba(0,0,0,0.65)',
-            stroke: 'rgba(255,255,255,0.2)',
-            strokeWidth: 1
-        });
-        LC.drawText({
-            text: '+',
-            pos: [buttonX + buttonSize / 2, buttonY + 18],
-            font: 'bold 18px Inter',
-            color: 'white',
-            textAlign: 'center'
-        });
-        return;
+    const targetReveal = leaderboardOpen ? 1 : 0;
+    leaderboardCanvasState.reveal += (targetReveal - leaderboardCanvasState.reveal) * PANEL_SLIDE_LERP;
+    if (Math.abs(targetReveal - leaderboardCanvasState.reveal) < PANEL_SLIDE_EPSILON) {
+        leaderboardCanvasState.reveal = targetReveal;
     }
 
     const lb = ENTITIES.leaderboard || [];
@@ -4039,35 +4391,83 @@ function drawLeaderboard() {
     const bodyTopPad = 4;
     const listHeight = (lb.length * rowHeight) + (lb.length > 0 ? bodyTopPad : 0);
     const panelHeight = headerHeight + listHeight;
+    const currentX = lerp(buttonX, panelX, leaderboardCanvasState.reveal);
+    const currentY = lerp(buttonY, panelY, leaderboardCanvasState.reveal);
+    const currentWidth = lerp(buttonSize, panelWidth, leaderboardCanvasState.reveal);
+    const currentHeight = lerp(buttonSize, panelHeight, leaderboardCanvasState.reveal);
+    const toggleCenterX = lerp(buttonX + (buttonSize / 2), panelX + panelWidth - 18, leaderboardCanvasState.reveal);
+    const toggleCenterY = lerp(buttonY + (buttonSize / 2), panelY + 15, leaderboardCanvasState.reveal);
 
-    leaderboardCanvasState.open = true;
-    leaderboardCanvasState.rect = { x: panelX, y: panelY, width: panelWidth, height: panelHeight };
-    leaderboardCanvasState.toggleRect = { x: panelX + panelWidth - 30, y: panelY + 3, width: 24, height: 24 };
+    leaderboardCanvasState.rect = { x: currentX, y: currentY, width: currentWidth, height: currentHeight };
+    leaderboardCanvasState.toggleRect = { x: toggleCenterX - 12, y: toggleCenterY - 12, width: 24, height: 24 };
 
-    LC.drawRect({ pos: [panelX, panelY], size: [panelWidth, panelHeight], color: 'rgba(0,0,0,0.6)', cornerRadius: 8 });
-    LC.drawText({ text: 'LEADERBOARD', pos: [panelX + (panelWidth / 2), panelY + 18], font: 'bold 16px Inter', color: 'white', textAlign: 'center' });
-    LC.drawCircle({
-        pos: [panelX + panelWidth - 18, panelY + 15],
-        radius: 10,
-        color: 'rgba(255,255,255,0.12)',
-        stroke: 'rgba(255,255,255,0.18)',
-        strokeWidth: 1
+    if (leaderboardCanvasState.reveal <= PANEL_SLIDE_EPSILON) {
+        if (leaderboardCanvasState.pendingClear) {
+            ENTITIES.leaderboard = [];
+            leaderboardCanvasState.pendingClear = false;
+        }
+        drawArcadeRect(buttonX - 3, buttonY - 3, buttonSize + 6, buttonSize + 6, {
+            color: ARCADE_UI.blue,
+            radius: 8,
+            shadow: 4
+        });
+        LC.drawText({
+            text: '+',
+            pos: [buttonX + buttonSize / 2, buttonY + 18],
+            font: '900 18px Nunito',
+            color: ARCADE_UI.white,
+            textAlign: 'center'
+        });
+        return;
+    }
+
+    drawArcadeRect(currentX, currentY, currentWidth, currentHeight, {
+        color: arcadePanel(0.48),
+        radius: 16,
+        shadow: 5,
+        shadowColor: HUD_SHADOW,
+        stroke: HUD_STROKE,
+        strokeWidth: 3
+    });
+    const ctx = LC.ctx;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(currentX, currentY, currentWidth, currentHeight);
+    ctx.clip();
+    if (leaderboardOpen) {
+        const contentAlpha = Math.max(0, Math.min(1, leaderboardCanvasState.reveal / 0.9));
+        ctx.globalAlpha *= contentAlpha;
+        drawArcadeHeader(currentX, currentY, currentWidth, headerHeight, 'LEADERBOARD', {
+            color: arcadePanelDark(0.5),
+            titleColor: HUD_ACCENT
+        });
+
+        lb.forEach((p, i) => {
+            const rawName = String(p.username || '');
+            const shortName = rawName.length > 12 ? `${rawName.slice(0, 12)}...` : rawName;
+            const nameStyle = p.id === Vars.myId
+                ? getCurrentAuthenticatedAccountNameStyle(rawName, Vars.isAdmin, performance.now())
+                : (p.isAdmin ? { color: '#7f1d1d' } : null);
+            const color = nameStyle?.color || (p.id === Vars.myId ? 'white' : 'lightgray');
+            const rowY = currentY + headerHeight + bodyTopPad + 12 + i * rowHeight;
+            LC.drawText({ text: `${i + 1}. ${shortName}`, pos: [currentX + 12, rowY], font: '800 14px Nunito', color });
+            LC.drawText({ text: formatScore(p.score), pos: [currentX + currentWidth - 12, rowY], font: '900 14px Nunito', color: HUD_ACCENT, textAlign: 'right' });
+        });
+    }
+    ctx.restore();
+
+    drawArcadeRect(toggleCenterX - 11, toggleCenterY - 11, 22, 22, {
+        color: leaderboardOpen ? ARCADE_UI.red : ARCADE_UI.blue,
+        radius: 7,
+        shadow: 3
     });
     LC.drawText({
-        text: '-',
-        pos: [panelX + panelWidth - 18, panelY + 20],
-        font: 'bold 18px Inter',
-        color: 'white',
+        text: leaderboardOpen ? '-' : '+',
+        pos: [toggleCenterX, toggleCenterY + 5],
+        font: '900 18px Nunito',
+        color: ARCADE_UI.white,
         textAlign: 'center'
-    });
-
-    lb.forEach((p, i) => {
-        const color = p.id === Vars.myId ? 'white' : 'lightgray';
-        const rawName = String(p.username || '');
-        const shortName = rawName.length > 12 ? `${rawName.slice(0, 12)}...` : rawName;
-        const rowY = panelY + headerHeight + bodyTopPad + 12 + i * rowHeight;
-        LC.drawText({ text: `${i + 1}. ${shortName}`, pos: [panelX + 10, rowY], font: '14px Inter', color });
-        LC.drawText({ text: formatScore(p.score), pos: [panelX + panelWidth - 10, rowY], font: '14px Inter', color, textAlign: 'right' });
     });
 }
 
@@ -4107,8 +4507,8 @@ function drawBossShrineIndicator(localPlayer, staticViewRect = null) {
 
     const badgeFont = normalizeCanvasFont('700 14px Arial');
     const promptFont = normalizeCanvasFont('700 15px Arial');
-    const badgeWidth = Math.ceil(LC.ctx.measureText(keyText).width) + 24;
-    const promptWidth = Math.ceil(LC.ctx.measureText(promptText).width) + 28;
+    const badgeWidth = Math.ceil(LC.measureText({ text: keyText, font: badgeFont }).width) + 24;
+    const promptWidth = Math.ceil(LC.measureText({ text: promptText, font: promptFont }).width) + 28;
     const panelWidth = Math.max(220, promptWidth);
     const panelHeight = 34;
     const badgeHeight = 28;
@@ -4273,80 +4673,125 @@ function drawMinimap() {
     const toggleCenterY = y;
     const toggleX = toggleCenterX - toggleSize / 2;
     const toggleY = toggleCenterY - toggleSize / 2;
+    const targetReveal = minimapCanvasState.open ? 1 : 0;
+    minimapCanvasState.reveal += (targetReveal - minimapCanvasState.reveal) * PANEL_SLIDE_LERP;
+    if (Math.abs(targetReveal - minimapCanvasState.reveal) < PANEL_SLIDE_EPSILON) {
+        minimapCanvasState.reveal = targetReveal;
+    }
+
+    const panelX = lerp(toggleX, x - 5, minimapCanvasState.reveal);
+    const panelY = lerp(toggleY, y - 5, minimapCanvasState.reveal);
+    const panelSize = lerp(toggleSize, size + 10, minimapCanvasState.reveal);
+    const innerSize = Math.max(1, panelSize - 10);
+    const innerX = panelX + 5;
+    const innerY = panelY + 5;
+    minimapCanvasState.rect = { x: panelX, y: panelY, width: panelSize, height: panelSize };
     minimapCanvasState.toggleRect = { x: toggleX, y: toggleY, width: toggleSize, height: toggleSize };
 
-    if (!minimapCanvasState.open) {
-        LC.drawCircle({
-            pos: [toggleCenterX, toggleCenterY],
-            radius: toggleSize / 2,
-            color: 'rgba(0,0,0,0.32)',
-            stroke: 'rgba(255,255,255,0.12)',
-            strokeWidth: 1
+    if (minimapCanvasState.reveal <= PANEL_SLIDE_EPSILON) {
+        if (minimapCanvasState.pendingClear) {
+            Vars.minimapPlayers = [];
+            resetTopLeaderState();
+            updateMinimapCoachOverlay(false);
+            minimapCanvasState.pendingClear = false;
+        }
+        drawArcadeRect(toggleX, toggleY, toggleSize, toggleSize, {
+            color: 'rgba(30, 41, 59, 0.46)',
+            radius: 8,
+            shadow: 2,
+            shadowColor: HUD_SHADOW,
+            stroke: HUD_STROKE,
+            strokeWidth: 2
         });
         LC.drawText({
             text: '+',
             pos: [toggleCenterX, toggleCenterY + 6],
-            font: 'bold 18px Inter',
-            color: 'rgba(255,255,255,0.85)',
+            font: '900 18px Nunito',
+            color: HUD_TEXT,
             textAlign: 'center'
         });
         return;
     }
 
-    LC.drawRect({ pos: [x - 5, y - 5], size: [size + 10, size + 10], color: 'rgba(0,0,0,0.4)', cornerRadius: 5 });
-    const backgroundCanvas = getMinimapBackgroundCanvas();
-    if (backgroundCanvas) {
-        LC.ctx.drawImage(backgroundCanvas, x, y, size, size);
+    drawArcadeRect(panelX, panelY, panelSize, panelSize, {
+        color: arcadePanel(0.46),
+        radius: 14,
+        shadow: 4,
+        shadowColor: HUD_SHADOW,
+        stroke: HUD_STROKE,
+        strokeWidth: 3
+    });
+    if (minimapCanvasState.open) {
+        const backgroundCanvas = getMinimapBackgroundCanvas();
+        if (backgroundCanvas) {
+            LC.ctx.save();
+            LC.ctx.beginPath();
+            LC.ctx.roundRect(innerX, innerY, innerSize, innerSize, 10);
+            LC.ctx.clip();
+            LC.ctx.drawImage(backgroundCanvas, innerX, innerY, innerSize, innerSize);
+            LC.ctx.fillStyle = 'rgba(15, 23, 42, 0.12)';
+            LC.ctx.fillRect(innerX, innerY, innerSize, innerSize);
+            LC.ctx.restore();
+        }
+
+        LC.drawRect({
+            pos: [innerX, innerY],
+            size: [innerSize, innerSize],
+            color: 'rgba(0,0,0,0)',
+            stroke: 'rgba(219, 234, 254, 0.18)',
+            strokeWidth: 2,
+            cornerRadius: 10
+        });
+
+        const drawDot = (e, color, radius = 2.5, stroke = 'rgba(15, 23, 42, 0.7)') => {
+            const dx = (e.x / MAP_SIZE[0]) * innerSize;
+            const dy = (e.y / MAP_SIZE[1]) * innerSize;
+            LC.drawCircle({
+                pos: [innerX + dx, innerY + dy],
+                radius,
+                color,
+                stroke,
+                strokeWidth: 1.5
+            });
+        };
+
+        const lp = ENTITIES.PLAYERS[Vars.myId];
+        const minimapPlayers = Array.isArray(Vars.minimapPlayers) ? Vars.minimapPlayers : [];
+        for (let i = 0; i < minimapPlayers.length; i++) {
+            const p = minimapPlayers[i];
+            if (!p) continue;
+            if (p.id === Vars.myId) continue;
+            drawDot(p, 'rgba(239, 68, 68, 0.96)', 2.6);
+        }
+        if (lp) drawDot(lp, HUD_TEXT, 3.2, 'rgba(96, 165, 250, 0.9)');
+
+        const top = Vars.topLeader;
+        if (CURRENT_WORLD === WORLD_MAIN && top?.id > 0 && Number.isFinite(top.x) && Number.isFinite(top.y) && LC.images?.['ui_crown']) {
+            const dx = (top.x / MAP_SIZE[0]) * innerSize;
+            const dy = (top.y / MAP_SIZE[1]) * innerSize;
+            LC.drawImage({
+                name: 'ui_crown',
+                pos: [innerX + dx - 10, innerY + dy - 10],
+                size: [20, 20]
+            });
+        }
     }
-    LC.drawCircle({
-        pos: [toggleCenterX, toggleCenterY],
-        radius: toggleSize / 2,
-        color: 'rgba(0,0,0,0.32)',
-        stroke: 'rgba(255,255,255,0.12)',
-        strokeWidth: 1
+
+    drawArcadeRect(toggleX, toggleY, toggleSize, toggleSize, {
+        color: minimapCanvasState.open ? 'rgba(30, 41, 59, 0.58)' : 'rgba(30, 41, 59, 0.46)',
+        radius: 8,
+        shadow: 2,
+        shadowColor: HUD_SHADOW,
+        stroke: 'rgba(219, 234, 254, 0.22)',
+        strokeWidth: 2
     });
     LC.drawText({
-        text: '-',
+        text: minimapCanvasState.open ? '-' : '+',
         pos: [toggleCenterX, toggleCenterY + 6],
-        font: 'bold 18px Inter',
-        color: 'rgba(255,255,255,0.85)',
+        font: '900 18px Nunito',
+        color: HUD_TEXT,
         textAlign: 'center'
     });
-
-    const drawDot = (e, color) => {
-        const dx = (e.x / MAP_SIZE[0]) * size;
-        const dy = (e.y / MAP_SIZE[1]) * size;
-        LC.drawCircle({ pos: [x + dx, y + dy], radius: 2, color });
-    };
-
-    if (Settings.showMobsOnMinimap) {
-        forEachEntity(ENTITIES.MOBS, (mob) => drawDot(mob, 'orange'));
-    }
-    if (Settings.showChestsOnMinimap) {
-        forEachEntity(ENTITIES.OBJECTS, (obj) => {
-            if (isChestObjectType(obj.type)) drawDot(obj, '#b45309');
-        });
-    }
-    const lp = ENTITIES.PLAYERS[Vars.myId];
-    const minimapPlayers = Array.isArray(Vars.minimapPlayers) ? Vars.minimapPlayers : [];
-    for (let i = 0; i < minimapPlayers.length; i++) {
-        const p = minimapPlayers[i];
-        if (!p) continue;
-        if (p.id === Vars.myId) continue;
-        drawDot(p, 'red');
-    }
-    if (lp) drawDot(lp, 'white');
-
-    const top = Vars.topLeader;
-    if (CURRENT_WORLD === WORLD_MAIN && top?.id > 0 && Number.isFinite(top.x) && Number.isFinite(top.y) && LC.images?.['ui_crown']) {
-        const dx = (top.x / MAP_SIZE[0]) * size;
-        const dy = (top.y / MAP_SIZE[1]) * size;
-        LC.drawImage({
-            name: 'ui_crown',
-            pos: [x + dx - 10, y + dy - 10],
-            size: [20, 20]
-        });
-    }
 }
 
 function getMinimapClientRect() {
@@ -4363,15 +4808,22 @@ function getMinimapClientRect() {
 }
 
 export function getMinimapWorldPositionAtClientPos(clientX, clientY) {
-    if (!minimapCanvasState.open) return null;
+    if (minimapCanvasState.reveal <= PANEL_SLIDE_EPSILON) return null;
 
     const { x, y } = LC.clientToLogical(clientX, clientY);
-    if (x < MINIMAP_UI.x || x > MINIMAP_UI.x + MINIMAP_UI.size || y < MINIMAP_UI.y || y > MINIMAP_UI.y + MINIMAP_UI.size) {
+    const rect = minimapCanvasState.rect || { x: MINIMAP_UI.x - 5, y: MINIMAP_UI.y - 5, width: MINIMAP_UI.size + 10, height: MINIMAP_UI.size + 10 };
+    const mapRect = {
+        x: rect.x + 5,
+        y: rect.y + 5,
+        width: Math.max(1, rect.width - 10),
+        height: Math.max(1, rect.height - 10)
+    };
+    if (x < mapRect.x || x > mapRect.x + mapRect.width || y < mapRect.y || y > mapRect.y + mapRect.height) {
         return null;
     }
 
-    const localX = (x - MINIMAP_UI.x) / Math.max(1, MINIMAP_UI.size);
-    const localY = (y - MINIMAP_UI.y) / Math.max(1, MINIMAP_UI.size);
+    const localX = (x - mapRect.x) / mapRect.width;
+    const localY = (y - mapRect.y) / mapRect.height;
     return {
         x: Math.max(0, Math.min(65535, Math.round(localX * MAP_SIZE[0]))),
         y: Math.max(0, Math.min(65535, Math.round(localY * MAP_SIZE[1])))
@@ -4583,34 +5035,33 @@ export function handleMinimapCoachPointerDown(clientX, clientY) {
     return true;
 }
 
-function drawKillCounter() {
+function drawLeftCounter({ y, iconName, value }) {
     const x = 20;
-    const y = 208;
-    const width = 84;
-    const height = 30;
-    const kills = Math.max(0, Vars.myStats.kills || 0);
+    const text = String(Math.max(0, Math.floor(value || 0)));
 
-    LC.drawRect({
-        pos: [x - 2, y - 2],
-        size: [width, height],
-        color: 'rgba(0,0,0,0.45)',
-        cornerRadius: 6
-    });
-
-    if (LC.images?.['ui_skull']) {
+    if (LC.images?.[iconName]) {
         LC.drawImage({
-            name: 'ui_skull',
-            pos: [x + 6, y + 5],
+            name: iconName,
+            pos: [x, y + 2],
             size: [20, 20]
         });
     }
 
-    LC.drawText({
-        text: String(kills),
-        pos: [x + 34, y + 21],
-        font: 'bold 16px Inter',
-        color: 'white',
-        textAlign: 'left'
+    LC.drawTextFast(text, x + 30, y + 21, '900 16px Nunito', 'rgba(0,0,0,0.72)', 'left');
+    LC.drawTextFast(text, x + 28, y + 19, '900 16px Nunito', HUD_TEXT, 'left');
+}
+
+function drawKillCounter() {
+    const slideOffset = getMinimapHudSlideOffset();
+    drawLeftCounter({
+        y: 216 - slideOffset,
+        iconName: 'ui_skull',
+        value: Vars.myStats.kills
+    });
+    drawLeftCounter({
+        y: 250 - slideOffset,
+        iconName: 'gold_coin',
+        value: Vars.myStats.goldCoins
     });
 }
 
@@ -4619,9 +5070,9 @@ function drawUpgradeBars() {
     const points = Math.max(0, Vars.myStats.availablePoints || 0);
     const showUpgradeControls = hudUpgradesExpanded;
     const rows = [
-        { name: 'STRENGTH', level: Math.max(0, Math.min(15, Vars.myStats.buffStrength || 0)), color: '#ef6b6b', attrType: 1 },
-        { name: 'MAX HEALTH', level: Math.max(0, Math.min(15, Vars.myStats.buffMaxHealth || 0)), color: '#f0b27a', attrType: 2 },
-        { name: 'REGENERATION', level: Math.max(0, Math.min(15, Vars.myStats.buffRegenSpeed || 0)), color: '#d06de6', attrType: 3 }
+        { name: 'STRENGTH', level: Math.max(0, Math.min(HUD_UPGRADE_LAYOUT.segments, Vars.myStats.buffStrength || 0)), color: '#ef6b6b', attrType: 1 },
+        { name: 'MAX HEALTH', level: Math.max(0, Math.min(HUD_UPGRADE_LAYOUT.segments, Vars.myStats.buffMaxHealth || 0)), color: '#f0b27a', attrType: 2 },
+        { name: 'REGENERATION', level: Math.max(0, Math.min(HUD_UPGRADE_LAYOUT.segments, Vars.myStats.buffRegenSpeed || 0)), color: '#d06de6', attrType: 3 }
     ];
 
     const x = HUD_UPGRADE_LAYOUT.x;
@@ -4670,20 +5121,21 @@ function drawUpgradeBars() {
     if (Math.abs(targetOffset - hudUpgradeSlideOffset) < 0.25) {
         hudUpgradeSlideOffset = targetOffset;
     }
+    const slideOffset = getMinimapHudSlideOffset();
     const headerText = `UPGRADES (${points}) ${hudUpgradesExpanded ? '◀' : '▶'}`;
-    const headerFont = '900 16px Inter';
+    const headerFont = '900 16px Nunito';
     const headerMetrics = LC.measureText({ text: headerText, font: headerFont });
     const headerPadX = 10;
     const headerPadY = 4;
     const cursorX = (window._lastCursorX ?? -9999);
     const cursorY = (window._lastCursorY ?? -9999);
     const cursorHud = clientToHud(cursorX, cursorY);
-    const baseHeaderColor = isLocalPlayerInSnowBiome() ? '#4b5563' : 'white';
-    const hoverHeaderColor = isLocalPlayerInSnowBiome() ? '#9ca3af' : 'rgba(255,255,255,0.72)';
+    const baseHeaderColor = isLocalPlayerInSnowBiome() ? '#4b5563' : HUD_TEXT;
+    const hoverHeaderColor = isLocalPlayerInSnowBiome() ? '#9ca3af' : '#ffffff';
 
     hudUpgradeHeaderHitbox = {
-        x: x,
-        y: y - 24 - headerPadY,
+        x,
+        y: y - slideOffset - 24 - headerPadY,
         width: Math.max(140, headerMetrics.width + headerPadX * 2),
         height: 24 + (headerPadY * 2)
     };
@@ -4694,24 +5146,24 @@ function drawUpgradeBars() {
 
     LC.drawText({
         text: headerText,
-        pos: [x + 6, y - 8],
+        pos: [x + 10, y - slideOffset - 7],
         font: headerFont,
         color: isHeaderHover ? hoverHeaderColor : baseHeaderColor,
-        textAlign: 'left'
+        textAlign: 'left',
+        stroke: 'rgba(0,0,0,0.85)',
+        strokeWidth: 3
     });
 
     rows.forEach((row, idx) => {
-        const rowY = y + (idx * (rowH + rowGap));
+        const rowY = (y - slideOffset) + (idx * (rowH + rowGap));
         const rowX = x + hudUpgradeSlideOffset;
-        const canUpgrade = points > 0 && row.level < 10;
+        const canUpgrade = points > 0 && row.level < HUD_UPGRADE_LAYOUT.segments;
 
-        LC.drawRect({
-            pos: [rowX, rowY],
-            size: [barW, rowH],
-            color: 'rgba(0,0,0,0.52)',
-            stroke: canUpgrade ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.2)',
-            strokeWidth: 2,
-            cornerRadius: rowCornerRadius
+        drawArcadeRect(rowX, rowY, barW, rowH, {
+            color: ARCADE_UI.panelDark,
+            radius: rowCornerRadius,
+            shadow: 4,
+            strokeWidth: 4
         });
 
         const segStartX = rowX + segmentInset;
@@ -4722,7 +5174,7 @@ function drawUpgradeBars() {
                 y: rowY + 4,
                 width: segmentW,
                 height: rowH - 8,
-                color: i < row.level ? row.color : 'rgba(150, 170, 170, 0.38)',
+                color: i < row.level ? row.color : '#475569',
                 roundLeft: i === 0,
                 roundRight: i === HUD_UPGRADE_LAYOUT.segments - 1,
                 radius: edgeSegmentRadius
@@ -4732,7 +5184,7 @@ function drawUpgradeBars() {
         LC.drawText({
             text: row.name,
             pos: [rowX + 10, rowY + 20],
-            font: 'bold 14px Inter',
+            font: '900 13px Nunito',
             color: 'white',
             textAlign: 'left',
             stroke: 'rgba(0,0,0,0.75)',
@@ -4775,19 +5227,17 @@ function drawUpgradeBars() {
             const plusDrawSize = plusSize * plusScale;
             const plusX = basePlusX - ((plusDrawSize - plusSize) / 2);
             const plusY = basePlusY - ((plusDrawSize - plusSize) / 2);
-            LC.drawRect({
-                pos: [plusX, plusY],
-                size: [plusDrawSize, plusDrawSize],
-                color: row.color,
-                stroke: 'rgba(255,255,255,0.75)',
-                strokeWidth: 2,
-                cornerRadius: 6
+            drawArcadeRect(plusX, plusY, plusDrawSize, plusDrawSize, {
+                color: canUpgrade ? ARCADE_UI.green : '#64748b',
+                radius: 8,
+                shadow: 4,
+                strokeWidth: 4
             });
             LC.drawText({
                 text: '+',
                 pos: [plusX + (plusDrawSize / 2), plusY + (plusDrawSize / 2) + 5],
-                font: '900 16px Inter',
-                color: '#0f172a',
+                font: '900 16px Nunito',
+                color: ARCADE_UI.white,
                 textAlign: 'center'
             });
 
@@ -5089,7 +5539,7 @@ function drawInCombatLabel() {
     LC.drawText({
         text: pvpDisabled ? 'PvP Disabled' : 'In Combat',
         pos: [LC.width / 2, LC.height - 220],
-        font: 'bold 24px Inter',
+        font: '900 24px Nunito',
         color: pvpDisabled ? '#60a5fa' : '#ff4d4d',
         textAlign: 'center'
     });
@@ -5173,7 +5623,7 @@ function drawDragGhostOnOverlay({ imgName, iconW, iconH, rotation = 0, transpare
         const textX = x + (width / 2) - (5 * textScale);
         const textY = y + (height / 2) - (5 * textScale);
         ctx.save();
-        ctx.font = normalizeCanvasFont(`bold ${Math.max(12, 16 * textScale)}px Inter`);
+        ctx.font = normalizeCanvasFont(`900 ${Math.max(12, 16 * textScale)}px Nunito`);
         ctx.textAlign = 'right';
         ctx.textBaseline = 'alphabetic';
         ctx.lineWidth = Math.max(1.5, 2 * textScale);
@@ -5212,7 +5662,7 @@ function drawDraggedItem() {
             LC.drawText({
                 text: Vars.creativeDragAmount.toLocaleString(),
                 pos: [x + iconW / 2 - 5, y + iconH / 2 - 5],
-                font: 'bold 16px Inter',
+                font: '900 16px Nunito',
                 color: 'white',
                 textAlign: 'right',
                 stroke: 'black',
@@ -5277,7 +5727,7 @@ function drawDraggedItem() {
             LC.drawText({
                 text: count.toLocaleString(),
                 pos: [x + iconW / 2 - 5, y + iconH / 2 - 5],
-                font: 'bold 16px Inter',
+                font: '900 16px Nunito',
                 color: 'white',
                 textAlign: 'right',
                 stroke: 'black',
@@ -5291,12 +5741,26 @@ function drawHotbar() {
     const hb = HOTBAR_CONFIG, totalW = (hb.slotSize * 6) + (hb.gap * 5) + (hb.padding * 2);
     const x = (LC.width / 2) - (totalW / 2), y = LC.height - hb.marginBottom - hb.slotSize - hb.padding * 2;
 
-    LC.drawRectFast(x, y, totalW, hb.slotSize + hb.padding * 2, 'rgba(0,0,0,0.5)', 1, 12);
+    drawArcadeRect(x, y, totalW, hb.slotSize + hb.padding * 2, {
+        color: arcadePanel(0.46),
+        radius: 14,
+        shadow: 4,
+        shadowColor: HUD_SHADOW,
+        stroke: HUD_STROKE,
+        strokeWidth: 3
+    });
 
     for (let i = 0; i < 5; i++) {
         const sx = x + hb.padding + (i * (hb.slotSize + hb.gap)), sy = y + hb.padding;
         const selected = Vars.selectedSlot === i;
-        LC.drawRectFast(sx, sy, hb.slotSize, hb.slotSize, selected ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.2)', 1, 8);
+        drawArcadeRect(sx, sy, hb.slotSize, hb.slotSize, {
+            color: selected ? 'rgba(59, 130, 246, 0.72)' : arcadePanelDark(0.48),
+            radius: 10,
+            shadow: 3,
+            shadowColor: HUD_SHADOW,
+            stroke: HUD_STROKE,
+            strokeWidth: 4
+        });
 
         let rank = Vars.myInventory[i];
         if (rank > 0 && i !== Vars.dragSlot && !uiState.itemsInSellQueue.includes(i)) {
@@ -5315,8 +5779,8 @@ function drawHotbar() {
                 LC.drawText({
                     text: count.toLocaleString(),
                     pos: [sx + hb.slotSize - 5, sy + hb.slotSize - 5],
-                    font: 'bold 12px Inter',
-                    color: 'white',
+                    font: '900 12px Nunito',
+                    color: HUD_ACCENT,
                     textAlign: 'right',
                     stroke: 'black',
                     strokeWidth: 2
@@ -5327,8 +5791,15 @@ function drawHotbar() {
 
     // Draw the "..." button slot
     const sx_more = x + hb.padding + (5 * (hb.slotSize + hb.gap)), sy_more = y + hb.padding;
-    LC.drawRectFast(sx_more, sy_more, hb.slotSize, hb.slotSize, 'rgba(0,0,0,0.2)', 1, 8);
-    LC.drawTextFast('...', sx_more + hb.slotSize / 2, sy_more + hb.slotSize / 2 + 5, 'bold 24px Inter', 'white', 'center');
+    drawArcadeRect(sx_more, sy_more, hb.slotSize, hb.slotSize, {
+        color: arcadePanelDark(0.48),
+        radius: 10,
+        shadow: 3,
+        shadowColor: HUD_SHADOW,
+        stroke: HUD_STROKE,
+        strokeWidth: 4
+    });
+    LC.drawTextFast('...', sx_more + hb.slotSize / 2, sy_more + hb.slotSize / 2 + 5, '900 24px Nunito', HUD_ACCENT, 'center');
 
     drawAccessorySlot(x, y, totalW);
     drawLevelProgressBar(x, y, totalW);
@@ -5373,11 +5844,18 @@ function drawLevelProgressBar(hotbarX, hotbarY, hotbarWidth) {
     const x = hotbarX + (hotbarWidth - barWidth) / 2;
     const y = hotbarY - 56;
 
-    LC.drawRectFast(x, y, barWidth, barHeight, 'rgba(130, 130, 130, 0.45)', 1, 6);
+    drawArcadeRect(x - 4, y - 4, barWidth + 8, barHeight + 8, {
+        color: 'rgba(15, 23, 42, 0.42)',
+        radius: 8,
+        shadow: 2,
+        shadowColor: HUD_SHADOW,
+        stroke: HUD_STROKE,
+        strokeWidth: 3
+    });
     if (progress > 0.001) {
-        LC.drawRectFast(x, y, barWidth * progress, barHeight, 'rgba(59, 130, 246, 0.95)', 1, 6);
+        LC.drawRectFast(x, y, barWidth * progress, barHeight, 'rgba(96, 165, 250, 0.84)', 1, 6);
     }
-    LC.drawTextFast(`LVL ${level}  (${Math.round(progress * 100)}%)`, x + (barWidth / 2), y - 6, 'bold 12px Inter', isLocalPlayerInSnowBiome() ? '#4b5563' : 'white', 'center');
+    LC.drawTextFast(`LVL ${level}  (${Math.round(progress * 100)}%)`, x + (barWidth / 2), y - 8, '900 12px Nunito', isLocalPlayerInSnowBiome() ? '#4b5563' : HUD_ACCENT, 'center');
 }
 
 function drawAbilityCooldownBar(hotbarX, hotbarY, hotbarWidth) {
@@ -5396,16 +5874,21 @@ function drawAbilityCooldownBar(hotbarX, hotbarY, hotbarWidth) {
     const x = hotbarX + (hotbarWidth - barWidth) / 2;
     const y = hotbarY - 18;
 
-    LC.drawRectFast(x, y, barWidth, barHeight, 'rgba(130, 130, 130, 0.45)', 1, 6);
-    LC.drawRectFast(x, y, barWidth * fillRatio, barHeight, 'rgba(220, 38, 38, 0.95)', 1, 6);
+    drawArcadeRect(x - 4, y - 4, barWidth + 8, barHeight + 8, {
+        color: ARCADE_UI.ink,
+        radius: 8,
+        shadow: 3,
+        strokeWidth: 3
+    });
+    LC.drawRectFast(x, y, barWidth * fillRatio, barHeight, ARCADE_UI.red, 1, 6);
 
     if (fillRatio >= 0.999) {
         LC.drawTextFast(
             (isMobile || Settings.forceMobileUI) ? 'Tap ability to activate!' : 'Press F to activate your ability!',
             x + (barWidth / 2),
             y - 8,
-            'bold 14px Inter',
-            isLocalPlayerInSnowBiome() ? '#4b5563' : 'white',
+            '900 14px Nunito',
+            isLocalPlayerInSnowBiome() ? '#4b5563' : HUD_ACCENT,
             'center'
         );
     }
@@ -5420,7 +5903,14 @@ function drawInventory() {
 
     const { inventoryX: x, inventoryY: y, creativeX, creativeY } = getAdminInventoryPanelPositions(totalW, totalH);
 
-    LC.drawRectFast(x, y, totalW, totalH, inv.background, 1, inv.cornerRadius);
+    drawArcadeRect(x, y, totalW, totalH, {
+        color: arcadePanel(0.46),
+        radius: inv.cornerRadius || 16,
+        shadow: 5,
+        shadowColor: HUD_SHADOW,
+        stroke: HUD_STROKE,
+        strokeWidth: 3
+    });
 
     for (let i = 0; i < 30; i++) {
         const col = i % inv.cols;
@@ -5430,7 +5920,14 @@ function drawInventory() {
         const sx = x + inv.padding + (col * (inv.slotSize + inv.gap));
         const sy = y + inv.padding + (row * (inv.slotSize + inv.gap));
 
-        LC.drawRectFast(sx, sy, inv.slotSize, inv.slotSize, 'rgba(0,0,0,0.2)', 1, 8);
+        drawArcadeRect(sx, sy, inv.slotSize, inv.slotSize, {
+            color: arcadePanelDark(0.48),
+            radius: 10,
+            shadow: 3,
+            shadowColor: HUD_SHADOW,
+            stroke: HUD_STROKE,
+            strokeWidth: 4
+        });
 
         let rank = Vars.myInventory[slotIndex];
         if (rank > 0 && slotIndex !== Vars.dragSlot && !uiState.itemsInSellQueue.includes(slotIndex)) {
@@ -5449,8 +5946,8 @@ function drawInventory() {
                 LC.drawText({
                     text: count.toLocaleString(),
                     pos: [sx + inv.slotSize - 5, sy + inv.slotSize - 5],
-                    font: 'bold 12px Inter',
-                    color: 'white',
+                    font: '900 12px Nunito',
+                    color: HUD_ACCENT,
                     textAlign: 'right',
                     stroke: 'black',
                     strokeWidth: 2
@@ -5496,8 +5993,15 @@ function drawCreativeInventoryPanel(x, y, totalW, totalH) {
     const startRow = Math.max(0, Math.floor(scrollY / rowStride));
     const endRow = Math.min(totalRows, startRow + visibleRows + 2);
 
-    LC.drawRectFast(x, y, totalW, totalH, 'rgba(0,0,0,0.45)', 1, inv.cornerRadius);
-    LC.drawTextFast('ADMIN', x + 14, y - 8, 'bold 14px Inter', 'rgba(255,255,255,0.92)');
+    drawArcadeRect(x, y, totalW, totalH, {
+        color: arcadePanel(0.46),
+        radius: inv.cornerRadius || 16,
+        shadow: 5,
+        shadowColor: HUD_SHADOW,
+        stroke: HUD_STROKE,
+        strokeWidth: 3
+    });
+    LC.drawTextFast('ADMIN', x + 14, y - 8, '900 14px Nunito', HUD_ACCENT);
 
     LC.ctx.save();
     LC.ctx.beginPath();
@@ -5511,7 +6015,14 @@ function drawCreativeInventoryPanel(x, y, totalW, totalH) {
             const sy = y + inv.padding + (row * rowStride) - scrollY;
             const item = ADMIN_CREATIVE_ITEMS[i] || null;
 
-            LC.drawRectFast(sx, sy, inv.slotSize, inv.slotSize, 'rgba(0,0,0,0.18)', 1, 8);
+            drawArcadeRect(sx, sy, inv.slotSize, inv.slotSize, {
+                color: arcadePanelDark(0.48),
+                radius: 10,
+                shadow: 3,
+                shadowColor: HUD_SHADOW,
+                stroke: HUD_STROKE,
+                strokeWidth: 4
+            });
             if (!item) continue;
 
             const { imgName, rotation, aspect } = getItemIconInfo(item.type);
@@ -5523,8 +6034,8 @@ function drawCreativeInventoryPanel(x, y, totalW, totalH) {
                 LC.drawText({
                     text: item.amount.toLocaleString(),
                     pos: [sx + inv.slotSize - 5, sy + inv.slotSize - 5],
-                    font: 'bold 12px Inter',
-                    color: 'white',
+                    font: '900 12px Nunito',
+                    color: HUD_ACCENT,
                     textAlign: 'right',
                     stroke: 'black',
                     strokeWidth: 2
@@ -5543,8 +6054,8 @@ function drawCreativeInventoryPanel(x, y, totalW, totalH) {
         const thumbH = Math.max(26, (visibleRows / totalRows) * trackH);
         const thumbTravel = Math.max(0, trackH - thumbH);
         const thumbY = trackY + ((scrollY / scrollMax) * thumbTravel);
-        LC.drawRectFast(trackX, trackY, trackW, trackH, 'rgba(255,255,255,0.12)', 1, 4);
-        LC.drawRectFast(trackX, thumbY, trackW, thumbH, 'rgba(255,255,255,0.55)', 1, 4);
+        LC.drawRectFast(trackX, trackY, trackW, trackH, ARCADE_UI.ink, 1, 4);
+        LC.drawRectFast(trackX, thumbY, trackW, thumbH, ARCADE_UI.blue, 1, 4);
     }
 }
 
@@ -5637,9 +6148,23 @@ function drawAccessorySlot(hotbarX, hotbarY, hotbarWidth) {
     const slotX = hotbarX - as.gap - as.size;
     const slotY = hotbarY + hb.padding + (hb.slotSize - as.size) / 2;
 
-    LC.drawRectFast(slotX - hb.padding, hotbarY, as.size + hb.padding * 2, hb.slotSize + hb.padding * 2, 'rgba(0,0,0,0.5)', 1, 12);
+    drawArcadeRect(slotX - hb.padding, hotbarY, as.size + hb.padding * 2, hb.slotSize + hb.padding * 2, {
+        color: arcadePanel(0.46),
+        radius: 14,
+        shadow: 4,
+        shadowColor: HUD_SHADOW,
+        stroke: HUD_STROKE,
+        strokeWidth: 3
+    });
 
-    LC.drawRectFast(slotX, slotY, as.size, as.size, 'rgba(0,0,0,0.2)', 1, 7);
+    drawArcadeRect(slotX, slotY, as.size, as.size, {
+        color: arcadePanelDark(0.48),
+        radius: 10,
+        shadow: 3,
+        shadowColor: HUD_SHADOW,
+        stroke: HUD_STROKE,
+        strokeWidth: 4
+    });
 
     const myPlayer = ENTITIES.PLAYERS[Vars.myId];
     const accessoryId = myPlayer?.accessoryId || 0;
@@ -5686,10 +6211,10 @@ function drawMobileButtons(lp) {
         const by = LC.height - config.yOffset;
         const alpha = active ? 0.6 : 0.2;
         LC.drawCircleFast(bx, by, config.radius, `rgba(0,0,0,${alpha})`, 1, true, true, active ? 'white' : 'rgba(255,255,255,0.2)', 2);
-        LC.drawTextFast(label, bx, by + 5, `bold ${config.radius * 0.4}px Inter`, active ? 'white' : 'rgba(255,255,255,0.2)', 'center');
+        LC.drawTextFast(label, bx, by + 5, `900 ${config.radius * 0.4}px Nunito`, active ? 'white' : 'rgba(255,255,255,0.2)', 'center');
     };
 
-    const canSwingSelectedWeapon = lp.hasWeapon && !isBoomerangType((lp.weaponRank || 0) & 0x7F);
+    const canSwingSelectedWeapon = lp.hasWeapon;
     drawBtn(THROW_BTN_CONFIG, 'THROW', lp.hasWeapon && isTutorialMobileActionEnabled('throw'));
     drawBtn(ATTACK_BTN_CONFIG, 'ATTACK', canSwingSelectedWeapon && isTutorialMobileActionEnabled('attack'));
     drawBtn(PICKUP_BTN_CONFIG, 'PICKUP', isTutorialMobileActionEnabled('pickup'));
@@ -5700,8 +6225,8 @@ export function isTutorialMobileActionEnabled(action) {
     if (!isMobile || CURRENT_WORLD !== WORLD_TUTORIAL || !Vars.tutorialObjectiveVisible) return true;
     const step = Vars.tutorialObjectiveStep;
     if (action === 'attack') return step >= 1;
-    if (action === 'throw') return step >= 2;
-    if (action === 'pickup') return step >= 4;
+    if (action === 'throw') return step >= 1;
+    if (action === 'pickup') return step >= 2;
     if (action === 'drop') return false;
     return true;
 }
@@ -5760,6 +6285,295 @@ function clearPendingSpectateDelay() {
     Vars.deathSpectateStartAt = 0;
     Vars.deathSpectateTargetId = 0;
     Vars.deathSpectateUntil = 0;
+}
+
+function hasSeenTutorialIntro() {
+    try {
+        return localStorage.getItem(TUTORIAL_INTRO_STORAGE_KEY) === '1';
+    } catch (e) {
+        return false;
+    }
+}
+
+function markTutorialIntroSeen() {
+    try {
+        localStorage.setItem(TUTORIAL_INTRO_STORAGE_KEY, '1');
+    } catch (e) {
+        // Ignore storage failures.
+    }
+}
+
+function ensureTutorialIntroOverlay() {
+    if (tutorialIntroUi.rootEl || typeof document === 'undefined') return;
+
+    const root = document.createElement('div');
+    root.id = 'tutorial_intro_overlay';
+    Object.assign(root.style, {
+        position: 'fixed',
+        inset: '0',
+        zIndex: '100650',
+        display: 'none',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '20px',
+        pointerEvents: 'auto',
+        background: 'rgba(0, 0, 0, 0.72)',
+        backdropFilter: 'blur(4px)',
+        WebkitBackdropFilter: 'blur(4px)'
+    });
+
+    const panel = document.createElement('div');
+    panel.className = 'tutorial_intro_panel';
+    Object.assign(panel.style, {
+        width: 'min(640px, 100%)',
+        padding: '22px 22px 18px',
+        borderRadius: '16px',
+        border: '1px solid rgba(255, 255, 255, 0.10)',
+        background: 'linear-gradient(180deg, rgba(19, 24, 38, 0.96), rgba(10, 14, 24, 0.98))',
+        boxShadow: '0 16px 48px rgba(0, 0, 0, 0.45)',
+        color: '#fff',
+        display: 'grid',
+        justifyItems: 'center',
+        gap: '14px'
+    });
+
+    const title = document.createElement('div');
+    Object.assign(title.style, {
+        width: '100%',
+        font: '900 clamp(26px, 4vw, 38px) Nunito, -apple-system, sans-serif',
+        lineHeight: '1',
+        letterSpacing: '0.03em',
+        color: '#f8fafc',
+        textAlign: 'center'
+    });
+
+    const body = document.createElement('div');
+    Object.assign(body.style, {
+        width: '100%',
+        maxWidth: '60ch',
+        font: '800 clamp(16px, 2vw, 19px) Nunito, -apple-system, sans-serif',
+        lineHeight: '1.35',
+        letterSpacing: '0.01em',
+        color: 'rgba(226, 232, 240, 0.94)',
+        textAlign: 'center'
+    });
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'START TUTORIAL';
+    Object.assign(button.style, {
+        minWidth: '190px',
+        padding: '13px 18px',
+        borderRadius: '12px',
+        border: '1px solid rgba(74, 222, 128, 0.45)',
+        background: 'linear-gradient(180deg, rgba(34, 197, 94, 0.90), rgba(22, 163, 74, 0.90))',
+        color: '#fff',
+        font: '900 18px Nunito, -apple-system, sans-serif',
+        letterSpacing: '0.07em',
+        textTransform: 'uppercase',
+        cursor: 'pointer',
+        boxShadow: '0 10px 24px rgba(22, 163, 74, 0.24)'
+    });
+
+    panel.appendChild(title);
+    panel.appendChild(body);
+    panel.appendChild(button);
+    root.appendChild(panel);
+    document.body.appendChild(root);
+
+    tutorialIntroUi.rootEl = root;
+    tutorialIntroUi.panelEl = panel;
+    tutorialIntroUi.titleEl = title;
+    tutorialIntroUi.bodyEl = body;
+    tutorialIntroUi.buttonEl = button;
+
+    button.onclick = () => {
+        hideTutorialIntroOverlay();
+        const done = tutorialIntroUi.onComplete;
+        tutorialIntroUi.onComplete = null;
+        done?.();
+    };
+}
+
+function updateTutorialIntroOverlay() {
+    ensureTutorialIntroOverlay();
+    if (!tutorialIntroUi.rootEl || !tutorialIntroUi.titleEl || !tutorialIntroUi.bodyEl || !tutorialIntroUi.buttonEl) return;
+    tutorialIntroUi.titleEl.textContent = 'Welcome to Ultimate Arena';
+    tutorialIntroUi.bodyEl.textContent = 'Loot, kill, level up, and get stronger!';
+    tutorialIntroUi.buttonEl.textContent = 'START TUTORIAL';
+}
+
+function showTutorialIntroOverlay(onComplete) {
+    ensureTutorialIntroOverlay();
+    if (!tutorialIntroUi.rootEl) return;
+    tutorialIntroUi.onComplete = typeof onComplete === 'function' ? onComplete : null;
+    updateTutorialIntroOverlay();
+    tutorialIntroUi.rootEl.style.display = 'flex';
+    uiState.forceHomeScreen = true;
+    closeHomeScreenBlockingUI();
+    setElementDisplay(document.getElementById('home_screen'), 'none');
+    setElementDisplay(document.getElementById('respawn_screen'), 'none');
+}
+
+function hideTutorialIntroOverlay() {
+    if (!tutorialIntroUi.rootEl) return;
+    tutorialIntroUi.rootEl.style.display = 'none';
+}
+
+function ensureTutorialCompleteOverlay() {
+    if (tutorialCompleteUi.rootEl || typeof document === 'undefined') return;
+
+    const root = document.createElement('div');
+    root.id = 'tutorial_complete_overlay';
+    Object.assign(root.style, {
+        position: 'fixed',
+        inset: '0',
+        zIndex: '100700',
+        display: 'none',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '20px',
+        pointerEvents: 'auto',
+        background: 'rgba(0, 0, 0, 0.76)',
+        backdropFilter: 'blur(5px)',
+        WebkitBackdropFilter: 'blur(5px)'
+    });
+
+    const panel = document.createElement('div');
+    panel.className = 'tutorial_complete_panel';
+    Object.assign(panel.style, {
+        width: 'min(680px, 100%)',
+        padding: '24px 22px 20px',
+        borderRadius: '18px',
+        border: '1px solid rgba(219, 234, 254, 0.28)',
+        background: 'linear-gradient(180deg, rgba(28, 20, 12, 0.98), rgba(14, 12, 10, 0.98))',
+        boxShadow: '0 18px 54px rgba(0, 0, 0, 0.5)',
+        color: '#fff',
+        display: 'grid',
+        justifyItems: 'center',
+        gap: '14px'
+    });
+
+    const title = document.createElement('div');
+    Object.assign(title.style, {
+        width: '100%',
+        font: '900 clamp(28px, 4vw, 42px) Nunito, -apple-system, sans-serif',
+        lineHeight: '1',
+        letterSpacing: '0.05em',
+        color: '#dbeafe',
+        textAlign: 'center'
+    });
+
+    const body = document.createElement('div');
+    Object.assign(body.style, {
+        width: '100%',
+        maxWidth: '60ch',
+        font: '800 clamp(16px, 2vw, 19px) Nunito, -apple-system, sans-serif',
+        lineHeight: '1.38',
+        letterSpacing: '0.01em',
+        color: 'rgba(254, 243, 199, 0.94)',
+        textAlign: 'center'
+    });
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'ENTER MAIN WORLD';
+    Object.assign(button.style, {
+        minWidth: '210px',
+        padding: '13px 18px',
+        borderRadius: '12px',
+        border: '1px solid rgba(219, 234, 254, 0.42)',
+        background: 'linear-gradient(180deg, rgba(245, 158, 11, 0.96), rgba(217, 119, 6, 0.96))',
+        color: '#fff',
+        font: '900 18px Nunito, -apple-system, sans-serif',
+        letterSpacing: '0.07em',
+        textTransform: 'uppercase',
+        cursor: 'pointer',
+        boxShadow: '0 10px 24px rgba(217, 119, 6, 0.26)'
+    });
+
+    panel.appendChild(title);
+    panel.appendChild(body);
+    panel.appendChild(button);
+    root.appendChild(panel);
+    document.body.appendChild(root);
+
+    tutorialCompleteUi.rootEl = root;
+    tutorialCompleteUi.panelEl = panel;
+    tutorialCompleteUi.titleEl = title;
+    tutorialCompleteUi.bodyEl = body;
+    tutorialCompleteUi.buttonEl = button;
+
+    button.onclick = () => {
+        try {
+            localStorage.setItem('ua_tutorial_completed', '1');
+            localStorage.setItem('ua_world', 'main');
+            localStorage.setItem('ua_world_choice_made', '1');
+            localStorage.removeItem('ua_auto_join_after_reload');
+        } catch (e) {
+            // Ignore storage failures.
+        }
+        hideTutorialIntroOverlay();
+        hideTutorialCompleteOverlay();
+        uiState.forceHomeScreen = true;
+        window.location.reload();
+    };
+}
+
+function updateTutorialCompleteOverlay() {
+    ensureTutorialCompleteOverlay();
+    if (!tutorialCompleteUi.rootEl || !tutorialCompleteUi.titleEl || !tutorialCompleteUi.bodyEl || !tutorialCompleteUi.buttonEl) return;
+    tutorialCompleteUi.titleEl.textContent = 'Tutorial Complete';
+    tutorialCompleteUi.bodyEl.textContent = 'You have completed the tutorial. Press the button below to enter the real game.';
+    tutorialCompleteUi.buttonEl.textContent = 'PLAY';
+}
+
+export function showTutorialCompleteOverlay() {
+    ensureTutorialCompleteOverlay();
+    if (!tutorialCompleteUi.rootEl) return;
+    updateTutorialCompleteOverlay();
+    tutorialCompleteUi.rootEl.style.display = 'flex';
+    uiState.forceHomeScreen = true;
+    closeHomeScreenBlockingUI();
+    setElementDisplay(document.getElementById('home_screen'), 'none');
+    setElementDisplay(document.getElementById('respawn_screen'), 'none');
+}
+
+export function hideTutorialCompleteOverlay() {
+    if (!tutorialCompleteUi.rootEl) return;
+    tutorialCompleteUi.rootEl.style.display = 'none';
+}
+
+async function startTutorialJoinFlow() {
+    if (worldChoiceInProgress) return;
+    if (isJoinActionOnCooldown()) {
+        updateJoinButton();
+        return;
+    }
+    worldChoiceInProgress = true;
+    const canJoin = await chooseWorldForJoin(WORLD_TUTORIAL);
+    worldChoiceInProgress = false;
+    if (!canJoin) return;
+    uiState.forceHomeScreen = false;
+    uiState.isPaused = false;
+    clearPendingSpectateDelay();
+    tryJoin();
+}
+
+function shouldAutoStartTutorialIntro() {
+    try {
+        return localStorage.getItem(TUTORIAL_COMPLETED_STORAGE_KEY) !== '1';
+    } catch (e) {
+        return false;
+    }
+}
+
+function maybeAutoStartFirstTutorialIntro() {
+    if (!shouldAutoStartTutorialIntro()) return false;
+    showTutorialIntroOverlay(() => {
+        void startTutorialJoinFlow();
+    });
+    return true;
 }
 
 const tryJoin = () => {
@@ -5852,20 +6666,8 @@ if (joinBtn) {
 
 if (tutorialBtn) {
     tutorialBtn.onclick = async () => {
-        if (worldChoiceInProgress) return;
-        if (isJoinActionOnCooldown()) {
-            updateJoinButton();
-            return;
-        }
         localStorage.username = getStoredAccountUsername() || usernameInput.value;
-        worldChoiceInProgress = true;
-        const canJoin = await chooseWorldForJoin(WORLD_TUTORIAL);
-        worldChoiceInProgress = false;
-        if (!canJoin) return;
-        uiState.forceHomeScreen = false;
-        uiState.isPaused = false;
-        clearPendingSpectateDelay();
-        tryJoin();
+        void startTutorialJoinFlow();
     };
 }
 
@@ -5953,6 +6755,9 @@ setupAccountAuthUI({
     requestAnimationFrame(countFps);
 
     try {
+        if (maybeAutoStartFirstTutorialIntro()) {
+            return;
+        }
         if (localStorage.getItem(AUTO_JOIN_STORAGE_KEY) === '1') {
             localStorage.removeItem(AUTO_JOIN_STORAGE_KEY);
             const performAutoJoin = () => {

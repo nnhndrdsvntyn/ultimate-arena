@@ -5,7 +5,9 @@ import {
 import {
     dataMap,
     getCoinObjectType,
-    ACCESSORY_KEYS
+    ACCESSORY_KEYS,
+    WEAPON_IDS,
+    accessoryItemTypeFromId
 } from '../../../public/shared/datamap.js';
 import {
     playSfx,
@@ -18,6 +20,16 @@ import {
 import {
     spawnObject
 } from '../../game.js';
+
+const RARE_CHEST_TYPE = 22;
+const ELITE_CHEST_TYPE = 23;
+const ELITE_CHEST_COIN_DROP = 3500;
+const CHEST_COIN_STACK_SIZE = 25;
+
+function getRandomEntry(items) {
+    if (!Array.isArray(items) || items.length <= 0) return 0;
+    return items[Math.floor(Math.random() * items.length)] || 0;
+}
 
 export class Chest extends GameObject {
     constructor(id, x, y, type) {
@@ -52,6 +64,7 @@ export class Chest extends GameObject {
         super.die(killer);
 
         const totalGold = this.computeCoinDrop(killer);
+        this.dropRareChestItems();
         if (totalGold <= 0) return;
 
         const coinType = getCoinObjectType();
@@ -68,12 +81,16 @@ export class Chest extends GameObject {
 
         emitChestCoinSeed(this.x, this.y, dropSpread, totalGold, seed, 100000, worldId);
 
-        for (let i = 0; i < totalGold; i++) {
+        const coinStackSize = totalGold > 500 ? CHEST_COIN_STACK_SIZE : 1;
+        let remainingGold = totalGold;
+        while (remainingGold > 0) {
+            const amount = Math.min(coinStackSize, remainingGold);
             const dropAngle = nextRand() * Math.PI * 2;
             const dropDistance = Math.sqrt(nextRand()) * dropSpread;
             const dropX = Math.max(coinRadius, Math.min(MAP_SIZE[0] - coinRadius, this.x + Math.cos(dropAngle) * dropDistance));
             const dropY = Math.max(coinRadius, Math.min(MAP_SIZE[1] - coinRadius, this.y + Math.sin(dropAngle) * dropDistance));
-            spawnObject(coinType, dropX, dropY, 1, 'chest', worldId);
+            spawnObject(coinType, dropX, dropY, amount, 'chest', worldId);
+            remainingGold -= amount;
         }
 
     }
@@ -84,6 +101,10 @@ export class Chest extends GameObject {
         }
         if (!this.shouldDropLoop) return 0;
 
+        if (this.type === ELITE_CHEST_TYPE) {
+            return ELITE_CHEST_COIN_DROP;
+        }
+
         const [min, max] = dataMap.OBJECTS[this.type].coinDropRange;
         const baseGold = Math.floor(Math.random() * (max - min + 1)) + min;
         const killerAccessory = ACCESSORY_KEYS[killer?.accessoryId || 0];
@@ -91,5 +112,32 @@ export class Chest extends GameObject {
             ? Math.floor(baseGold * 1.2)
             : baseGold;
     }
-}
 
+    dropRareChestItems() {
+        if (!this.shouldDropLoop || this.type !== RARE_CHEST_TYPE) return;
+
+        const worldId = this.world || 'main';
+        const weaponType = getRandomEntry(WEAPON_IDS);
+        if (weaponType) {
+            this.spawnChestItemDrop(weaponType, worldId);
+        }
+
+        const accessoryIds = ACCESSORY_KEYS
+            .map((_, id) => id)
+            .filter(id => id > 0 && accessoryItemTypeFromId(id));
+        const accessoryType = accessoryItemTypeFromId(getRandomEntry(accessoryIds));
+        if (accessoryType) {
+            this.spawnChestItemDrop(accessoryType, worldId);
+        }
+    }
+
+    spawnChestItemDrop(type, worldId) {
+        const itemRadius = dataMap.OBJECTS[type]?.radius || 45;
+        const spread = this.radius + 75;
+        const angle = Math.random() * Math.PI * 2;
+        const distance = Math.sqrt(Math.random()) * spread;
+        const dropX = Math.max(itemRadius, Math.min(MAP_SIZE[0] - itemRadius, this.x + Math.cos(angle) * distance));
+        const dropY = Math.max(itemRadius, Math.min(MAP_SIZE[1] - itemRadius, this.y + Math.sin(angle) * distance));
+        spawnObject(type, dropX, dropY, 1, 'chest_loot', worldId);
+    }
+}

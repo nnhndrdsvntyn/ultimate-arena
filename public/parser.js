@@ -23,12 +23,12 @@ import {
     showNotification,
     uiState,
     closeHomeScreenBlockingUI,
-    updateSettingsBody,
     updateShopBody,
     isMobile,
     appendChatMessage,
     setHomeLeaderboardsLoading,
-    updateHomeLeaderboards
+    updateHomeLeaderboards,
+    handleHomeWheelSpinResult
 } from './ui.js';
 import { sendTutorialEvent } from './helpers.js';
 import { applyLiveAccountDeathIncrement, applyLiveAccountKillDelta, clearStoredAccountSession, updateAccountProfileFromServer } from './auth/client_auth.js';
@@ -59,10 +59,14 @@ import {
     ensureFullWorldAssetsLoaded,
     resetTransientWorldVisuals,
     suppressNextKeyHintAutoShow,
+    showTutorialCompleteOverlay,
+    refreshHudDerivedState,
     DEATH_SPECTATE_START_DELAY_MS
 } from './client.js';
+import { bumpStructureStateVersion } from './game.js';
 import { setStoredAdminKey } from './admin_key.js';
 import { updateShopAttentionIndicator } from './ui/shop.js';
+import { startTutorialCelebration, resetTutorialCelebration } from './ui/canvas/tutorial_canvas.js';
 import {
     dataMap,
     isSwordRank,
@@ -110,7 +114,8 @@ const PACKET_TYPES = {
     BOSS_INTRO_COUNTDOWN: 41,
     COIN_SNAPSHOT: 42,
     GROUND_LOOT_CLEAR: 43,
-    INFERNO_BEAM_FX: 44
+    INFERNO_BEAM_FX: 44,
+    HOME_WHEEL_SPIN_RESULT: 45
 };
 
 const UPDATE_SECTION_STRUCTURES = 83; // "S"
@@ -153,6 +158,7 @@ function unpackPlayerStatusByte(packed = 0) {
         hasShield: !!(safe & 0x02),
         isAlive: !!(safe & 0x04),
         isInvisible: !!(safe & 0x08),
+        isAdmin: !!(safe & 0x10),
         skinColor: DEFAULT_PLAYER_SKIN
     };
 }
@@ -201,6 +207,7 @@ function handleStructureAddPacket(reader) {
     if (!dataMap.STRUCTURES[type]) return;
     if (ENTITIES.STRUCTURES[id]) return;
     new Structure(id, x, y, type);
+    bumpStructureStateVersion();
 }
 
 function handleStructureRemovePacket(reader) {
@@ -208,7 +215,7 @@ function handleStructureRemovePacket(reader) {
     const existing = ENTITIES.STRUCTURES[id];
     if (!existing) return;
     delete ENTITIES.STRUCTURES[id];
-    // Optional: clear any cached references if needed
+    bumpStructureStateVersion();
 }
 
 function handleChatFeedPacket(reader) {
@@ -236,21 +243,41 @@ function peekU8(reader) {
 
 function applyStructureUpdate(id, x, y, type, radius, isFullUpdate) {
     let structure = ENTITIES.STRUCTURES[id];
+    let changed = false;
     if (!structure) {
         if (!isFullUpdate || !dataMap.STRUCTURES[type]) return;
         structure = new Structure(id, x, y, type);
+        changed = true;
     }
 
-    if (Number.isFinite(x)) structure.newX = x;
-    if (Number.isFinite(y)) structure.newY = y;
+    if (Number.isFinite(x) && structure.newX !== x) {
+        structure.newX = x;
+        changed = true;
+    }
+    if (Number.isFinite(y) && structure.newY !== y) {
+        structure.newY = y;
+        changed = true;
+    }
     if (dataMap.STRUCTURES[type]) {
-        structure.type = type;
+        if (structure.type !== type) {
+            structure.type = type;
+            changed = true;
+        }
     }
     if (Number.isFinite(radius) && radius > 0) {
-        structure.radius = radius;
+        if (structure.radius !== radius) {
+            structure.radius = radius;
+            changed = true;
+        }
     } else if (dataMap.STRUCTURES[structure.type]?.radius) {
-        structure.radius = dataMap.STRUCTURES[structure.type].radius;
+        const nextRadius = dataMap.STRUCTURES[structure.type].radius;
+        if (structure.radius !== nextRadius) {
+            structure.radius = nextRadius;
+            changed = true;
+        }
     }
+
+    if (changed) bumpStructureStateVersion();
 }
 
 function handleStructureUpdatesSection(reader) {
@@ -450,6 +477,9 @@ export function parsePacket(buffer) {
         case PACKET_TYPES.INFERNO_BEAM_FX:
             handleInfernoBeamFxPacket(reader);
             break;
+        case PACKET_TYPES.HOME_WHEEL_SPIN_RESULT:
+            handleHomeWheelSpinResult(reader.readU8());
+            break;
         default:
             // console.warn(`Unknown packet type: ${packetType}`);
             break;
@@ -596,6 +626,7 @@ function handleUpdatePacket(reader) {
             p.hasWeapon = status.hasWeapon;
             p.accessoryId = accessoryId;
             p.isInvisible = status.isInvisible;
+            p.isAdmin = status.isAdmin;
             p.radius = radius;
             p.botRoleCode = botRoleCode;
             p.isBot = botRoleCode > 0;
@@ -628,6 +659,7 @@ function handleUpdatePacket(reader) {
                 p.hasShield = status.hasShield;
                 p.isAlive = status.isAlive;
                 p.isInvisible = status.isInvisible;
+                p.isAdmin = status.isAdmin;
                 p.skinColor = status.skinColor;
                 p.color = skinColorFromIndex(p.skinColor);
             }
@@ -641,13 +673,6 @@ function handleUpdatePacket(reader) {
     // Cleanup players
     for (const id in ENTITIES.PLAYERS) {
         if (!playerIdsThisUpdate.has(Number(id))) delete ENTITIES.PLAYERS[id];
-    }
-
-    // Sync my stats
-    const myPlayer = ENTITIES.PLAYERS[Vars.myId];
-    if (myPlayer) {
-        Vars.myStats.hp = myPlayer.health;
-        Vars.myStats.maxHp = myPlayer.maxHealth;
     }
 
     // Update Mobs
@@ -1079,9 +1104,6 @@ function handleAdminAuthPacket(reader) {
         Vars.isAdmin = true;
         setStoredAdminKey(uiState.tempAdminKey);
         showNotification("You're now admin!", 'green');
-        if (typeof updateSettingsBody === 'function') {
-            updateSettingsBody();
-        }
     } else {
         showNotification("That key is invalid!", 'red');
     }
@@ -1103,6 +1125,7 @@ function handleInventoryPacket(reader) {
     if (myPlayer) {
         myPlayer.weaponRank = Vars.myInventory[Vars.selectedSlot];
     }
+    refreshHudDerivedState();
 
     if (uiState.isShopOpen) updateShopBody();
     updateShopAttentionIndicator();
@@ -1110,11 +1133,6 @@ function handleInventoryPacket(reader) {
 
 function handleStatsPacket(reader) {
     const prevAvailablePoints = Vars.myStats.availablePoints || 0;
-    Vars.myStats.dmgHit = reader.readU16();
-    Vars.myStats.dmgThrow = reader.readU16();
-    Vars.myStats.speed = reader.readU16();
-    Vars.myStats.hp = reader.readU16();
-    Vars.myStats.maxHp = reader.readU16();
     Vars.myStats.goldCoins = reader.readU32();
     Vars.myStats.kills = reader.readU16();
     applyLiveAccountKillDelta(Vars.myStats.kills);
@@ -1129,12 +1147,8 @@ function handleStatsPacket(reader) {
     Vars.myStats.buffStrength = reader.readU8();
     Vars.myStats.buffMaxHealth = reader.readU8();
     Vars.myStats.buffRegenSpeed = reader.readU8();
-    Vars.myStats.regenPerTick = reader.readU16();
+    refreshHudDerivedState();
 
-    // Re-render stats if they are visible
-    if (uiState.isSettingsOpen && uiState.activeTab === 'Stats') {
-        updateSettingsBody();
-    }
     if (uiState.isShopOpen) {
         updateShopBody();
     }
@@ -1263,6 +1277,9 @@ function handleTutorialObjectivePacket(reader) {
     Vars.tutorialObjectiveStep = step;
     Vars.tutorialObjectiveText = text;
     Vars.tutorialObjectiveUpdatedAt = performance.now();
+    if (status === 1) {
+        startTutorialCelebration(status, step, text);
+    }
     if (!isMobile && step === 0) {
         sendTutorialEvent(3);
     }
@@ -1271,26 +1288,19 @@ function handleTutorialObjectivePacket(reader) {
 function handleTutorialCompletePacket() {
     try {
         localStorage.setItem('ua_tutorial_completed', '1');
-        localStorage.setItem('ua_world', 'main');
-        localStorage.setItem('ua_world_choice_made', '1');
         localStorage.removeItem('ua_auto_join_after_reload');
     } catch (e) {
         // Ignore storage errors.
     }
-    showNotification('Tutorial complete. Teleporting to main world.', 'green');
+    showNotification('Tutorial complete. Press the button to enter the main world.', 'green');
+    showTutorialCompleteOverlay();
     uiState.forceHomeScreen = true;
     closeHomeScreenBlockingUI();
-    const homeScreen = document.getElementById('home_screen');
-    const respawnScreen = document.getElementById('respawn_screen');
-    if (homeScreen) homeScreen.style.display = 'flex';
-    if (respawnScreen) respawnScreen.style.display = 'none';
     Vars.tutorialObjectiveVisible = false;
+    resetTutorialCelebration();
     Vars.deathSpectateStartAt = 0;
     Vars.deathSpectateTargetId = 0;
     Vars.deathSpectateUntil = 0;
-    setTimeout(() => {
-        location.reload();
-    }, 120);
 }
 
 // --- Helper Classes ---

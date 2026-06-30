@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="./styles.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;900&family=Rajdhani:wght@400;600;700;900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;900&family=Nunito:wght@600;700;800;900&family=Rajdhani:wght@400;600;700;900&display=swap" rel="stylesheet">
 </head>
 
 <body>
@@ -26,41 +26,50 @@
           </div>
         </div>
       </div>
-      <aside id="auth_panel">
-        <div id="auth_panel_title">Info</div>
+    </div>
+    <aside id="auth_panel" class="home_overlay_panel" aria-hidden="true">
+        <div class="home_overlay_header">
+          <div id="auth_panel_title">Account</div>
+          <button class="home_overlay_close" type="button" aria-label="Close account">×</button>
+        </div>
+        <section class="home_account_section">
+          <input id="homePassInput" type="password" maxlength="64" placeholder="Password" autocomplete="off">
+          <div id="auth_actions">
+            <button id="loginBtn" type="button">LOG IN</button>
+            <button id="signupBtn" type="button">SIGN UP</button>
+            <button id="logoutBtn" type="button">LOG OUT</button>
+          </div>
+          <div id="account_status">Log in or create an account.</div>
+          <div id="account_stats">
+            <div class="account_stat_card">
+              <div class="account_stat_label">Total Kills</div>
+              <div id="account_total_kills" class="account_stat_value">0</div>
+            </div>
+            <div class="account_stat_card">
+              <div class="account_stat_label">Total Deaths</div>
+              <div id="account_total_deaths" class="account_stat_value">0</div>
+            </div>
+            <div class="account_stat_card">
+              <div class="account_stat_label">K/D Ratio</div>
+              <div id="account_kd_ratio" class="account_stat_value">0.00</div>
+            </div>
+            <div class="account_stat_card">
+              <div class="account_stat_label">Total Play Time</div>
+              <div id="account_total_playtime" class="account_stat_value">00:00:00</div>
+            </div>
+          </div>
+        </section>
+    </aside>
+    <aside id="home_info_panel" class="home_overlay_panel" aria-hidden="true">
+        <div class="home_overlay_header">
+          <div id="home_info_panel_title">Info</div>
+          <button class="home_overlay_close" type="button" aria-label="Close info">×</button>
+        </div>
         <div id="home_info_tabs" role="tablist" aria-label="Home info sections">
-          <button class="home_info_tab active" type="button" data-tab="account" role="tab" aria-selected="true">Account</button>
-          <button class="home_info_tab" type="button" data-tab="leaderboards" role="tab" aria-selected="false">Leaderboards</button>
+          <button class="home_info_tab active" type="button" data-tab="leaderboards" role="tab" aria-selected="true">Leaderboards</button>
           <button class="home_info_tab" type="button" data-tab="updates" role="tab" aria-selected="false">Updates</button>
         </div>
         <div id="home_info_sections">
-          <section class="home_info_panel_section active" data-panel="account">
-            <input id="homePassInput" type="password" maxlength="64" placeholder="Password" autocomplete="off">
-            <div id="auth_actions">
-              <button id="loginBtn" type="button">LOG IN</button>
-              <button id="signupBtn" type="button">SIGN UP</button>
-              <button id="logoutBtn" type="button">LOG OUT</button>
-            </div>
-            <div id="account_status">Log in or create an account.</div>
-            <div id="account_stats">
-              <div class="account_stat_card">
-                <div class="account_stat_label">Total Kills</div>
-                <div id="account_total_kills" class="account_stat_value">0</div>
-              </div>
-              <div class="account_stat_card">
-                <div class="account_stat_label">Total Deaths</div>
-                <div id="account_total_deaths" class="account_stat_value">0</div>
-              </div>
-              <div class="account_stat_card">
-                <div class="account_stat_label">K/D Ratio</div>
-                <div id="account_kd_ratio" class="account_stat_value">0.00</div>
-              </div>
-              <div class="account_stat_card">
-                <div class="account_stat_label">Total Play Time</div>
-                <div id="account_total_playtime" class="account_stat_value">00:00:00</div>
-              </div>
-            </div>
-          </section>
           <section class="home_info_panel_section" data-panel="leaderboards">
             <div class="home_info_section_head">
               <div class="home_info_section_title">Top Runs</div>
@@ -81,8 +90,7 @@
             <div id="home_updates_log"></div>
           </section>
         </div>
-      </aside>
-    </div>
+    </aside>
     <div id="credits">Made by Liberation</div>
     <a
       id="home_form_link"

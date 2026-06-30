@@ -71,6 +71,7 @@ const SPAWNABLE_MOB_MAP = {
     yeti: 8,
     dune_behemoth: 16,
     dune: 16,
+    sandling: 18,
     inferno_beast: 17,
     inferno: 17
 };
@@ -772,15 +773,19 @@ export function spawnEnergyBurstProjectiles(source, options = {}) {
     const projectileSpeed = dataMap.PROJECTILES[13]?.speed || 100;
     const projectileRadius = dataMap.PROJECTILES[13]?.radius || 30;
     const radiusScale = getRadiusScale(source.radius);
+    const damageMult = Number.isFinite(options.damageMult) && options.damageMult > 0 ? options.damageMult : 1;
+    const rangeMult = Number.isFinite(options.rangeMult) && options.rangeMult > 0 ? options.rangeMult : 1;
+    const effectiveRange = projectileRange * radiusScale * rangeMult;
     const initialRadius = Number.isFinite(options.initialRadius) && options.initialRadius > 0
         ? Math.round(options.initialRadius)
         : Math.max(projectileRadius, Math.round((source.radius || 0) * radiusScale));
     const groupId = Math.random();
     const projectileOptions = {
         noMove: true,
-        maxDistanceOverride: projectileRange * radiusScale,
+        maxDistanceOverride: effectiveRange,
         initialRadius,
         expandPerTick: projectileSpeed * radiusScale,
+        damageMult,
         persistentHits: true,
         ignoreStructureCollisions: true
     };
@@ -799,7 +804,7 @@ export function spawnEnergyBurstProjectiles(source, options = {}) {
     });
 
     // Visuals are driven by a dedicated light packet instead of syncing every burst projectile.
-    const burstRadius = (projectileRange * radiusScale) + (source.radius || 0);
+    const burstRadius = effectiveRange + (source.radius || 0);
     emitEnergyBurstFx(source.x, source.y, burstRadius, durationMs, fxWaves, source.world || 'main', radiusScale);
 }
 
@@ -1347,34 +1352,8 @@ class CommandMap {
         if (!player || itemType <= 0 || count <= 0) return;
 
         if (isCoinObjectType(itemType)) {
-            let remaining = count;
-            for (let i = 0; i < player.inventory.length; i++) {
-                if (i === excludedSlot) continue;
-                if (!isCoinObjectType(player.inventory[i])) continue;
-                const space = Math.max(0, 256 - (player.inventoryCounts[i] || 0));
-                if (space <= 0) continue;
-                const toAdd = Math.min(space, remaining);
-                player.inventoryCounts[i] += toAdd;
-                remaining -= toAdd;
-                if (remaining <= 0) return;
-            }
-
-            while (remaining > 0) {
-                const emptySlot = player.inventory.findIndex((type, idx) => idx !== excludedSlot && type === 0);
-                if (emptySlot === -1) break;
-                const toAdd = Math.min(256, remaining);
-                player.inventory[emptySlot] = getCoinObjectType();
-                player.inventoryCounts[emptySlot] = toAdd;
-                remaining -= toAdd;
-            }
-
-            while (remaining > 0) {
-                const toDrop = Math.min(256, remaining);
-                const dropObj = spawnObject(getCoinObjectType(), player.x, player.y, toDrop, 'player', player.world || 'main');
-                if (dropObj && typeof player.applyDropLaunch === 'function') {
-                    player.applyDropLaunch(dropObj, getCoinObjectType());
-                }
-                remaining -= toDrop;
+            if (typeof player.addGoldCoins === 'function') {
+                player.addGoldCoins(count);
             }
             return;
         }
@@ -1455,6 +1434,11 @@ class CommandMap {
             return;
         }
 
+        if (isCoinObjectType(normalizedType)) {
+            player.addGoldCoins(normalizedAmount);
+            return;
+        }
+
         if (!Number.isInteger(targetSlot) || targetSlot < 0 || targetSlot >= player.inventory.length) {
             this.moveInventoryItemToFreeSlotOrDrop(player, normalizedType, normalizedAmount);
             player.sendInventoryUpdate();
@@ -1464,19 +1448,6 @@ class CommandMap {
 
         const existingType = player.inventory[targetSlot] || 0;
         const existingCount = player.inventoryCounts[targetSlot] || 0;
-
-        if (isCoinObjectType(normalizedType) && isCoinObjectType(existingType)) {
-            const space = Math.max(0, 256 - existingCount);
-            const toAdd = Math.min(space, normalizedAmount);
-            player.inventoryCounts[targetSlot] = existingCount + toAdd;
-            const overflow = normalizedAmount - toAdd;
-            if (overflow > 0) {
-                this.moveInventoryItemToFreeSlotOrDrop(player, normalizedType, overflow, targetSlot);
-            }
-            player.sendInventoryUpdate();
-            player.sendStatsUpdate();
-            return;
-        }
 
         if (objectCfg?.stackable && existingType === normalizedType) {
             const space = Math.max(0, stackLimit - existingCount);
@@ -1517,6 +1488,11 @@ class CommandMap {
             || !!objectCfg?.stackable
             || !!objectCfg?.isEphemeral;
         if (!isValidType) return;
+
+        if (isCoinObjectType(normalizedType)) {
+            player.addGoldCoins(normalizedAmount);
+            return;
+        }
 
         if (objectCfg?.stackable && normalizedAmount > stackLimit) {
             let remaining = normalizedAmount;

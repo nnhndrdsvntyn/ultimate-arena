@@ -231,15 +231,22 @@ export const UPDATES_LOG = [
     {
         version: '1.6.3',
         changes: [
+            "Fixed chests not respawning (again)",
+            "Fixed audio spam bug",
+            "Coins are not stored in the inventory anymore.",
+            "Minotaur's energy burst ability range & damage have been decreased.",
             "Improved Linear Interpolation",
             "Major client performance improvements",
             "Weapon Reworks!",
+            "Spears now do 2x less damage per hit",
             "New Weapon Class: Axe",
             "New Weapon Class: Boomerang",
             "Max level increased to 45",
-            "Upgrade bars now have 15 stages instead of 10."
+            "Minotaurs are now smaller",
+            "Upgrade bars now have 15 stages instead of 10.",
+            "Weapons and upgrades are more balanced."
         ],
-        date: '2026-06-12'
+        date: '2026-06-30'
     }
 ];
 

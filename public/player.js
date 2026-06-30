@@ -12,6 +12,7 @@ import {
     CURRENT_WORLD,
     WORLD_MAIN
 } from './client.js';
+import { getCurrentAuthenticatedAccountNameStyle } from './auth/client_auth.js';
 import {
     dataMap,
     isWeaponType,
@@ -117,6 +118,7 @@ export class Player {
         this.hasShield = false;
         this.isAlive = false;
         this.isInvisible = false;
+        this.isAdmin = false;
         this.isBot = false;
         this.botRoleCode = 0;
         this.frozenUntil = 0;
@@ -501,7 +503,10 @@ export class Player {
             }
 
             const totalWidth = nameplateCache.levelWidth + nameplateCache.usernameWidth + idWidth;
-            const usernameColor = isLocalPlayerInSnowBiome() ? '#4b5563' : 'white';
+            const usernameStyle = isLocalPlayer
+                ? getCurrentAuthenticatedAccountNameStyle(usernameText, Vars.isAdmin, performance.now())
+                : null;
+            const usernameColor = usernameStyle?.color || (isLocalPlayerInSnowBiome() ? '#4b5563' : 'white');
             debugIdX = screenPosX - totalWidth / 2 + nameplateCache.levelWidth + nameplateCache.usernameWidth;
 
             LC.drawTextFast(levelText, screenPosX - totalWidth / 2, screenPosY - this.radius - 5, 'bold 16px Arial', '#1e3a8a', 'left', 'alphabetic', alpha);

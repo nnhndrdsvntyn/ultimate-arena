@@ -11,6 +11,10 @@ export class LibCanvas {
         this.images = {};
         this.imageMipmaps = {};
         this.audios = {};
+        this.audioBuffers = {};
+        this.audioSrcs = {};
+        this.audioContext = null;
+        this.textMeasureCache = new Map();
         this.baseLogicalWidth = 1440;
         this.baseLogicalHeight = 760;
         this.logicalWidth = this.baseLogicalWidth;
@@ -436,14 +440,28 @@ export class LibCanvas {
             throw new Error('font must be a string for measureText');
         }
 
-        this.ctx.font = normalizeCanvasFont(font);
-        const metrics = this.ctx.measureText(text);
+        const normalizedFont = normalizeCanvasFont(font);
+        const cacheKey = `${normalizedFont}\u0000${text}`;
+        const cached = this.textMeasureCache.get(cacheKey);
+        if (cached) return cached;
 
-        return {
+        this.ctx.font = normalizedFont;
+        const metrics = this.ctx.measureText(text);
+        const result = {
             width: metrics.width,
             height: (metrics.actualBoundingBoxAscent ?? 0) +
                 (metrics.actualBoundingBoxDescent ?? 0)
         };
+
+        this.textMeasureCache.set(cacheKey, result);
+        if (this.textMeasureCache.size > 2000) {
+            const oldestKey = this.textMeasureCache.keys().next().value;
+            if (oldestKey !== undefined) {
+                this.textMeasureCache.delete(oldestKey);
+            }
+        }
+
+        return result;
     }
 
     drawRectFast(x, y, width, height, color, transparency = 1, cornerRadius = 0) {
@@ -549,15 +567,97 @@ export class LibCanvas {
             throw new Error('src must be defined for loadAudio');
         }
 
-        return new Promise((resolve, reject) => {
-            const audio = new Audio();
-            audio.oncanplaythrough = () => {
-                this.audios[name] = audio;
-                resolve(audio);
-            };
-            audio.onerror = reject;
-            audio.src = src;
+        this.audioSrcs[name] = src;
+
+        const cacheDecodedAudio = async () => {
+            const response = await fetch(src);
+            if (!response.ok) {
+                throw new Error(`Failed to fetch audio asset "${name}" (${response.status})`);
+            }
+
+            const audioData = await response.arrayBuffer();
+            const audioContext = this.getAudioContext();
+            if (!audioContext?.decodeAudioData) {
+                throw new Error('Web Audio API is not available');
+            }
+
+            const buffer = await new Promise((resolve, reject) => {
+                const maybePromise = audioContext.decodeAudioData(
+                    audioData,
+                    resolve,
+                    reject
+                );
+                if (maybePromise?.then) {
+                    maybePromise.then(resolve, reject);
+                }
+            });
+            this.audioBuffers[name] = buffer;
+            this.audios[name] = { name, src, buffer };
+            return buffer;
+        };
+
+        return cacheDecodedAudio().catch((bufferError) => {
+            return new Promise((resolve, reject) => {
+                const audio = new Audio();
+                audio.preload = 'auto';
+                audio.oncanplaythrough = () => {
+                    this.audios[name] = { name, src, element: audio };
+                    resolve(audio);
+                };
+                audio.onerror = () => reject(bufferError);
+                audio.src = src;
+                audio.load();
+            });
         });
+    }
+
+    getAudioContext() {
+        if (typeof window === 'undefined') return null;
+        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextCtor) return null;
+        if (!this.audioContext) {
+            this.audioContext = new AudioContextCtor();
+        }
+        return this.audioContext;
+    }
+
+    playBufferedAudio({
+        buffer,
+        volume = 1,
+        timestamp = 0,
+        speed = 1,
+        endTime = null
+    } = {}) {
+        const audioContext = this.getAudioContext();
+        if (!audioContext || !buffer) return;
+
+        if (audioContext.state === 'suspended') {
+            audioContext.resume().catch(() => {});
+        }
+
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.playbackRate.value = speed;
+
+        const gainNode = audioContext.createGain();
+        gainNode.gain.value = volume;
+        source.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+
+        const startOffset = Math.max(0, Math.min(buffer.duration, timestamp));
+        const remainingDuration = Math.max(0, buffer.duration - startOffset);
+        const requestedDuration = Number.isFinite(endTime)
+            ? Math.max(0, endTime - timestamp)
+            : remainingDuration;
+        const playbackDuration = Math.min(remainingDuration, requestedDuration / Math.max(0.01, speed));
+
+        if (playbackDuration <= 0) return;
+
+        try {
+            source.start(0, startOffset, playbackDuration);
+        } catch (error) {
+            console.error(error);
+        }
     }
 
     drawImage({
@@ -629,26 +729,38 @@ export class LibCanvas {
         if (typeof volume !== 'number' || volume < 0 || volume > 1) {
             throw new Error('volume must be a number between 0 and 1 for playAudio');
         }
-        if (!this.audios[name]) {
+        const audioAsset = this.audios[name];
+        if (!audioAsset) {
             return;
         }
 
-        const audio = this.audios[name].cloneNode();
-        audio.volume = volume;
-        audio.currentTime = timestamp;
-        audio.playbackRate = speed;
-        audio.play().catch(e => console.error(e));
+        if (this.audioBuffers[name]) {
+            this.playBufferedAudio({
+                buffer: this.audioBuffers[name],
+                volume,
+                timestamp,
+                speed,
+                endTime
+            });
+            return;
+        }
+
+        const legacyAudio = audioAsset.element?.cloneNode?.() || audioAsset.cloneNode?.() || new Audio(this.audioSrcs[name] || '');
+        legacyAudio.volume = volume;
+        legacyAudio.currentTime = timestamp;
+        legacyAudio.playbackRate = speed;
+        legacyAudio.play().catch(e => console.error(e));
 
         if (Number.isFinite(endTime)) {
             const cutoff = Math.max(0, endTime - timestamp);
             if (cutoff === 0) {
-                audio.pause();
+                legacyAudio.pause();
                 return;
             }
             const stopDelayMs = (cutoff / Math.max(0.01, speed)) * 1000;
             setTimeout(() => {
-                audio.pause();
-                audio.currentTime = 0;
+                legacyAudio.pause();
+                legacyAudio.currentTime = 0;
             }, stopDelayMs);
         }
     }

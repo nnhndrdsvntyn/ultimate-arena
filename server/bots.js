@@ -1904,16 +1904,12 @@ function isInventoryFull(bot) {
 }
 
 function canBotStoreMoreCoins(bot) {
-    for (let i = 0; i < bot.inventory.length; i++) {
-        const type = bot.inventory[i] & 0x7F;
-        if (type === 0) return true;
-        if (isCoinObjectType(type) && bot.inventoryCounts[i] < 256) return true;
-    }
-    return false;
+    return !!bot;
 }
 
 function canBotStoreMoreOfType(bot, itemType) {
     if (!bot || !itemType) return false;
+    if (isCoinObjectType(itemType)) return true;
     const objectCfg = dataMap.OBJECTS?.[itemType];
     const isStackable = !!objectCfg?.stackable || isCoinObjectType(itemType) || isWeaponRank(itemType);
     const stackLimit = isWeaponRank(itemType) ? 256 : Math.max(1, Math.floor(objectCfg?.stackLimit || 256));
@@ -2027,18 +2023,6 @@ function maintainBotInventory(bot, now = performance.now()) {
 
         // Always sell worse swords immediately, regardless of role.
         sellSlots.push(i);
-    }
-
-    // Noob only: drop coin stacks once the inventory is full to keep making room.
-    if (role === BOT_ROLE_NOOB && full) {
-        for (let i = bot.inventory.length - 1; i >= 0; i--) {
-            if (bot.inventoryCounts[i] <= 0) continue;
-            const type = bot.inventory[i] & 0x7F;
-            if (!isCoinObjectType(type)) continue;
-            if (dropSlots.includes(i)) continue;
-            dropSlots.push(i);
-            if (dropSlots.length >= 2) break;
-        }
     }
 
     if (sellSlots.length) {

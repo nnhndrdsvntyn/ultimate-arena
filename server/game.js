@@ -50,6 +50,9 @@ import {
     Rat
 } from './entities/mobs/rat.js';
 import {
+    Sandling
+} from './entities/mobs/sandling.js';
+import {
     Tortoise
 } from './entities/mobs/tortoise.js';
 import {
@@ -248,6 +251,9 @@ export const ENTITIES = {
                     break;
                 case 15:
                     new Tortoise(id, x, y);
+                    break;
+                case 18:
+                    new Sandling(id, x, y);
                     break;
                 case 16:
                     new DuneBehemoth(id, x, y);
@@ -1062,7 +1068,8 @@ function isValidMobSpawnPositionForWorld(type, x, y, world = WORLD_MAIN) {
     if (type === 4) return true; // Hearty: any non-river land
     if (type === 5 || type === 9 || type === 11) return isRightOfVerticalRiver && isAboveHorizontalRiver; // Polar Bear/Bunny/Fox: top-right
     if (type === 6 || type === 10 || type === 17) return isRightOfVerticalRiver && isBelowHorizontalRiver; // Minotaur/Iguana/Inferno Beast: bottom-right
-    if (type === 12 || type === 13 || type === 14 || type === 15) return isLeftOfVerticalRiver && isBelowHorizontalRiver; // Ostrich/Elephant/Rat/Tortoise: bottom-left
+    if (type === 12 || type === 13 || type === 15 || type === 18) return isLeftOfVerticalRiver && isBelowHorizontalRiver; // Ostrich/Elephant/Tortoise/Sandling: bottom-left
+    if (type === 14) return isRightOfVerticalRiver && isBelowHorizontalRiver; // Rat: bottom-right / volcano
     if (type === 1 || type === 2 || type === 3 || type === 7) {
         return isLeftOfVerticalRiver && isAboveHorizontalRiver; // Chick/Pig/Cow/Root Walker: top-left
     }
@@ -1078,7 +1085,8 @@ function getMobSpawnAnchorForWorld(type, world = WORLD_MAIN) {
     if (!worldHasRivers(world)) return { x: mapSize[0] * 0.5, y: mapSize[1] * 0.5 };
     if (type === 5 || type === 9 || type === 11) return { x: mapSize[0] * 0.75, y: mapSize[1] * 0.25 };
     if (type === 6 || type === 10 || type === 17) return { x: mapSize[0] * 0.75, y: mapSize[1] * 0.75 };
-    if (type === 12 || type === 13 || type === 14 || type === 15) return { x: mapSize[0] * 0.25, y: mapSize[1] * 0.75 };
+    if (type === 12 || type === 13 || type === 15 || type === 18) return { x: mapSize[0] * 0.25, y: mapSize[1] * 0.75 };
+    if (type === 14) return { x: mapSize[0] * 0.75, y: mapSize[1] * 0.75 };
     if (type === 1 || type === 2 || type === 3 || type === 7) return { x: mapSize[0] * 0.25, y: mapSize[1] * 0.25 };
     return { x: mapSize[0] * 0.5, y: mapSize[1] * 0.5 };
 }
@@ -1137,10 +1145,11 @@ setTimeout(() => {
         mob12: 18, // Ostrich
         mob13: 10, // Elephant
         mob14: 18, // Rat
-        mob15: 18 // Tortoise
+        mob15: 18, // Tortoise
+        mob18: 18 // Sandling
     };
 
-    for (const type of [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15]) {
+    for (const type of [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 18]) {
         const count = counts[`mob${type}`];
         for (let i = 0; i < count; i++) {
             const { x, y } = getRandomMobPosition(type, WORLD_MAIN);

@@ -42,6 +42,9 @@ const BOOMERANG_RETURN_SPEED_MULT = 1.18;
 const MINOTAUR_SLASH_PROJECTILE_TYPE = getWeaponProjectileType(AXE_10_TYPE);
 const DEFAULT_ROCK_PUSH_STRENGTH = 85;
 const BIG_ROCK_STRUCTURE_TYPE = 6;
+const PROJECTILE_HIT_SFX_COOLDOWN_MS = 500;
+const PROJECTILE_HIT_SFX_GROUP_CLEANUP_MS = 10000;
+const PROJECTILE_HIT_SFX_GROUP_MAX_TARGETS = 20;
 
 function getVikingHitInfo(shooter, baseDamage) {
     if (!shooter || !shooter.isAlive) return { damage: baseDamage, nextCount: 0, apply: false, isBonus: false };
@@ -130,6 +133,43 @@ function tryPushStructureWithProjectile(projectile, structure) {
     return true;
 }
 
+function getProjectileHitSfxGroupState(targetEntity, groupId) {
+    if (!targetEntity) return null;
+    if (!targetEntity._projectileHitSfxGroups) targetEntity._projectileHitSfxGroups = new Map();
+    const key = groupId ?? '__default__';
+    let groupState = targetEntity._projectileHitSfxGroups.get(key);
+    if (!groupState) {
+        groupState = {
+            lastSoundTime: 0,
+            lastUsedAt: 0
+        };
+        targetEntity._projectileHitSfxGroups.set(key, groupState);
+    }
+    return groupState;
+}
+
+function shouldPlayProjectileHitSfx(targetEntity, groupId, now = performance.now()) {
+    if (!targetEntity) return true;
+
+    const groupState = getProjectileHitSfxGroupState(targetEntity, groupId);
+    if (!groupState) return true;
+
+    if (now - (groupState.lastSoundTime || 0) < PROJECTILE_HIT_SFX_COOLDOWN_MS) return false;
+
+    groupState.lastSoundTime = now;
+    groupState.lastUsedAt = now;
+
+    if (targetEntity._projectileHitSfxGroups.size > PROJECTILE_HIT_SFX_GROUP_MAX_TARGETS) {
+        for (const [gid, state] of targetEntity._projectileHitSfxGroups) {
+            if (!state || now - (state.lastUsedAt || 0) > PROJECTILE_HIT_SFX_GROUP_CLEANUP_MS) {
+                targetEntity._projectileHitSfxGroups.delete(gid);
+            }
+        }
+    }
+
+    return true;
+}
+
 function getStructureImpactCost(structure) {
     return Number(structure?.type) === BIG_ROCK_STRUCTURE_TYPE ? 2 : 1;
 }
@@ -177,7 +217,10 @@ export class Projectile extends Entity {
         const shooterDamageMult = (typeof shooter?.getAttackDamageMultiplier === 'function')
             ? shooter.getAttackDamageMultiplier()
             : 1;
-        this.damage = (shooter.strength + (stats?.damage || 0)) * 1.15 * shooterDamageMult;
+        const statDamage = type === -1
+            ? (Number(stats?.throwDamage) || Number(stats?.damage) || 0)
+            : (Number(stats?.damage) || 0);
+        this.damage = (shooter.strength + statDamage) * shooterDamageMult;
         if (isPlayerShooter) {
             this.damage *= playerScale;
         }
@@ -192,7 +235,6 @@ export class Projectile extends Entity {
         if (type === -1) {
             const thrownWeaponRank = shooter.weapon.rank;
             const isBoomerangThrow = isBoomerangType(thrownWeaponRank);
-            this.damage /= 1.5;
             const [swordWidth, swordHeight] = getWeaponSize(thrownWeaponRank);
             this.radius = (swordWidth || this.radius || 100) * playerScale;
             this.radius *= isBoomerangThrow ? BOOMERANG_THROW_HITBOX_MULT : THROWN_SWORD_HITBOX_MULT;
@@ -214,7 +256,6 @@ export class Projectile extends Entity {
                     returning: false,
                     hitKeys: new Set()
                 };
-                this.damage *= 0.92;
             }
             if (this.shooter?.inWater) {
                 this.speed *= 0.4;
@@ -291,6 +332,9 @@ export class Projectile extends Entity {
         if (options?.persistentHits) {
             this.persistentHits = true;
             this.hitEntities = new Set();
+        }
+        if (Number.isFinite(options?.damageMult) && options.damageMult > 0) {
+            this.damage *= options.damageMult;
         }
         if (options?.ignoreStructureCollisions) {
             this.ignoreStructureCollisions = true;
@@ -502,19 +546,8 @@ export class Projectile extends Entity {
                         } else {
                             const sfx = dataMap.sfxMap.indexOf('slash_clash');
                             const now = performance.now();
-                            if (this.shooter) {
-                                if (!this.shooter._groupHitSounds) this.shooter._groupHitSounds = new Map();
-                                const lastSoundTime = this.shooter._groupHitSounds.get(this.groupId) || 0;
-
-                                if (now - lastSoundTime > 50) {
-                                    playSfx(this.x, this.y, sfx, 1000, this.world || 'main');
-                                    this.shooter._groupHitSounds.set(this.groupId, now);
-                                    if (this.shooter._groupHitSounds.size > 20) {
-                                        for (const [gid, time] of this.shooter._groupHitSounds) {
-                                            if (now - time > 10000) this.shooter._groupHitSounds.delete(gid);
-                                        }
-                                    }
-                                }
+                            if (shouldPlayProjectileHitSfx(structure, this.groupId, now)) {
+                                playSfx(this.x, this.y, sfx, 1000, this.world || 'main');
                             }
                             if (this.resolveProjectileImpact(`s:${structure.id}`, getStructureImpactCost(structure))) return;
                             continue;
@@ -544,23 +577,9 @@ export class Projectile extends Entity {
                     } else {
                         // other structures block the projectile
                         const sfx = dataMap.sfxMap.indexOf('slash_clash');
-
                         const now = performance.now();
-                        if (this.shooter) {
-                            if (!this.shooter._groupHitSounds) this.shooter._groupHitSounds = new Map();
-                            const lastSoundTime = this.shooter._groupHitSounds.get(this.groupId) || 0;
-
-                            if (now - lastSoundTime > 50) { // only play one sound every 50ms for this group
-                                playSfx(this.x, this.y, sfx, 1000, this.world || 'main');
-                                this.shooter._groupHitSounds.set(this.groupId, now);
-
-                                // basic cleanup
-                                if (this.shooter._groupHitSounds.size > 20) {
-                                    for (const [gid, time] of this.shooter._groupHitSounds) {
-                                        if (now - time > 10000) this.shooter._groupHitSounds.delete(gid);
-                                    }
-                                }
-                            }
+                        if (shouldPlayProjectileHitSfx(structure, this.groupId, now)) {
+                            playSfx(this.x, this.y, sfx, 1000, this.world || 'main');
                         }
 
                         if (this.resolveProjectileImpact(`s:${structure.id}`, getStructureImpactCost(structure))) return;
@@ -602,22 +621,20 @@ export class Projectile extends Entity {
 
                         const sfx = dataMap.sfxMap.indexOf('slash_clash');
                         const now = performance.now();
-                        if (this.shooter && (!this.shooter._groupClashSounds || !this.shooter._groupClashSounds.has(this.groupId) || now - this.shooter._groupClashSounds.get(this.groupId) > 100)) {
-                            if (!this.shooter._groupClashSounds) this.shooter._groupClashSounds = new Map();
-                            this.shooter._groupClashSounds.set(this.groupId, now);
+                        if (shouldPlayProjectileHitSfx(other, this.groupId, now)) {
                             playSfx(this.x, this.y, sfx, 1000, this.world || 'main');
-                            const kbStrength = 60;
-                            const angle = Math.atan2(this.shooter.y - other.shooter.y, this.shooter.x - other.shooter.x);
-                            if (this.shooter.isAlive) {
-                                this.shooter.x += Math.cos(angle) * kbStrength;
-                                this.shooter.y += Math.sin(angle) * kbStrength;
-                                this.shooter.clamp();
-                            }
-                            if (other.shooter.isAlive) {
-                                other.shooter.x -= Math.cos(angle) * kbStrength;
-                                other.shooter.y -= Math.sin(angle) * kbStrength;
-                                other.shooter.clamp();
-                            }
+                        }
+                        const kbStrength = 60;
+                        const angle = Math.atan2(this.shooter.y - other.shooter.y, this.shooter.x - other.shooter.x);
+                        if (this.shooter.isAlive) {
+                            this.shooter.x += Math.cos(angle) * kbStrength;
+                            this.shooter.y += Math.sin(angle) * kbStrength;
+                            this.shooter.clamp();
+                        }
+                        if (other.shooter.isAlive) {
+                            other.shooter.x -= Math.cos(angle) * kbStrength;
+                            other.shooter.y -= Math.sin(angle) * kbStrength;
+                            other.shooter.clamp();
                         }
 
                         this.resolveProjectileImpact();
@@ -664,27 +681,24 @@ export class Projectile extends Entity {
                     const sfx = dataMap.sfxMap.indexOf('slash_clash');
 
                     const now = performance.now();
-                    // Throttle clash sound and knockback per group
-                    if (this.shooter && (!this.shooter._groupClashSounds || !this.shooter._groupClashSounds.has(this.groupId) || now - this.shooter._groupClashSounds.get(this.groupId) > 100)) {
-                        if (!this.shooter._groupClashSounds) this.shooter._groupClashSounds = new Map();
-                        this.shooter._groupClashSounds.set(this.groupId, now);
-
+                    // Throttle clash sound per projectile group and per collided entity.
+                    if (shouldPlayProjectileHitSfx(other, this.groupId, now)) {
                         playSfx(this.x, this.y, sfx, 1000, this.world || 'main');
+                    }
 
-                        // Knockback shooters (don't damage)
-                        const kbStrength = 60;
-                        const angle = Math.atan2(this.shooter.y - other.shooter.y, this.shooter.x - other.shooter.x);
+                    // Knockback shooters (don't damage)
+                    const kbStrength = 60;
+                    const angle = Math.atan2(this.shooter.y - other.shooter.y, this.shooter.x - other.shooter.x);
 
-                        if (this.shooter.isAlive) {
-                            this.shooter.x += Math.cos(angle) * kbStrength;
-                            this.shooter.y += Math.sin(angle) * kbStrength;
-                            this.shooter.clamp();
-                        }
-                        if (other.shooter.isAlive) {
-                            other.shooter.x -= Math.cos(angle) * kbStrength;
-                            other.shooter.y -= Math.sin(angle) * kbStrength;
-                            other.shooter.clamp();
-                        }
+                    if (this.shooter.isAlive) {
+                        this.shooter.x += Math.cos(angle) * kbStrength;
+                        this.shooter.y += Math.sin(angle) * kbStrength;
+                        this.shooter.clamp();
+                    }
+                    if (other.shooter.isAlive) {
+                        other.shooter.x -= Math.cos(angle) * kbStrength;
+                        other.shooter.y -= Math.sin(angle) * kbStrength;
+                        other.shooter.clamp();
                     }
 
                     this.resolveProjectileImpact();
@@ -821,6 +835,7 @@ export class Projectile extends Entity {
                 if ((mobDx * mobDx + mobDy * mobDy) > (mobRange * mobRange)) continue;
 
                 if (colliding(this, mob, buffer)) {
+                    const now = performance.now();
                     const hitKey = `m:${mob.id}`;
                     if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
                     if (isPersistentWave) this.hitEntities?.add(hitKey);
@@ -830,7 +845,9 @@ export class Projectile extends Entity {
                             mob.alarm(this.shooter, 'hit');
                         }
                         const sfx = dataMap.sfxMap.indexOf('slash_clash');
-                        playSfx(mob.x, mob.y, sfx, 1000, mob.world || 'main');
+                        if (shouldPlayProjectileHitSfx(mob, this.groupId, now)) {
+                            playSfx(mob.x, mob.y, sfx, 1000, mob.world || 'main');
+                        }
                         if (this.shooter?.isAlive) {
                             const knockbackAngle = Math.atan2(this.shooter.y - mob.y, this.shooter.x - mob.x);
                             this.shooter.x += Math.cos(knockbackAngle) * 60;
@@ -852,7 +869,9 @@ export class Projectile extends Entity {
                         }
                         chargeMinotaurTowardShooter(mob, this.shooter);
                         const sfx = dataMap.sfxMap.indexOf('slash_clash');
-                        playSfx(mob.x, mob.y, sfx, 1000, mob.world || 'main');
+                        if (shouldPlayProjectileHitSfx(mob, this.groupId, now)) {
+                            playSfx(mob.x, mob.y, sfx, 1000, mob.world || 'main');
+                        }
                         if (this.resolveProjectileImpact(hitKey)) return;
                         continue;
                     }
@@ -893,6 +912,7 @@ export class Projectile extends Entity {
             if ((mobDx * mobDx + mobDy * mobDy) > (mobRange * mobRange)) continue;
 
             if (colliding(this, mob, buffer)) {
+                const now = performance.now();
                 const hitKey = `m:${mob.id}`;
                 if (isPersistentWave && this.hitEntities?.has(hitKey)) continue;
                 if (isPersistentWave) this.hitEntities?.add(hitKey);
@@ -903,7 +923,9 @@ export class Projectile extends Entity {
                         mob.alarm(this.shooter, 'hit');
                     }
                     const sfx = dataMap.sfxMap.indexOf('slash_clash');
-                    playSfx(mob.x, mob.y, sfx, 1000, mob.world || 'main');
+                    if (shouldPlayProjectileHitSfx(mob, this.groupId, now)) {
+                        playSfx(mob.x, mob.y, sfx, 1000, mob.world || 'main');
+                    }
                     if (this.shooter?.isAlive) {
                         const knockbackAngle = Math.atan2(this.shooter.y - mob.y, this.shooter.x - mob.x);
                         this.shooter.x += Math.cos(knockbackAngle) * 60;
@@ -927,7 +949,9 @@ export class Projectile extends Entity {
                     }
                     chargeMinotaurTowardShooter(mob, this.shooter);
                     const sfx = dataMap.sfxMap.indexOf('slash_clash');
-                    playSfx(mob.x, mob.y, sfx, 1000, mob.world || 'main');
+                    if (shouldPlayProjectileHitSfx(mob, this.groupId, now)) {
+                        playSfx(mob.x, mob.y, sfx, 1000, mob.world || 'main');
+                    }
                     if (this.resolveProjectileImpact(hitKey)) return;
                     continue;
                 }

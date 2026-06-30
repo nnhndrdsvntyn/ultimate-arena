@@ -160,6 +160,15 @@ export function updateGame(now = performance.now()) {
 
     // 3. Handle Respawns
     const currentRespawnCycleId = ++respawnCycleId;
+    handleRespawns(brokenObjects, (obj) => {
+        const world = obj.world || 'main';
+        const spawned = spawnObject(obj.type, undefined, undefined, 1, null, world);
+        if (spawned) return true;
+
+        // Fallback: respawn at the previous chest location if strict random validation fails.
+        return !!spawnObject(obj.type, obj.x, obj.y, 1, null, world);
+    }, 3000, currentRespawnCycleId, { useThrottle: false });
+
     handleRespawns(deadMobs, (ent) => {
         const { x, y } = getRandomMobPosition(ent.type, ent.world || 'main');
         return {
@@ -169,17 +178,6 @@ export function updateGame(now = performance.now()) {
             world: ent.world || 'main'
         };
     }, 3000, currentRespawnCycleId);
-
-    if (respawnThrottle.pausedUntil <= now) {
-        handleRespawns(brokenObjects, (obj) => {
-            const world = obj.world || 'main';
-            const spawned = spawnObject(obj.type, undefined, undefined, 1, null, world);
-            if (spawned) return true;
-
-            // Fallback: respawn at the previous chest location if strict random validation fails.
-            return !!spawnObject(obj.type, obj.x, obj.y, 1, null, world);
-        }, 3000, currentRespawnCycleId);
-    }
 }
 
 function debugLogStillBots(players, now) {
@@ -417,7 +415,7 @@ function markRespawnSlotUsed() {
     respawnThrottle.spawnedThisCycle++;
 }
 
-function handleRespawns(deadPool, spawnLogic, delay, cycleId) {
+function handleRespawns(deadPool, spawnLogic, delay, cycleId, { useThrottle = true } = {}) {
     const now = performance.now();
     for (const id in deadPool) {
         const ent = deadPool[id];
@@ -427,7 +425,7 @@ function handleRespawns(deadPool, spawnLogic, delay, cycleId) {
         }
         const deathTime = ent.lastDiedTime || ent.timeBroken;
         if (now - deathTime > delay) {
-            if (!canUseRespawnSlot(now, cycleId)) return;
+            if (useThrottle && !canUseRespawnSlot(now, cycleId)) return;
             const result = spawnLogic(ent);
             let didRespawn = false;
             if (result === true) {
@@ -442,9 +440,10 @@ function handleRespawns(deadPool, spawnLogic, delay, cycleId) {
                 didRespawn = true;
             }
             if (didRespawn) {
-                markRespawnSlotUsed();
+                if (useThrottle) markRespawnSlotUsed();
                 delete deadPool[id];
             }
         }
     }
 }
+

@@ -14,6 +14,13 @@ export const ENTITIES = {
     OBJECTS: {},
 }
 
+export let STRUCTURE_STATE_VERSION = 0;
+
+export function bumpStructureStateVersion() {
+    STRUCTURE_STATE_VERSION++;
+    return STRUCTURE_STATE_VERSION;
+}
+
 export function resetEntities() {
     ENTITIES.PLAYERS = {};
     ENTITIES.leaderboard = [];
@@ -21,6 +28,7 @@ export function resetEntities() {
     ENTITIES.STRUCTURES = {};
     ENTITIES.PROJECTILES = {};
     ENTITIES.OBJECTS = {};
+    STRUCTURE_STATE_VERSION++;
 }
 
 window.ENTITIES = ENTITIES;

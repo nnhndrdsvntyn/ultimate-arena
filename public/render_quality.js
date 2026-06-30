@@ -12,11 +12,15 @@ export function getRenderQualityAt(x = 0, y = 0, radius = 0) {
     const screenRadius = Math.max(0, radius || 0) * zoom;
     const dx = x - (camera.x + (LC.width / 2));
     const dy = y - (camera.y + (LC.height / 2));
-    const screenDistance = Math.hypot(dx, dy) * zoom;
+    const screenDx = dx * zoom;
+    const screenDy = dy * zoom;
+    const screenDistanceSq = (screenDx * screenDx) + (screenDy * screenDy);
     const highRov = viewRangeMult >= HIGH_ROV_THRESHOLD;
+    const farDistance = Math.max(LC.width, LC.height) * 0.34;
+    const veryFarDistance = Math.max(LC.width, LC.height) * 0.48;
     const tiny = highRov && screenRadius < 12;
-    const far = highRov && (tiny || screenDistance > Math.max(LC.width, LC.height) * 0.34);
-    const veryFar = highRov && (screenRadius < 7 || screenDistance > Math.max(LC.width, LC.height) * 0.48);
+    const far = highRov && (tiny || screenDistanceSq > (farDistance * farDistance));
+    const veryFar = highRov && (screenRadius < 7 || screenDistanceSq > (veryFarDistance * veryFarDistance));
 
     return {
         viewRangeMult,

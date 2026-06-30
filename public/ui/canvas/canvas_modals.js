@@ -4,7 +4,6 @@ import {
     createClippedBodyRegion,
     drawCanvasModalBackdrop,
     drawCanvasModalCloseButton,
-    drawCanvasModalPanel,
     drawCanvasModalTabs,
     drawModalScrollbar,
     finishClippedBodyRegion,
@@ -24,26 +23,41 @@ const addBodyHitbox = (state, bodyRect, type, x, y, width, height, data = {}) =>
     state.hitboxes.push({ type, x, y, width, height, data });
 };
 
-const drawToggleSwitch = (LC, x, y, width, height, isOn, colorOn = '#38bdf8') => {
-    const radius = Math.min(height / 2, 14);
-    const bg = isOn ? 'rgba(56, 189, 248, 0.85)' : 'rgba(148, 163, 184, 0.35)';
+const ARCADE_UI = {
+    panel: '#243249',
+    panelDark: '#1e293b',
+    ink: '#111827',
+    title: '#dbeafe',
+    muted: '#94a3b8',
+    green: '#10b981',
+    blue: '#3b82f6',
+    red: '#ef4444',
+    white: '#ffffff'
+};
+
+const drawArcadeRect = (LC, x, y, width, height, {
+    color = ARCADE_UI.panel,
+    stroke = ARCADE_UI.ink,
+    strokeWidth = 5,
+    radius = 16,
+    shadow = 8
+} = {}) => {
+    if (shadow > 0) {
+        LC.drawRect({
+            pos: [x, y + shadow],
+            size: [width, height],
+            color: ARCADE_UI.ink,
+            cornerRadius: radius
+        });
+    }
     LC.drawRect({
         pos: [x, y],
         size: [width, height],
-        color: bg,
+        color,
+        stroke,
+        strokeWidth,
         cornerRadius: radius
     });
-    const knobR = height * 0.45;
-    const knobX = isOn
-        ? (x + width - height + (height - knobR * 2) / 2)
-        : (x + (height - knobR * 2) / 2);
-    const knobY = y + (height - knobR * 2) / 2;
-    LC.ctx.save();
-    LC.ctx.beginPath();
-    LC.ctx.arc(knobX + knobR, knobY + knobR, knobR, 0, Math.PI * 2);
-    LC.ctx.fillStyle = 'rgba(255,255,255,0.95)';
-    LC.ctx.fill();
-    LC.ctx.restore();
 };
 
 const fitCanvasText = (LC, text, maxWidth, font) => {
@@ -140,8 +154,8 @@ const drawModalTitle = (LC, text, x, y) => {
     LC.drawText({
         text,
         pos: [x, y],
-        font: '900 20px Inter',
-        color: 'white',
+        font: '900 20px Nunito',
+        color: ARCADE_UI.title,
         textAlign: 'left'
     });
 };
@@ -149,7 +163,6 @@ const drawModalTitle = (LC, text, x, y) => {
 export function drawSettingsModal(ctx) {
     const {
         uiState,
-        Settings,
         Vars,
         LC,
         settingsCanvasState,
@@ -177,8 +190,9 @@ export function drawSettingsModal(ctx) {
     });
     const { x: panelX, y: panelY, width: panelW, height: panelH } = panelRect;
 
-    drawCanvasModalBackdrop(LC, 'rgba(0,0,0,0.62)');
-    drawCanvasModalPanel(LC, panelRect, 'rgba(0, 0, 0, 0.5)');
+    drawCanvasModalBackdrop(LC, 'rgba(0,0,0,0.45)');
+    drawArcadeRect(LC, panelX, panelY, panelW, panelH, { radius: 20, shadow: 10 });
+    drawArcadeRect(LC, panelX, panelY, panelW, 48, { color: ARCADE_UI.panelDark, radius: 16, shadow: 0 });
 
     // Header
     drawModalTitle(LC, 'SETTINGS', panelX + 18, panelY + 30);
@@ -191,7 +205,10 @@ export function drawSettingsModal(ctx) {
     addHitbox(settingsCanvasState, 'close', closeX, closeY, closeSize, closeSize);
 
     // Tabs
-    const tabs = ['Visuals', 'Stats', 'Admin'];
+    const tabs = ['Visuals'];
+    if (!tabs.includes(uiState.activeTab)) {
+        uiState.activeTab = 'Visuals';
+    }
     const tabY = panelY + 58;
     const tabH = 30;
     const tabXStart = panelX + 20;
@@ -216,7 +233,6 @@ export function drawSettingsModal(ctx) {
     const bodyX = bodyRect.x + bodyContentPad;
     const bodyW = bodyRect.width - (bodyContentPad * 2);
     const bodyVisibleH = bodyRect.height - (bodyContentPad * 2);
-    const lineGap = 40;
     const bodyContentStart = bodyRect.y + bodyContentPad;
     let bodyY = bodyContentStart - settingsCanvasState.scrollY;
     let contentHeight = 0;
@@ -235,61 +251,28 @@ export function drawSettingsModal(ctx) {
             LC.drawText({
                 text: text.toUpperCase(),
                 pos: [bodyX, bodyY],
-                font: '800 13px Inter',
-                color: 'rgba(255,255,255,0.75)',
+                font: '900 13px Nunito',
+                color: ARCADE_UI.muted,
                 textAlign: 'left'
             });
             bodyY += 22;
             contentHeight += 22;
         };
         const drawCard = (x, y, w, h) => {
-            LC.drawRect({
-                pos: [x, y],
-                size: [w, h],
-                color: 'rgba(255,255,255,0.06)',
-                stroke: 'rgba(255,255,255,0.08)',
-                strokeWidth: 1,
-                cornerRadius: 10
-            });
+            drawArcadeRect(LC, x, y, w, h, { color: ARCADE_UI.panelDark, radius: 14, shadow: 5, strokeWidth: 4 });
         };
         const cardX = bodyX;
         const cardW = bodyW - 8;
         const cardPadX = 12;
         const cardGap = 12;
 
-        header('General');
-        const toggles = [
-            { label: 'Render Grid', key: 'renderGrid' },
-            { label: 'Show Nearby Mobs On Minimap', key: 'showMobsOnMinimap' },
-            { label: 'Show Nearby Chests On Minimap', key: 'showChestsOnMinimap' }
-        ];
-        toggles.forEach((t) => {
-            const cardH = 46;
-            drawCard(cardX, bodyY - 18, cardW, cardH);
-            LC.drawText({
-                text: t.label,
-                pos: [cardX + cardPadX, bodyY + 6],
-                font: '600 12.5px Inter',
-                color: 'white',
-                textAlign: 'left'
-            });
-            const sw = 46;
-            const sh = 20;
-            const sx = (cardX + cardW - cardPadX) - sw;
-            const sy = bodyY - 6;
-            drawToggleSwitch(LC, sx, sy, sw, sh, !!Settings[t.key]);
-            addBodyHitbox(settingsCanvasState, bodyRect, 'toggle', sx, sy, sw, sh, { key: t.key });
-            bodyY += (cardH + cardGap);
-            contentHeight += (cardH + cardGap);
-        });
-
         header('View Distance');
         const sliderCardH = 70;
         drawCard(cardX, bodyY - 18, cardW, sliderCardH);
         LC.drawText({
-            text: 'View Range Multiplier',
+            text: 'Max View Range %',
             pos: [cardX + cardPadX, bodyY + 6],
-            font: '600 12.5px Inter',
+            font: '900 12.5px Nunito',
             color: 'white',
             textAlign: 'left'
         });
@@ -299,8 +282,8 @@ export function drawSettingsModal(ctx) {
         const sliderH = 8;
         const range = VIEW_RANGE_MAX - VIEW_RANGE_MIN;
         const t = Math.max(0, Math.min(1, (Vars.viewRangeMult - VIEW_RANGE_MIN) / Math.max(0.001, range)));
-        LC.drawRect({ pos: [sliderX, sliderY], size: [sliderW, sliderH], color: 'rgba(255,255,255,0.15)', cornerRadius: 5 });
-        LC.drawRect({ pos: [sliderX, sliderY], size: [sliderW * t, sliderH], color: 'rgba(59,130,246,0.9)', cornerRadius: 5 });
+        LC.drawRect({ pos: [sliderX, sliderY], size: [sliderW, sliderH], color: ARCADE_UI.ink, cornerRadius: 5 });
+        LC.drawRect({ pos: [sliderX, sliderY], size: [sliderW * t, sliderH], color: ARCADE_UI.blue, cornerRadius: 5 });
         const knobX = sliderX + (sliderW * t);
         LC.ctx.save();
         LC.ctx.beginPath();
@@ -312,8 +295,8 @@ export function drawSettingsModal(ctx) {
         LC.drawText({
             text: Vars.viewRangeMult.toFixed(2),
             pos: [sliderX + sliderW + 8, sliderY + 10],
-            font: '700 12px Inter',
-            color: 'rgba(255,255,255,0.8)',
+            font: '900 12px Nunito',
+            color: ARCADE_UI.title,
             textAlign: 'left'
         });
         bodyY += (sliderCardH + cardGap);
@@ -321,20 +304,20 @@ export function drawSettingsModal(ctx) {
         LC.drawText({
             text: `RECOMMENDED: MOBILE ${VIEW_RANGE_RECOMMENDED_MOBILE.toFixed(1)} · DESKTOP ${VIEW_RANGE_RECOMMENDED_DESKTOP.toFixed(1)}`,
             pos: [bodyX, bodyY],
-            font: '600 10px Inter',
-            color: 'rgba(255,255,255,0.55)',
+            font: '800 10px Nunito',
+            color: ARCADE_UI.muted,
             textAlign: 'left'
         });
         bodyY += 30;
         contentHeight += 30;
 
-        header('Back-buffer Quality');
+        header('Graphics Quality');
         const selectCardH = 46;
         drawCard(cardX, bodyY - 18, cardW, selectCardH);
         LC.drawText({
             text: 'Resolution',
             pos: [cardX + cardPadX, bodyY + 6],
-            font: '600 12.5px Inter',
+            font: '900 12.5px Nunito',
             color: 'white',
             textAlign: 'left'
         });
@@ -342,163 +325,27 @@ export function drawSettingsModal(ctx) {
         const selectH = 26;
         const selectX = (cardX + cardW - cardPadX) - selectW;
         const selectY = bodyY - 6;
-        const arrowW = 28;
-        LC.drawRect({
-            pos: [selectX, selectY],
-            size: [selectW, selectH],
-            color: 'rgba(0,0,0,0.45)',
-            stroke: 'rgba(255,255,255,0.15)',
-            strokeWidth: 1,
-            cornerRadius: 8
-        });
-        LC.drawRect({
-            pos: [selectX + 4, selectY + 3],
-            size: [arrowW, selectH - 6],
-            color: 'rgba(255,255,255,0.12)',
-            cornerRadius: 6
-        });
-        LC.drawRect({
-            pos: [selectX + selectW - arrowW - 4, selectY + 3],
-            size: [arrowW, selectH - 6],
-            color: 'rgba(255,255,255,0.12)',
-            cornerRadius: 6
-        });
+        drawArcadeRect(LC, selectX, selectY, selectW, selectH, { color: ARCADE_UI.ink, radius: 10, shadow: 3, strokeWidth: 3 });
         const currentQuality = BACK_BUFFER_QUALITIES.find(opt => opt.value === Vars.backBufferQuality) ?? BACK_BUFFER_QUALITIES[0];
         const qualityLabel = String(currentQuality?.label ?? currentQuality?.value ?? '');
-        const fittedLabel = fitCanvasText(LC, qualityLabel, selectW - (arrowW * 2) - 24, '600 12px Inter');
-        LC.drawText({
-            text: '‹',
-            pos: [selectX + 4 + arrowW / 2, selectY + 18],
-            font: '800 16px Inter',
-            color: 'rgba(255,255,255,0.9)',
-            textAlign: 'center'
-        });
+        const fittedLabel = fitCanvasText(LC, qualityLabel, selectW - 34, '900 12px Nunito');
         LC.drawText({
             text: fittedLabel,
-            pos: [selectX + selectW / 2, selectY + 18],
-            font: '600 12px Inter',
+            pos: [selectX + 12, selectY + 18],
+            font: '900 12px Nunito',
             color: 'rgba(255,255,255,0.85)',
-            textAlign: 'center'
+            textAlign: 'left'
         });
         LC.drawText({
-            text: '›',
-            pos: [selectX + selectW - 4 - arrowW / 2, selectY + 18],
-            font: '800 16px Inter',
+            text: '▾',
+            pos: [selectX + selectW - 18, selectY + 18],
+            font: '900 13px Nunito',
             color: 'rgba(255,255,255,0.9)',
             textAlign: 'center'
         });
-        addBodyHitbox(settingsCanvasState, bodyRect, 'selectArrow', selectX + 4, selectY + 3, arrowW, selectH - 6, { id: 'backBuffer', delta: -1 });
-        addBodyHitbox(settingsCanvasState, bodyRect, 'selectArrow', selectX + selectW - arrowW - 4, selectY + 3, arrowW, selectH - 6, { id: 'backBuffer', delta: 1 });
+        addBodyHitbox(settingsCanvasState, bodyRect, 'select', selectX, selectY, selectW, selectH, { id: 'backBuffer' });
         bodyY += (selectCardH + cardGap);
         contentHeight += (selectCardH + cardGap);
-    } else if (uiState.activeTab === 'Stats') {
-        const s = Vars.myStats;
-        const rows = [
-            ['POINTS', s.availablePoints || 0],
-            ['DMG (hit)', s.dmgHit],
-            ['DMG (throw sword)', s.dmgThrow],
-            ['SPEED', s.speed],
-            ['HP', `${Math.floor(s.hp)} / ${Math.floor(s.maxHp)}`],
-            ['REGEN / TICK', s.regenPerTick || 5]
-        ];
-        rows.forEach(([label, value]) => {
-            LC.drawText({
-                text: label,
-                pos: [bodyX + 8, bodyY],
-                font: '700 13px Inter',
-                color: 'rgba(255,255,255,0.75)',
-                textAlign: 'left'
-            });
-            LC.drawText({
-                text: String(value),
-                pos: [bodyX + bodyW - 12, bodyY],
-                font: '700 13px Inter',
-                color: 'white',
-                textAlign: 'right'
-            });
-            bodyY += lineGap;
-            contentHeight += lineGap;
-        });
-    } else if (uiState.activeTab === 'Admin') {
-        if (!Vars.isAdmin) {
-            LC.drawText({
-                text: 'ADMIN KEY',
-                pos: [bodyX, bodyY],
-                font: '800 12px Inter',
-                color: 'rgba(255,255,255,0.7)',
-                textAlign: 'left'
-            });
-            bodyY += 14;
-            const inputW = bodyW;
-            const inputH = 30;
-            const inputX = bodyX;
-            const inputY = bodyY;
-            LC.drawRect({
-                pos: [inputX, inputY],
-                size: [inputW, inputH],
-                color: 'rgba(0,0,0,0.45)',
-                stroke: settingsCanvasState.inputFocused ? 'rgba(59,130,246,0.9)' : 'rgba(255,255,255,0.15)',
-                strokeWidth: 2,
-                cornerRadius: 10
-            });
-            const mask = uiState.tempAdminKey
-                ? '•'.repeat(uiState.tempAdminKey.length)
-                : (settingsCanvasState.inputFocused ? '' : 'Enter...');
-            LC.drawText({
-                text: mask,
-                pos: [inputX + 10, inputY + 20],
-                font: '600 13px Inter',
-                color: uiState.tempAdminKey ? 'white' : 'rgba(255,255,255,0.5)',
-                textAlign: 'left'
-            });
-            if (settingsCanvasState.inputFocused) {
-                const caretText = uiState.tempAdminKey ? '•'.repeat(uiState.tempAdminKey.length) : '';
-                const caretWidth = LC.measureText({ text: caretText, font: '600 13px Inter' }).width;
-                const caretX = inputX + 10 + caretWidth;
-                LC.drawRect({
-                    pos: [caretX, inputY + 8],
-                    size: [2, 14],
-                    color: 'rgba(255,255,255,0.8)',
-                    cornerRadius: 1
-                });
-            }
-            addBodyHitbox(settingsCanvasState, bodyRect, 'input', inputX, inputY, inputW, inputH, { id: 'adminKey' });
-            bodyY += 60;
-            contentHeight += 60;
-
-            const btnW = bodyW;
-            const btnH = 34;
-            const btnX = bodyX;
-            const btnY = bodyY;
-            LC.drawRect({
-                pos: [btnX, btnY],
-                size: [btnW, btnH],
-                color: 'rgba(255,255,255,0.18)',
-                stroke: 'rgba(255,255,255,0.2)',
-                strokeWidth: 1,
-                cornerRadius: 10
-            });
-            LC.drawText({
-                text: 'APPLY KEY',
-                pos: [btnX + btnW / 2, btnY + 22],
-                font: '800 13px Inter',
-                color: 'white',
-                textAlign: 'center'
-            });
-            addBodyHitbox(settingsCanvasState, bodyRect, 'action', btnX, btnY, btnW, btnH, { id: 'applyAdmin' });
-            bodyY += btnH + 14;
-            contentHeight += btnH + 14;
-        } else {
-            LC.drawText({
-                text: 'Admin commands are now available via chat.',
-                pos: [bodyX, bodyY],
-                font: '600 13px Inter',
-                color: 'rgba(255,255,255,0.7)',
-                textAlign: 'left'
-            });
-            bodyY += lineGap;
-            contentHeight += lineGap;
-        }
     }
 
     finishClippedBodyRegion(LC);
@@ -551,7 +398,8 @@ export function drawShopModal(ctx) {
     const { x: panelX, y: panelY, width: panelW, height: panelH } = panelRect;
 
     drawCanvasModalBackdrop(LC, 'rgba(0,0,0,0.45)');
-    drawCanvasModalPanel(LC, panelRect, 'rgba(0, 0, 0, 0.68)');
+    drawArcadeRect(LC, panelX, panelY, panelW, panelH, { radius: 20, shadow: 10 });
+    drawArcadeRect(LC, panelX, panelY, panelW, 48, { color: ARCADE_UI.panelDark, radius: 16, shadow: 0 });
 
     // Header
     drawModalTitle(LC, 'SHOP', panelX + 18, panelY + 30);
@@ -570,14 +418,7 @@ export function drawShopModal(ctx) {
     const coinBoxH = 28;
     const coinBoxX = panelX + panelW - coinBoxW - 56;
     const coinBoxY = panelY + 12;
-    LC.drawRect({
-        pos: [coinBoxX, coinBoxY],
-        size: [coinBoxW, coinBoxH],
-        color: 'rgba(0,0,0,0.5)',
-        stroke: 'rgba(255,255,255,0.12)',
-        strokeWidth: 1,
-        cornerRadius: 10
-    });
+    drawArcadeRect(LC, coinBoxX, coinBoxY, coinBoxW, coinBoxH, { color: ARCADE_UI.ink, radius: 10, shadow: 3, strokeWidth: 3 });
     LC.drawImage({
         name: 'gold_coin',
         pos: [coinBoxX + 6, coinBoxY + 6],
@@ -586,8 +427,8 @@ export function drawShopModal(ctx) {
     LC.drawText({
         text: coins,
         pos: [coinBoxX + 28, coinBoxY + 19],
-        font: '700 12px Inter',
-        color: 'white',
+        font: '900 12px Nunito',
+        color: ARCADE_UI.title,
         textAlign: 'left'
     });
 
@@ -641,13 +482,13 @@ export function drawShopModal(ctx) {
             if (!visible) return;
             LC.ctx.save();
             LC.ctx.textBaseline = 'top';
-            LC.ctx.shadowColor = 'rgba(0,0,0,0.6)';
+            LC.ctx.shadowColor = ARCADE_UI.ink;
             LC.ctx.shadowBlur = 4;
             LC.drawText({
                 text: text.toUpperCase(),
                 pos: [bodyX + 4, titleY + 10],
-                font: '800 15px Inter',
-                color: 'rgba(255,255,255,0.75)',
+                font: '900 15px Nunito',
+                color: ARCADE_UI.muted,
                 textAlign: 'left'
             });
             LC.ctx.restore();
@@ -687,13 +528,12 @@ export function drawShopModal(ctx) {
                 LC.ctx.restore();
             }
 
-            LC.drawRect({
-                pos: [x, y],
-                size: [w, h],
-                color: 'rgba(255,255,255,0.06)',
-                stroke: attention ? 'rgba(239,68,68,0.9)' : 'rgba(255,255,255,0.08)',
-                strokeWidth: attention ? 2 : 1,
-                cornerRadius: 12
+            drawArcadeRect(LC, x, y, w, h, {
+                color: ARCADE_UI.panelDark,
+                stroke: attention ? ARCADE_UI.red : ARCADE_UI.ink,
+                strokeWidth: attention ? 5 : 4,
+                radius: 14,
+                shadow: 6
             });
             if (attention) {
                 LC.ctx.save();
@@ -742,19 +582,18 @@ export function drawShopModal(ctx) {
                 });
             }
             if (cfg.iconText) {
-                LC.drawRect({
-                    pos: [x + (w - 72) / 2, y + 10],
-                    size: [72, 64],
-                    color: 'rgba(251, 191, 36, 0.08)',
-                    stroke: 'rgba(251, 191, 36, 0.28)',
-                    strokeWidth: 1,
-                    cornerRadius: 8
+                drawArcadeRect(LC, x + (w - 72) / 2, y + 10, 72, 64, {
+                    color: ARCADE_UI.panel,
+                    stroke: ARCADE_UI.title,
+                    strokeWidth: 4,
+                    radius: 10,
+                    shadow: 4
                 });
                 LC.drawText({
                     text: cfg.iconText,
                     pos: [x + w / 2, y + 50],
-                    font: '900 16px Inter',
-                    color: '#fbbf24',
+                    font: '900 16px Nunito',
+                    color: ARCADE_UI.title,
                     textAlign: 'center'
                 });
             }
@@ -762,7 +601,7 @@ export function drawShopModal(ctx) {
             LC.drawText({
                 text: cfg.name,
                 pos: [x + w / 2, y + 92],
-                font: '700 12px Inter',
+                font: '900 12px Nunito',
                 color: 'white',
                 textAlign: 'center'
             });
@@ -782,8 +621,8 @@ export function drawShopModal(ctx) {
                 LC.drawText({
                     text: row.text || '',
                     pos: [x + w / 2 + 2, rowY + 11],
-                    font: '700 12px Inter',
-                    color: 'white',
+                    font: '900 12px Nunito',
+                    color: ARCADE_UI.title,
                     textAlign: 'left'
                 });
             });
@@ -792,17 +631,17 @@ export function drawShopModal(ctx) {
             const btnH = 24;
             const btnX = x + 12;
             const btnY = y + h - btnH - 12;
-            LC.drawRect({
-                pos: [btnX, btnY],
-                size: [btnW, btnH],
-                color: cfg.canBuy ? 'rgba(183, 154, 107, 0.95)' : 'rgba(120,120,120,0.45)',
-                cornerRadius: 8
+            drawArcadeRect(LC, btnX, btnY, btnW, btnH, {
+                color: cfg.canBuy ? ARCADE_UI.green : '#64748b',
+                radius: 10,
+                shadow: 4,
+                strokeWidth: 4
             });
             LC.drawText({
                 text: cfg.buttonText,
                 pos: [btnX + btnW / 2, btnY + 17],
-                font: '800 11px Inter',
-                color: cfg.canBuy ? 'black' : 'rgba(255,255,255,0.7)',
+                font: '900 11px Nunito',
+                color: ARCADE_UI.white,
                 textAlign: 'center'
             });
             addBodyHitbox(shopCanvasState, bodyRect, 'buy', btnX, btnY, btnW, btnH, { kind: cfg.kind, id: cfg.id, canBuy: cfg.canBuy });
@@ -814,18 +653,16 @@ export function drawShopModal(ctx) {
                 const infoSize = 16;
                 const infoX = x + w - infoSize - 8;
                 const infoY = y + 8;
-                LC.drawRect({
-                    pos: [infoX, infoY],
-                    size: [infoSize, infoSize],
-                    color: 'rgba(0,0,0,0.35)',
-                    stroke: 'rgba(255,255,255,0.2)',
-                    strokeWidth: 1,
-                    cornerRadius: 8
+                drawArcadeRect(LC, infoX, infoY, infoSize, infoSize, {
+                    color: ARCADE_UI.blue,
+                    radius: 8,
+                    shadow: 3,
+                    strokeWidth: 3
                 });
                 LC.drawText({
                     text: 'i',
                     pos: [infoX + infoSize / 2, infoY + infoSize / 2 + 5],
-                    font: '800 12px Inter',
+                    font: '900 12px Nunito',
                     color: 'white',
                     textAlign: 'center'
                 });
@@ -982,7 +819,7 @@ export function drawShopModal(ctx) {
         const dropW = bodyW - 8;
         const notePadX = 8;
         const notePadY = 10;
-        const noteFont = '600 12.5px Inter';
+        const noteFont = '800 12.5px Nunito';
         const noteLineH = 16;
         const noteWrapW = dropW - (notePadX * 2);
         const lines = wrapCanvasText(LC, note, noteWrapW, noteFont);
@@ -991,11 +828,7 @@ export function drawShopModal(ctx) {
         const separatorY = dropY + noteBlockH;
         const separatorPadX = 6;
 
-        LC.drawRect({
-            pos: [dropX + separatorPadX, separatorY],
-            size: [dropW - (separatorPadX * 2), 1],
-            color: 'rgba(255,255,255,0.12)'
-        });
+        LC.drawRect({ pos: [dropX + separatorPadX, separatorY], size: [dropW - (separatorPadX * 2), 3], color: ARCADE_UI.ink, cornerRadius: 2 });
 
         LC.ctx.save();
         LC.ctx.textBaseline = 'top';
@@ -1004,7 +837,7 @@ export function drawShopModal(ctx) {
                 text: lines[i],
                 pos: [dropX + notePadX, dropY + notePadY + (i * noteLineH)],
                 font: noteFont,
-                color: 'rgba(255,255,255,0.75)',
+                color: ARCADE_UI.muted,
                 textAlign: 'left'
             });
         }
@@ -1023,13 +856,11 @@ export function drawShopModal(ctx) {
             : emptyQueueHeight;
         const queueBoxH = queueContentHeight + (queuePad * 2);
 
-        LC.drawRect({
-            pos: [queueBoxX, queueBoxY],
-            size: [dropW, queueBoxH],
-            color: 'rgba(0,0,0,0.22)',
-            stroke: 'rgba(255,255,255,0.1)',
-            strokeWidth: 1,
-            cornerRadius: 10
+        drawArcadeRect(LC, queueBoxX, queueBoxY, dropW, queueBoxH, {
+            color: ARCADE_UI.panelDark,
+            radius: 14,
+            shadow: 6,
+            strokeWidth: 4
         });
 
         shopCanvasState.sellDropRect = {
@@ -1052,8 +883,8 @@ export function drawShopModal(ctx) {
             LC.drawText({
                 text: 'NO ITEMS QUEUED',
                 pos: [queueBodyX + 8, queueBodyY + 20],
-                font: '800 14px Inter',
-                color: 'rgba(255,255,255,0.25)',
+                font: '900 14px Nunito',
+                color: ARCADE_UI.muted,
                 textAlign: 'left'
             });
             queueBodyY += emptyQueueHeight;
@@ -1086,13 +917,11 @@ export function drawShopModal(ctx) {
                 const removeSize = 18;
                 const removeX = queueBodyX + queueBodyW - removeSize - 6;
                 const removeY = queueBodyY + 9;
-                LC.drawRect({
-                    pos: [queueBodyX, queueBodyY],
-                    size: [queueBodyW, 36],
-                    color: 'rgba(255,255,255,0.06)',
-                    stroke: 'rgba(255,255,255,0.08)',
-                    strokeWidth: 1,
-                    cornerRadius: 8
+                drawArcadeRect(LC, queueBodyX, queueBodyY, queueBodyW, 36, {
+                    color: ARCADE_UI.panel,
+                    radius: 10,
+                    shadow: 3,
+                    strokeWidth: 4
                 });
                 const maxIcon = 26;
                 let iw = maxIcon;
@@ -1117,27 +946,27 @@ export function drawShopModal(ctx) {
                 LC.drawText({
                     text: label,
                     pos: [queueBodyX + 44, queueBodyY + 22],
-                    font: '700 12px Inter',
+                    font: '900 12px Nunito',
                     color: 'white',
                     textAlign: 'left'
                 });
                 LC.drawText({
                     text: price.toLocaleString(),
                     pos: [removeX - 10, queueBodyY + 22],
-                    font: '700 12px Inter',
-                    color: '#fbbf24',
+                    font: '900 12px Nunito',
+                    color: ARCADE_UI.title,
                     textAlign: 'right'
                 });
-                LC.drawRect({
-                    pos: [removeX, removeY],
-                    size: [removeSize, removeSize],
-                    color: 'rgba(239, 68, 68, 0.95)',
-                    cornerRadius: 6
+                drawArcadeRect(LC, removeX, removeY, removeSize, removeSize, {
+                    color: ARCADE_UI.red,
+                    radius: 6,
+                    shadow: 2,
+                    strokeWidth: 3
                 });
                 LC.drawText({
                     text: '×',
                     pos: [removeX + removeSize / 2, removeY + removeSize / 2 + 5],
-                    font: '900 14px Inter',
+                    font: '900 14px Nunito',
                     color: 'white',
                     textAlign: 'center'
                 });
@@ -1150,17 +979,17 @@ export function drawShopModal(ctx) {
             const btnH = 30;
             const btnX = queueBodyX + queueBodyW - btnW;
             const btnY = queueBodyY + 4;
-            LC.drawRect({
-                pos: [btnX, btnY],
-                size: [btnW, btnH],
-                color: 'rgba(183, 154, 107, 0.95)',
-                cornerRadius: 10
+            drawArcadeRect(LC, btnX, btnY, btnW, btnH, {
+                color: ARCADE_UI.green,
+                radius: 10,
+                shadow: 4,
+                strokeWidth: 4
             });
             LC.drawText({
                 text: `SELL ${validQueue.length} ITEMS`,
                 pos: [btnX + btnW / 2, btnY + 20],
-                font: '800 11px Inter',
-                color: 'black',
+                font: '900 11px Nunito',
+                color: ARCADE_UI.white,
                 textAlign: 'center'
             });
             addBodyHitbox(shopCanvasState, bodyRect, 'sellAll', btnX, btnY, btnW, btnH, { queue: validQueue });
@@ -1175,7 +1004,7 @@ export function drawShopModal(ctx) {
 
     if (shopCanvasState.hoverInfoText) {
         const text = shopCanvasState.hoverInfoText;
-        const font = '600 12px Inter';
+        const font = '800 12px Nunito';
         const metrics = LC.measureText({ text, font });
         const pad = 8;
         const maxTipW = 320;
@@ -1191,13 +1020,11 @@ export function drawShopModal(ctx) {
         const pos = LC.clientToLogical(mx, my);
         let tipX = Math.min(LC.width - tipW - 8, pos.x + 14);
         let tipY = Math.max(8, pos.y - tipH - 6);
-        LC.drawRect({
-            pos: [tipX, tipY],
-            size: [tipW, tipH],
-            color: 'rgba(0,0,0,0.8)',
-            stroke: 'rgba(255,255,255,0.2)',
-            strokeWidth: 1,
-            cornerRadius: 8
+        drawArcadeRect(LC, tipX, tipY, tipW, tipH, {
+            color: ARCADE_UI.panelDark,
+            radius: 12,
+            shadow: 5,
+            strokeWidth: 4
         });
         for (let i = 0; i < shownLines.length; i++) {
             LC.drawText({

@@ -78,7 +78,7 @@ const DROP_FINAL_PUSH = 90;
 const DROP_TRAVEL_TICKS = 4;
 const BUFF_STAGE_MAX = 15;
 const BUFF_POINTS_PER_LEVEL_UP = 1;
-const STRENGTH_BUFF_PER_STAGE = 2;
+const STRENGTH_BUFF_PER_STAGE = 0.1;
 const MAX_HP_BUFF_PER_STAGE = 20;
 const REGEN_BUFF_PER_STAGE = 1;
 const BASE_REGEN_AMOUNT = 5;
@@ -86,6 +86,7 @@ const DIAGONAL_MOVE_SCALE = Math.SQRT1_2 * 1.1;
 const BOOMERANG_THROW_MOVE_STUN_MS = 500;
 const PICKUP_DELAY_MS = 200;
 const TUTORIAL_MOVEMENT_HOLD_MS = 2000;
+const TUTORIAL_TRANSITION_DELAY_MS = 900;
 const PVP_PROTECTION_SCORE = 1000; // players below this score cannot deal or receive PvP damage
 const TUTORIAL_MOVEMENT_SEQUENCE = [
     { key: 'w', label: 'W', direction: 'NORTH' },
@@ -93,23 +94,38 @@ const TUTORIAL_MOVEMENT_SEQUENCE = [
     { key: 's', label: 'S', direction: 'SOUTH' },
     { key: 'd', label: 'D', direction: 'EAST' }
 ];
-const TUTORIAL_STEP_TEXT = [
-    'Hold the "W" key on your keyboard for 2 seconds (your player will move NORTH)',
-    'Attack by holding down space or your left mouse button.',
-    `Throw your weapon by pressing the "E" key on your keyboard.`,
-    'Attack and break this chest.',
-    'Pick up the dropped coins by touching them.',
-    'Open the shop and buy sword1.',
-    "Equip sword1 by clicking its slot or pressing the number of the slot on your keyboard. (1-5)",
-    'Eliminate the pig!',
-    'Good job! Tutorial complete.'
-];
+const TUTORIAL_PRAISE_TEXTS = ['NICE!', 'PERFECT!'];
+const TUTORIAL_STAGE_1_CHEST_COIN_DROP = 50;
+const TUTORIAL_STAGE_OBJECTIVES = Object.freeze({
+    0: TUTORIAL_MOVEMENT_SEQUENCE.map((step) => `Hold the ${step.key.toUpperCase()} key on your keyboard for 2 seconds.`),
+    1: [
+        'Swing by using the space bar or left mouse button, and throw your weapon using the E key.'
+    ],
+    2: [
+        'Attack & break the chest.',
+        'Collect the coins by walking over them.',
+        'Open the shop and buy sword1.',
+        'Select your new sword.'
+    ],
+    3: [
+        'Attack & kill the cow.'
+    ]
+});
 const DEFAULT_PLAYER_SKIN = 2;
 const ENTITY_KEY_MOB = 2 << 20;
 
 function getTutorialMovementText(index = 0) {
     const step = TUTORIAL_MOVEMENT_SEQUENCE[index] || TUTORIAL_MOVEMENT_SEQUENCE[0];
-    return `Hold the "${step.label}" key on your keyboard for 2 seconds (your player will move ${step.direction})`;
+    return `Hold the ${step.key.toUpperCase()} key on your keyboard for 2 seconds.`;
+}
+
+function getTutorialPraiseText() {
+    return TUTORIAL_PRAISE_TEXTS[Math.floor(Math.random() * TUTORIAL_PRAISE_TEXTS.length)] || 'NICE!';
+}
+
+function getTutorialObjectiveText(stage = 0, index = 0) {
+    const stageTexts = TUTORIAL_STAGE_OBJECTIVES[stage] || TUTORIAL_STAGE_OBJECTIVES[0];
+    return stageTexts[index] || stageTexts[stageTexts.length - 1] || '';
 }
 
 function markBotKillTargetCooldown(bot, targetId, now = performance.now()) {
@@ -339,24 +355,31 @@ export class Player extends Entity {
 
     ensureTutorialState() {
         if (!this.isTutorialWorld()) return;
-        if (this.tutorial) return;
+        if (this.tutorial) {
+            if (typeof this.tutorial.cowKilled !== 'boolean') this.tutorial.cowKilled = false;
+            return;
+        }
         this.tutorial = {
             stage: 0,
-            lastAttackTimeSeen: 0,
-            lastThrowTimeSeen: 0,
-            originX: this.x,
-            originY: this.y,
+            sequenceIndex: 0,
+            stageStartedAt: performance.now(),
+            stageTransitionTimer: null,
             desktopMovementSequenceEnabled: false,
             movementHoldIndex: 0,
             movementHoldStartedAt: 0,
+            originX: this.x,
+            originY: this.y,
+            lastAttackTimeSeen: 0,
+            lastThrowTimeSeen: 0,
             chestId: null,
-            pigId: null,
-            pigSpawned: false,
-            stage7StartedAt: 0,
+            cowId: null,
+            cowKilled: false,
+            chestBroken: false,
             shopClosedAfterBuy: false,
+            transitioning: false,
             finished: false
         };
-        this.sendTutorialObjective(TUTORIAL_STEP_TEXT[0], 0);
+        this.sendTutorialObjective(getTutorialObjectiveText(0, 0), 0, 0);
     }
 
     sendTutorialObjective(text, status = 0, step = this.tutorial?.stage ?? 0) {
@@ -370,9 +393,89 @@ export class Player extends Entity {
         ws.send(ws.packetWriter.getBuffer());
     }
 
+    resetTutorialWorld(nextStage = 0) {
+        const world = this.world || 'main';
+        if (this.tutorial.stageTransitionTimer) {
+            clearTimeout(this.tutorial.stageTransitionTimer);
+            this.tutorial.stageTransitionTimer = null;
+        }
+        deleteWorldState(world);
+        clearWorldCaches(world);
+
+        const center = getWorldCenter(world);
+        this.x = center.x;
+        this.y = center.y;
+        this.lastX = this.x;
+        this.lastY = this.y;
+        this.angle = 0;
+        this.keys = { w: 0, a: 0, s: 0, d: 0 };
+        this.tutorial.stage = nextStage;
+        this.tutorial.sequenceIndex = 0;
+        this.tutorial.stageStartedAt = performance.now();
+        this.tutorial.movementHoldIndex = 0;
+        this.tutorial.movementHoldStartedAt = 0;
+        this.tutorial.chestId = null;
+        this.tutorial.cowId = null;
+        this.tutorial.cowKilled = false;
+        this.tutorial.chestBroken = false;
+        this.tutorial.shopClosedAfterBuy = false;
+        this.tutorial.transitioning = false;
+        this.tutorial.lastAttackTimeSeen = 0;
+        this.tutorial.lastThrowTimeSeen = 0;
+        this.tutorial.originX = this.x;
+        this.tutorial.originY = this.y;
+
+        if (nextStage === 2) {
+            this.ensureTutorialChest();
+        } else if (nextStage === 3) {
+            this.ensureTutorialCow();
+        }
+
+        this.sendTutorialObjective(getTutorialObjectiveText(nextStage, 0), 0, nextStage);
+    }
+
+    startTutorialTransition(nextStage) {
+        if (!this.tutorial || this.tutorial.finished || this.tutorial.transitioning) return;
+        this.tutorial.transitioning = true;
+        const praiseText = getTutorialPraiseText();
+        this.sendTutorialObjective(praiseText, 1, this.tutorial.stage);
+        const transitionWorld = this.world || 'main';
+        this.tutorial.stageTransitionTimer = setTimeout(() => {
+            if (!this.tutorial || this.tutorial.finished) return;
+            if ((this.world || 'main') !== transitionWorld) return;
+            this.resetTutorialWorld(nextStage);
+        }, TUTORIAL_TRANSITION_DELAY_MS);
+    }
+
+    advanceTutorialSubstep() {
+        if (!this.tutorial || this.tutorial.finished || this.tutorial.transitioning) return;
+        const stage = this.tutorial.stage;
+        const stageTexts = TUTORIAL_STAGE_OBJECTIVES[stage] || [];
+        if (this.tutorial.sequenceIndex < stageTexts.length - 1) {
+            this.tutorial.sequenceIndex += 1;
+            this.sendTutorialObjective(getTutorialObjectiveText(stage, this.tutorial.sequenceIndex), 0, stage);
+            return;
+        }
+
+        if (stage === 0) {
+            this.startTutorialTransition(1);
+        } else if (stage === 1) {
+            this.startTutorialTransition(2);
+        } else if (stage === 2) {
+            this.startTutorialTransition(3);
+        } else {
+            this.completeTutorial();
+        }
+    }
+
     completeTutorial() {
         if (!this.tutorial || this.tutorial.finished) return;
         this.tutorial.finished = true;
+        this.tutorial.transitioning = false;
+        if (this.tutorial.stageTransitionTimer) {
+            clearTimeout(this.tutorial.stageTransitionTimer);
+            this.tutorial.stageTransitionTimer = null;
+        }
         const ws = wsById.get(this.id);
         if (!ws) return;
         ws.packetWriter.reset();
@@ -385,63 +488,51 @@ export class Player extends Entity {
         }
     }
 
-    advanceTutorialStep() {
-        if (!this.tutorial || this.tutorial.finished) return;
-        this.tutorial.stage++;
-        const nextText = TUTORIAL_STEP_TEXT[this.tutorial.stage];
-        if (!nextText) {
-            this.completeTutorial();
-            return;
-        }
-        this.sendTutorialObjective(nextText, 0, this.tutorial.stage);
-    }
-
     ensureTutorialChest() {
-        if (!this.tutorial) return;
-        const existing = this.tutorial.chestId ? ENTITIES.OBJECTS[this.tutorial.chestId] : null;
-        if (existing) return;
+        if (!this.tutorial || this.tutorial.stage !== 2 || this.tutorial.sequenceIndex !== 0) return;
+        if (this.tutorial.chestId) return;
         const chestType = getChestObjectTypes()[0];
         if (!chestType) return;
-        const spawnDist = this.radius + 170;
+        const spawnDist = this.radius + 120;
         const chestX = Math.max(100, Math.min(MAP_SIZE[0] - 100, Math.round(this.x + Math.cos(this.angle || 0) * spawnDist)));
         const chestY = Math.max(100, Math.min(MAP_SIZE[1] - 100, Math.round(this.y + Math.sin(this.angle || 0) * spawnDist)));
         const chest = spawnObject(chestType, chestX, chestY, 1, null, this.world || 'main');
         if (!chest) return;
         chest.shouldDropLoop = false;
-        chest.tutorialCoinDrop = 50;
+        chest.tutorialCoinDrop = TUTORIAL_STAGE_1_CHEST_COIN_DROP;
         chest.noRespawn = true;
         this.tutorial.chestId = chest.id;
     }
 
-    ensureTutorialPig() {
-        if (!this.tutorial) return;
-        if (this.tutorial.pigSpawned) return;
-        const existing = this.tutorial.pigId ? ENTITIES.MOBS[this.tutorial.pigId] : null;
+    ensureTutorialCow() {
+        if (!this.tutorial || this.tutorial.stage !== 3 || this.tutorial.sequenceIndex !== 0) return;
+        if (this.tutorial.cowId) return;
+        const existing = this.tutorial.cowId ? ENTITIES.MOBS[this.tutorial.cowId] : null;
         if (existing) return;
         const spawnDist = this.radius + 220;
-        const pigX = Math.max(100, Math.min(MAP_SIZE[0] - 100, Math.round(this.x + Math.cos(this.angle || 0) * spawnDist)));
-        const pigY = Math.max(100, Math.min(MAP_SIZE[1] - 100, Math.round(this.y + Math.sin(this.angle || 0) * spawnDist)));
-        const pigId = getId('MOBS');
+        const cowX = Math.max(100, Math.min(MAP_SIZE[0] - 100, Math.round(this.x + Math.cos(this.angle || 0) * spawnDist)));
+        const cowY = Math.max(100, Math.min(MAP_SIZE[1] - 100, Math.round(this.y + Math.sin(this.angle || 0) * spawnDist)));
+        const cowId = getId('MOBS');
         ENTITIES.newEntity({
             entityType: 'mob',
-            id: pigId,
-            x: pigX,
-            y: pigY,
-            type: 2,
+            id: cowId,
+            x: cowX,
+            y: cowY,
+            type: 3,
             world: this.world || 'main'
         });
-        const pig = ENTITIES.MOBS[pigId];
-        if (!pig) return;
-        pig.noRespawn = true;
+        const cow = ENTITIES.MOBS[cowId];
+        if (!cow) return;
+        cow.noRespawn = true;
+        cow.tutorialOwnerId = this.id;
         // Ensure first render orientation is deterministic and matches movement.
-        pig.angle = Math.atan2(this.y - pig.y, this.x - pig.x);
-        pig.lastTurnTime = performance.now();
-        pig.nextTurnDelay = Math.floor(Math.random() * 3001) + 3000;
-        this.tutorial.pigId = pig.id;
-        this.tutorial.pigSpawned = true;
+        cow.angle = Math.atan2(this.y - cow.y, this.x - cow.x);
+        cow.lastTurnTime = performance.now();
+        cow.nextTurnDelay = Math.floor(Math.random() * 3001) + 3000;
+        this.tutorial.cowId = cow.id;
 
-        // Force a full mob sync for this specific pig (ID may be reused).
-        const seenKey = ENTITY_KEY_MOB + pigId;
+        // Force a full mob sync for this specific cow (ID may be reused).
+        const seenKey = ENTITY_KEY_MOB + cowId;
         for (const client of wss.clients) {
             if (client.id !== this.id) continue;
             if (!client.seenEntities) continue;
@@ -453,14 +544,15 @@ export class Player extends Entity {
     processTutorial(now = performance.now()) {
         this.ensureTutorialState();
         if (!this.tutorial || this.tutorial.finished) return;
-        if (!this.isAlive && this.tutorial.stage < 8) return;
+        if (this.tutorial.transitioning) return;
+        if (!this.isAlive) return;
 
         switch (this.tutorial.stage) {
             case 0: {
                 if (this.tutorial.desktopMovementSequenceEnabled) {
                     const currentStep = TUTORIAL_MOVEMENT_SEQUENCE[this.tutorial.movementHoldIndex];
                     if (!currentStep) {
-                        this.advanceTutorialStep();
+                        this.advanceTutorialSubstep();
                         break;
                     }
 
@@ -482,8 +574,9 @@ export class Player extends Entity {
                         this.tutorial.movementHoldIndex += 1;
                         this.tutorial.movementHoldStartedAt = 0;
                         if (this.tutorial.movementHoldIndex >= TUTORIAL_MOVEMENT_SEQUENCE.length) {
-                            this.advanceTutorialStep();
+                            this.advanceTutorialSubstep();
                         } else {
+                            this.tutorial.sequenceIndex = this.tutorial.movementHoldIndex;
                             this.sendTutorialObjective(getTutorialMovementText(this.tutorial.movementHoldIndex), 0, 0);
                         }
                     }
@@ -493,73 +586,67 @@ export class Player extends Entity {
                 const dx = this.x - this.tutorial.originX;
                 const dy = this.y - this.tutorial.originY;
                 if (dx * dx + dy * dy >= 1000) {
-                    this.advanceTutorialStep();
+                    this.startTutorialTransition(1);
                 }
                 break;
             }
-            case 1:
-                if (this.lastAttackTime > this.tutorial.lastAttackTimeSeen) {
-                    this.tutorial.lastAttackTimeSeen = this.lastAttackTime;
-                    this.advanceTutorialStep();
+            case 1: {
+                const startedAt = this.tutorial.stageStartedAt || 0;
+                const swung = this.lastAttackTime > startedAt;
+                const thrown = this.lastThrowSwordTime > startedAt;
+                if (swung && thrown) {
+                    this.advanceTutorialSubstep();
                 }
                 break;
-            case 2:
-                if (this.lastThrowSwordTime > this.tutorial.lastThrowTimeSeen) {
-                    this.tutorial.lastThrowTimeSeen = this.lastThrowSwordTime;
-                    this.advanceTutorialStep();
+            }
+            case 2: {
+                if (this.tutorial.sequenceIndex === 0 && !this.tutorial.chestId) {
+                    this.ensureTutorialChest();
                 }
-                break;
-            case 3:
-                this.ensureTutorialChest();
-                if (this.tutorial.chestId) {
+                if (this.tutorial.sequenceIndex === 0 && this.tutorial.chestId) {
                     const chestEntity = ENTITIES.OBJECTS[this.tutorial.chestId];
                     if (!chestEntity || !isChestObjectType(chestEntity.type)) {
-                        this.advanceTutorialStep();
+                        this.tutorial.chestId = null;
+                        this.tutorial.sequenceIndex = 1;
+                        this.sendTutorialObjective(getTutorialObjectiveText(2, 1), 0, 2);
+                        break;
+                    }
+                }
+                if (this.tutorial.sequenceIndex === 1 && this.getTotalCoins() >= TUTORIAL_STAGE_1_CHEST_COIN_DROP) {
+                    this.tutorial.sequenceIndex = 2;
+                    this.sendTutorialObjective(getTutorialObjectiveText(2, 2), 0, 2);
+                    break;
+                }
+                if (this.tutorial.sequenceIndex === 2) {
+                    const hasRank2 = this.inventory.some((itemType, idx) => (itemType & 0x7F) === 2 && this.inventoryCounts[idx] > 0);
+                    if (hasRank2 && this.tutorial.shopClosedAfterBuy) {
+                        this.tutorial.sequenceIndex = 3;
+                        this.sendTutorialObjective(getTutorialObjectiveText(2, 3), 0, 2);
+                    }
+                }
+                if (this.tutorial.sequenceIndex === 3) {
+                    const rank2Slot = this.inventory.findIndex((itemType, idx) => (itemType & 0x7F) === 2 && this.inventoryCounts[idx] > 0);
+                    if (rank2Slot !== -1 && this.selectedSlot === rank2Slot) {
+                        this.startTutorialTransition(3);
                     }
                 }
                 break;
-            case 4:
-                if (this.getTotalCoins() >= 50) {
-                    this.advanceTutorialStep();
-                }
-                break;
-            case 5: {
-                const hasRank2 = this.inventory.some((itemType, idx) => (itemType & 0x7F) === 2 && this.inventoryCounts[idx] > 0);
-                if (hasRank2 && this.tutorial.shopClosedAfterBuy) {
-                    this.advanceTutorialStep();
-                }
-                break;
             }
-            case 6: {
-                const slotHasRank2 = (this.inventory[2] & 0x7F) === 2 && this.inventoryCounts[2] > 0;
-                if (this.selectedSlot === 2 && slotHasRank2) {
-                    this.advanceTutorialStep();
-                }
-                break;
-            }
-            case 7:
-                if (!this.tutorial.pigSpawned) {
-                    this.ensureTutorialPig();
-                    break;
-                }
-                if (this.tutorial.pigId) {
-                    const pig = ENTITIES.MOBS[this.tutorial.pigId];
-                    if (!pig) {
-                        this.advanceTutorialStep();
-                        if (!this.tutorial.stage7StartedAt) {
-                            this.tutorial.stage7StartedAt = now;
+            case 3: {
+                this.ensureTutorialCow();
+                if (this.tutorial.cowId) {
+                    const cow = ENTITIES.MOBS[this.tutorial.cowId];
+                    if (!cow) {
+                        if (this.tutorial.cowKilled) {
+                            this.completeTutorial();
+                        } else {
+                            this.tutorial.cowId = null;
+                            this.ensureTutorialCow();
                         }
                     }
                 }
                 break;
-            case 8:
-                if (!this.tutorial.stage7StartedAt) {
-                    this.tutorial.stage7StartedAt = now;
-                }
-                if (now - this.tutorial.stage7StartedAt >= 1200) {
-                    this.completeTutorial();
-                }
-                break;
+            }
             default:
                 break;
         }
@@ -1123,10 +1210,9 @@ export class Player extends Entity {
         const inCombat = now - this.lastCombatTime < 10000;
         const envShieldActive = this.touchingSafeZone && !inCombat;
         const shieldBlocksAttack = envShieldActive;
-        const canAttack = this.attacking && !shieldBlocksAttack && this.isAlive && this.hasWeapon && curRank < 128 && isWeaponRank(baseRank) && !isBoomerangType(baseRank);
+        const canAttack = this.attacking && !shieldBlocksAttack && this.isAlive && this.hasWeapon && curRank < 128 && isWeaponRank(baseRank);
 
         if (!canAttack || now - this.lastAttackTime < this.attackCooldownTime) {
-            if (isBoomerangType(baseRank)) this.attacking = 0;
             return;
         }
 
@@ -1149,7 +1235,7 @@ export class Player extends Entity {
     }
 
     throwSword() {
-        if (this.tutorial && !this.tutorial.finished && this.tutorial.stage < 2) return;
+        if (this.tutorial && !this.tutorial.finished && this.tutorial.stage < 1) return;
 
         const now = performance.now();
         if (this.isFrozen(now)) return;
@@ -1262,22 +1348,21 @@ export class Player extends Entity {
     handleAutoPickup(now = performance.now(), worldCoins = null) {
         if (!this.isAlive) return;
 
-        // If inventory is full (no empty slots AND no coin slots with room < 256), don't auto-pickup
-        let canFitMoreCoins = false;
+        // If inventory is full, regular drops can't be picked up, but coins are currency now.
+        let hasEmptySlot = false;
         for (let i = 0; i < this.inventory.length; i++) {
-            const type = this.inventory[i];
-            if (type === 0 || (isCoinObjectType(type) && this.inventoryCounts[i] < 256)) {
-                canFitMoreCoins = true;
+            if (this.inventory[i] === 0) {
+                hasEmptySlot = true;
                 break;
             }
         }
-        if (!canFitMoreCoins) return;
         const objects = Array.isArray(worldCoins) ? worldCoins : ENTITIES.OBJECTS;
         if (Array.isArray(objects)) {
             for (let i = 0; i < objects.length; i++) {
                 const obj = objects[i];
                 if (!obj || obj.collectorId) continue;
                 if ((now - (obj.spawnTime || 0)) <= PICKUP_DELAY_MS) continue;
+                if (!isCoinObjectType(obj.type) && !hasEmptySlot) continue;
                 if (!this.canPickupDroppedObject(obj, now)) continue;
                 const range = (this.radius || 0) + (obj.radius || 0);
                 const dx = this.x - obj.x;
@@ -1776,52 +1861,14 @@ export class Player extends Entity {
     }
 
     addGoldCoins(amount) {
-        let remaining = amount;
-        // Try to fill existing stacks (up to 256)
-        for (let i = 0; i < 35; i++) {
-            if (isCoinObjectType(this.inventory[i]) && this.inventoryCounts[i] < 256) {
-                const space = 256 - this.inventoryCounts[i];
-                const toAdd = Math.min(space, remaining);
-                this.inventoryCounts[i] += toAdd;
-                remaining -= toAdd;
-                if (remaining <= 0) break;
-            }
-        }
-
-        // Fill empty slots with new stacks
-        while (remaining > 0) {
-            const emptySlot = this.inventory.indexOf(0);
-            if (emptySlot === -1) break;
-
-            const toAdd = Math.min(256, remaining);
-            this.inventory[emptySlot] = getCoinObjectType();
-            this.inventoryCounts[emptySlot] = toAdd;
-            remaining -= toAdd;
-        }
-
-        // If still remaining (inventory full), drop on floor in clusters of 256
-        while (remaining > 0) {
-            const toDrop = Math.min(256, remaining);
-            const dropObj = spawnObject(getCoinObjectType(), this.x, this.y, toDrop, 'player', this.world || 'main');
-            if (dropObj) {
-                const scatterAngle = Math.random() * Math.PI * 2;
-                this.applyDropLaunch(dropObj, getCoinObjectType(), scatterAngle);
-            }
-            remaining -= toDrop;
-        }
-
-        this.sendInventoryUpdate();
+        const delta = Math.max(0, Math.floor(amount || 0));
+        if (delta <= 0) return;
+        this.goldCoins = Math.max(0, Math.floor(this.goldCoins || 0) + delta);
         this.sendStatsUpdate();
     }
 
     getTotalCoins() {
-        let total = 0;
-        for (let i = 0; i < 35; i++) {
-            if (isCoinObjectType(this.inventory[i])) {
-                total += this.inventoryCounts[i];
-            }
-        }
-        return total;
+        return Math.max(0, Math.floor(this.goldCoins || 0));
     }
 
     getTotalItemCount(itemType) {
@@ -1835,20 +1882,9 @@ export class Player extends Entity {
     }
 
     deductCoins(amount) {
-        let remaining = amount;
-        for (let i = 34; i >= 0; i--) { // Deduct from end of inventory first
-            if (isCoinObjectType(this.inventory[i])) {
-                const toDeduct = Math.min(this.inventoryCounts[i], remaining);
-                this.inventoryCounts[i] -= toDeduct;
-                remaining -= toDeduct;
-                if (this.inventoryCounts[i] <= 0) {
-                    this.inventory[i] = 0;
-                }
-                if (remaining <= 0) break;
-            }
-        }
-
-        this.sendInventoryUpdate();
+        const delta = Math.max(0, Math.floor(amount || 0));
+        if (delta <= 0) return;
+        this.goldCoins = Math.max(0, Math.floor(this.goldCoins || 0) - delta);
         this.sendStatsUpdate();
     }
 
@@ -2145,7 +2181,8 @@ export class Player extends Entity {
 
     recomputeBuffedAttributes({ healByMaxIncrease = false } = {}) {
         const prevMaxHp = this.maxHp;
-        this.strength = this.baseStrength + ((this.buffLevels.strength || 0) * STRENGTH_BUFF_PER_STAGE);
+        const strengthBuffStages = this.buffLevels.strength || 0;
+        this.strength = Math.round(this.baseStrength * (1 + (strengthBuffStages * STRENGTH_BUFF_PER_STAGE)));
         const healthScale = this.getCombatScale();
         const rawMaxHp = this.baseMaxHp + ((this.buffLevels.maxHealth || 0) * MAX_HP_BUFF_PER_STAGE);
         this.maxHp = Math.max(1, Math.round(rawMaxHp * healthScale));
@@ -2257,7 +2294,7 @@ export class Player extends Entity {
                 const isPolarBear = m.type === 5;
                 const isCow = m.type === 3;
                 const hasMeleeCooldown = isPolarBear || isCow || Number.isFinite(contactDamage);
-                const meetsHealthGate = (isPolarBear || m.aggroTowardPlayers || m.type === 8 || m.type === 11 || m.type === 13 || m.type === 16 || m.type === 17) ? true : (mHealthRatio >= 0.6);
+                const meetsHealthGate = (isPolarBear || m.aggroTowardPlayers || m.type === 8 || m.type === 11 || m.type === 13 || m.type === 16 || m.type === 17 || m.type === 18) ? true : (mHealthRatio >= 0.6);
                 const meleeReady = !hasMeleeCooldown || (now - (m.lastMeleeAttackTime || 0) >= 600);
 
                 const allowPolarBearHit = isPolarBear
@@ -2291,10 +2328,6 @@ export class Player extends Entity {
         const ws = wsById.get(this.id);
         if (!ws) return;
 
-        const weaponRank = this.weapon.rank || 1;
-        const projDmg = getWeaponAttackStats(weaponRank)?.damage || 0;
-        const damageScale = this.getCombatScale();
-        const dmgHit = Math.round((this.strength + projDmg) * 1.15 * damageScale);
         const inCombat = performance.now() - this.lastCombatTime < 10000;
         const abilityCooldownMs = Math.max(0, this.abilityCooldownMs || 0);
         const elapsedSinceAbilityUse = performance.now() - (this.lastAbilityUseTime || 0);
@@ -2304,11 +2337,6 @@ export class Player extends Entity {
 
         ws.packetWriter.reset();
         ws.packetWriter.writeU8(18);
-        ws.packetWriter.writeU16(dmgHit);
-        ws.packetWriter.writeU16(Math.round(dmgHit / 1.5)); // dmgThrow (1.5x weaker than hit)
-        ws.packetWriter.writeU16(Math.round(this.speed));
-        ws.packetWriter.writeU16(Math.floor(this.hp));
-        ws.packetWriter.writeU16(Math.floor(this.maxHp));
         ws.packetWriter.writeU32(this.getTotalCoins());
         ws.packetWriter.writeU16(Math.max(0, this.killCount || 0));
         ws.packetWriter.writeU8(inCombat ? 1 : 0);
@@ -2320,7 +2348,6 @@ export class Player extends Entity {
         ws.packetWriter.writeU8(Math.min(BUFF_STAGE_MAX, this.buffLevels.strength || 0));
         ws.packetWriter.writeU8(Math.min(BUFF_STAGE_MAX, this.buffLevels.maxHealth || 0));
         ws.packetWriter.writeU8(Math.min(BUFF_STAGE_MAX, this.buffLevels.regenSpeed || 0));
-        ws.packetWriter.writeU16(Math.min(65535, this.getRegenAmountPerTick()));
         ws.send(ws.packetWriter.getBuffer());
     }
 

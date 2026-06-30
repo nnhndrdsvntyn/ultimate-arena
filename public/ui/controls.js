@@ -1,15 +1,15 @@
 import { ENTITIES } from '../game.js';
-import { ws, Vars, LC, camera, isTutorialMobileActionEnabled, isTutorialWorldActive, getHudUpgradeTypeAtClientPos, isHudUpgradeHeaderAtClientPos, tryUseHudUpgradeAtClientPos, getCreativeInventorySlotAtLogicalPos, getCreativeInventoryItemBySlot, getAdminInventoryPanelPositions, isAdminCreativeInventoryPanelAtClientPos, handleAdminCreativeInventoryWheel, getTopBarButtonAtClientPos, handleSettingsCanvasPointerDown, handleSettingsCanvasPointerMove, handleSettingsCanvasPointerUp, handleSettingsCanvasKeyDown, handleSettingsCanvasPaste, isSettingsCanvasInteractiveAtClientPos, handleSettingsCanvasWheel, handleShopCanvasPointerDown, handleShopCanvasPointerMove, handleShopCanvasPointerUp, handleShopCanvasWheel, isShopCanvasInteractiveAtClientPos, getShopCanvasSellDropClientRect, isShopCanvasPanelAtClientPos, isSettingsCanvasPanelAtClientPos, isMinimapCoachInteractiveAtClientPos, handleMinimapCoachPointerDown, setViewRangeMult, VIEW_RANGE_STEP, isLeaderboardToggleAtClientPos, toggleLeaderboardExpanded, isMinimapToggleAtClientPos, toggleMinimapOpen, playUITapSound } from '../client.js';
+import { ws, Vars, LC, camera, isTutorialMobileActionEnabled, isTutorialWorldActive, getHudUpgradeTypeAtClientPos, isHudUpgradeHeaderAtClientPos, tryUseHudUpgradeAtClientPos, getCreativeInventorySlotAtLogicalPos, getCreativeInventoryItemBySlot, getAdminInventoryPanelPositions, isAdminCreativeInventoryPanelAtClientPos, handleAdminCreativeInventoryWheel, getTopBarButtonAtClientPos, handleForgotControlsCanvasClick, isForgotControlsCanvasAtClientPos, handleInfoBoxToggleClick, isInfoBoxToggleAtClientPos, handleSettingsCanvasPointerDown, handleSettingsCanvasPointerMove, handleSettingsCanvasPointerUp, handleSettingsCanvasKeyDown, handleSettingsCanvasPaste, isSettingsCanvasInteractiveAtClientPos, handleSettingsCanvasWheel, handleShopCanvasPointerDown, handleShopCanvasPointerMove, handleShopCanvasPointerUp, handleShopCanvasWheel, isShopCanvasInteractiveAtClientPos, getShopCanvasSellDropClientRect, isShopCanvasPanelAtClientPos, isSettingsCanvasPanelAtClientPos, isMinimapCoachInteractiveAtClientPos, handleMinimapCoachPointerDown, setViewRangeMult, VIEW_RANGE_STEP, isLeaderboardToggleAtClientPos, toggleLeaderboardExpanded, isMinimapToggleAtClientPos, toggleMinimapOpen, playUITapSound } from '../client.js';
 import { writer, sendPickupCommand, sendEquipAccessoryPacket, sendUseAbilityPacket, sendUseItemPacket, sendAdminCreativeItemCommand } from '../helpers.js';
 import { isMobile, HOTBAR_CONFIG, INVENTORY_CONFIG, ACCESSORY_SLOT_CONFIG, THROW_BTN_CONFIG, PICKUP_BTN_CONFIG, DROP_BTN_CONFIG, ATTACK_BTN_CONFIG } from './config.js';
 import { dataMap } from '../shared/datamap.js';
-import { isWeaponRank, isSellableItem, isAccessoryItemType, accessoryIdFromItemType, isSpearType, isBoomerangType } from '../shared/datamap.js';
+import { isWeaponRank, isSellableItem, isAccessoryItemType, accessoryIdFromItemType, isSpearType } from '../shared/datamap.js';
 import { uiInput, uiRefs, uiRotation, uiState } from './context.js';
 import { createEl } from './dom.js';
 import { updateShopBody, toggleShopModal } from './shop.js';
 import { toggleSettingsModal } from './settings.js';
 import { requestPause } from './hud.js';
-import { handleChatToggle, handleChatAutocompleteTab, handleChatAutocompleteMoveSelection, handleChatHistoryNavigate, closeChatInput, toggleChatDrawer, isChatCanvasInteractiveAtClientPos, handleChatCanvasPointerDown, handleChatCanvasWheel, openChatInputOnly, isChatInputActive } from './chat.js';
+import { handleChatToggle, handleChatAutocompleteTab, handleChatAutocompleteMoveSelection, handleChatHistoryNavigate, closeChatInput, toggleChatDrawer, isChatHistoryInteractiveAtClientPos, handleChatHistoryPointerDown, handleChatHistoryWheel, openChatInputOnly, isChatInputActive } from './chat.js';
 
 // --- Rotation Limiting ---
 function shouldBlockRotationDuringSwing(myPlayer) {
@@ -210,6 +210,13 @@ export function setupKeyboardControls() {
 
         if (uiState.isPaused) {
             if (isDown) stopTrackedMovement();
+            return;
+        }
+
+        if (keyName === 'i' && isDown) {
+            if (!uiState.isSettingsOpen && !uiState.isShopOpen) {
+                toggleInventoryModal(!uiState.isInventoryOpen);
+            }
             return;
         }
 
@@ -469,8 +476,6 @@ export function sendAttackPacket(state) {
 
     // Guard: Don't allow attack if slot is empty (optimistically checked)
     if (state === 1 && Vars.myInventory && Vars.myInventory[Vars.selectedSlot] === 0) return;
-    if (state === 1 && Vars.myInventory && isBoomerangType((Vars.myInventory[Vars.selectedSlot] || 0) & 0x7F)) return;
-
     sendPacket(4, () => {
         writer.writeU8(state);
     });
@@ -1003,8 +1008,8 @@ function setupMobileTouchActions(joyContainer) {
                 e.preventDefault(); // Prevent synthesized mouse/click events
                 uiTouchIds.add(t.identifier);
 
-                if (uiState.isChatHistoryOpen && isChatCanvasInteractiveAtClientPos(t.clientX, t.clientY)) {
-                    handleChatCanvasPointerDown(t.clientX, t.clientY);
+                if (uiState.isChatHistoryOpen && isChatHistoryInteractiveAtClientPos(t.clientX, t.clientY)) {
+                    handleChatHistoryPointerDown(t.clientX, t.clientY);
                     scrollTouchId = t.identifier;
                     scrollLastY = t.clientY;
                     scrollTarget = 'chat';
@@ -1104,7 +1109,7 @@ function setupMobileTouchActions(joyContainer) {
                 } else if (scrollTarget === 'shop' && uiState.isShopOpen) {
                     handleShopCanvasWheel(t.clientX, t.clientY, delta * 2);
                 } else if (scrollTarget === 'chat' && uiState.isChatHistoryOpen) {
-                    handleChatCanvasWheel(t.clientX, t.clientY, delta * 2);
+                    handleChatHistoryWheel(t.clientX, t.clientY, delta * 2);
                 } else if (scrollTarget === 'adminCreative' && uiState.isInventoryOpen) {
                     handleAdminCreativeInventoryWheel(t.clientX, t.clientY, delta * 2);
                 }
@@ -1174,7 +1179,7 @@ function isTouchOnUI(clientX, clientY) {
     if (uiState.isSettingsOpen) return true;
     // Don't block all interactions when the shop is open; only treat clicks that are
     // actually inside the shop modal as UI. This allows inventory dragging while shop is visible.
-    if (isChatCanvasInteractiveAtClientPos(clientX, clientY)) return true;
+    if (isChatHistoryInteractiveAtClientPos(clientX, clientY)) return true;
 
     // Check settings modal
     if (uiState.isSettingsOpen && uiRefs.settingsModal) {
@@ -1226,6 +1231,12 @@ function isTouchOnUI(clientX, clientY) {
 }
 
 function handleTopBarClick(clientX, clientY) {
+    if (handleInfoBoxToggleClick(clientX, clientY)) {
+        return true;
+    }
+    if (handleForgotControlsCanvasClick(clientX, clientY)) {
+        return true;
+    }
     if (isLeaderboardToggleAtClientPos(clientX, clientY)) {
         playUITapSound();
         toggleLeaderboardExpanded();
@@ -1287,7 +1298,7 @@ export function setupDesktopControls() {
         if (uiState.isShopOpen && handleShopCanvasWheel(cx, cy, e.deltaY)) {
             handled = true;
         }
-        if (uiState.isChatHistoryOpen && handleChatCanvasWheel(cx, cy, e.deltaY)) {
+        if (uiState.isChatHistoryOpen && handleChatHistoryWheel(cx, cy, e.deltaY)) {
             handled = true;
         }
         if (handleAdminCreativeInventoryWheel(cx, cy, e.deltaY)) {
@@ -1315,13 +1326,15 @@ export function setupDesktopControls() {
         if (uiState.isShopOpen) handleShopCanvasPointerMove(e.clientX, e.clientY);
         const overUpgradeHeader = isHudUpgradeHeaderAtClientPos(e.clientX, e.clientY);
         const overTopBar = !!getTopBarButtonAtClientPos(e.clientX, e.clientY);
+        const overForgotControls = isForgotControlsCanvasAtClientPos(e.clientX, e.clientY);
+        const overInfoBoxToggle = isInfoBoxToggleAtClientPos(e.clientX, e.clientY);
         const overLeaderboardToggle = isLeaderboardToggleAtClientPos(e.clientX, e.clientY);
         const overMinimapToggle = isMinimapToggleAtClientPos(e.clientX, e.clientY);
         const overSettings = uiState.isSettingsOpen && isSettingsCanvasInteractiveAtClientPos(e.clientX, e.clientY);
         const overShop = uiState.isShopOpen && isShopCanvasInteractiveAtClientPos(e.clientX, e.clientY);
         const overMinimapCoach = isMinimapCoachInteractiveAtClientPos(e.clientX, e.clientY);
         if (LC?.canvas) {
-            const nextCursor = (overUpgradeHeader || overTopBar || overLeaderboardToggle || overMinimapToggle || overSettings || overShop || overMinimapCoach) ? 'pointer' : 'default';
+            const nextCursor = (overUpgradeHeader || overTopBar || overForgotControls || overInfoBoxToggle || overLeaderboardToggle || overMinimapToggle || overSettings || overShop || overMinimapCoach) ? 'pointer' : 'default';
             if (LC.canvas.style.cursor !== nextCursor) LC.canvas.style.cursor = nextCursor;
         }
 
@@ -1349,7 +1362,7 @@ export function setupDesktopControls() {
         if (handleShopCanvasPointerDown(e.clientX, e.clientY)) {
             return;
         }
-        if (handleChatCanvasPointerDown(e.clientX, e.clientY)) {
+        if (handleChatHistoryPointerDown(e.clientX, e.clientY)) {
             return;
         }
         const shopSellActive = uiState.isShopOpen && uiState.activeShopTab === 'Sell';

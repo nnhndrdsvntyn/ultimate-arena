@@ -491,7 +491,10 @@ export class Minotaur extends Mob {
     }
 
     spawnShockwaveProjectiles() {
-        spawnEnergyBurstProjectiles(this);
+        spawnEnergyBurstProjectiles(this, {
+            damageMult: 0.5,
+            rangeMult: 0.5
+        });
     }
 
     die(killer) {

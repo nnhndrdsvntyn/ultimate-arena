@@ -71,7 +71,8 @@ function packPlayerStatusByte(player) {
         (player?.hasWeapon ? 1 : 0) |
         ((player?.hasShield ? 1 : 0) << 1) |
         ((player?.isAlive ? 1 : 0) << 2) |
-        ((player?.isInvisible ? 1 : 0) << 3)
+        ((player?.isInvisible ? 1 : 0) << 3) |
+        ((player?.isAdmin ? 1 : 0) << 4)
     ) & 0xFF;
 }
 

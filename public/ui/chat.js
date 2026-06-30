@@ -104,7 +104,7 @@ const COMMANDS = [{
     },
     {
         name: '/break',
-        params: '<@s[tree_big|rock_small|rock_medium|rock_big]> | <@o[chest]> <[id|range|all]> [dropLoot]'
+        params: '<@s[tree_big|rock_small|rock_medium|rock_big]> | <@o[chest]> [[id|range|all]] [dropLoot]'
     },
     {
         name: '/setattribute',
@@ -193,11 +193,12 @@ const MOB_TYPE_SUGGESTIONS = [
     'minotaur',
     'root_walker',
     'yeti',
+    'sandling',
     'dune_behemoth',
     'inferno_beast'
 ];
 const STRUCTURE_SUGGESTIONS = ['@s[tree_big]', '@s[rock_small]', '@s[rock_medium]', '@s[rock_big]'];
-const SPAWN_ENTITY_SUGGESTIONS = ['chick', 'pig', 'cow', 'hearty', 'minotaur', 'root_walker', 'yeti', 'dune_behemoth', 'inferno_beast', 'polar_bear', 'tree_big', 'rock_small', 'rock_medium', 'rock_big', 'chest1', 'chest2', 'chest3', 'chest4'];
+const SPAWN_ENTITY_SUGGESTIONS = ['chick', 'pig', 'cow', 'hearty', 'minotaur', 'root_walker', 'yeti', 'sandling', 'dune_behemoth', 'inferno_beast', 'polar_bear', 'tree_big', 'rock_small', 'rock_medium', 'rock_big', 'chest1', 'chest2', 'chest3', 'chest4'];
 const STRUCTURE_COMMAND_TYPE_MAP = {
     'rock_small': 7,
     'rock_medium': 2,
@@ -257,34 +258,25 @@ const CHAT_HISTORY_LIMIT = 50;
 const CHAT_FEED_LIMIT = 100;
 const CHAT_INPUT_MIN_HEIGHT = 48;
 const CHAT_INPUT_MAX_HEIGHT = 148;
-const CHAT_PANEL_MAX_WIDTH = 720;
-const CHAT_PANEL_MIN_HEIGHT = 210;
-const CHAT_PANEL_MAX_HEIGHT = 340;
-const CHAT_PANEL_TOP = 60;
 const chatHistory = [];
 let chatHistoryIndex = chatHistory.length;
-const chatCanvasState = {
-    panelRect: null,
-    messagesRect: null,
-    closeRect: null,
-    bodyVisibleHeight: 0,
-    contentHeight: 0
-};
-
-function getChatPanelLayout() {
-    const width = Math.min(CHAT_PANEL_MAX_WIDTH, Math.max(320, LC.width - 32));
-    const height = Math.min(CHAT_PANEL_MAX_HEIGHT, Math.max(CHAT_PANEL_MIN_HEIGHT, Math.floor(LC.height * 0.38)));
-    const x = Math.floor((LC.width - width) / 2);
-    const y = CHAT_PANEL_TOP;
-    return { x, y, width, height };
-}
 
 function getChatScrollMax() {
-    return Math.max(0, chatCanvasState.contentHeight - chatCanvasState.bodyVisibleHeight);
+    const body = uiRefs.chatHistoryBody;
+    if (!body) return 0;
+    return Math.max(0, body.scrollHeight - body.clientHeight);
 }
 
 function scrollChatFeedToBottom() {
-    uiState.chatScrollY = getChatScrollMax();
+    const body = uiRefs.chatHistoryBody;
+    if (!body) {
+        uiState.chatScrollY = getChatScrollMax();
+        return;
+    }
+    requestAnimationFrame(() => {
+        body.scrollTop = body.scrollHeight;
+        uiState.chatScrollY = getChatScrollMax();
+    });
 }
 
 function focusChatInput() {
@@ -343,6 +335,7 @@ function setChatInputOpen(isOpen, focusInput = false) {
 function setChatHistoryOpen(isOpen) {
     uiState.isChatHistoryOpen = !!isOpen;
     syncChatVisibilityState();
+    syncChatHistoryPanel();
     if (isOpen) {
         scrollChatFeedToBottom();
     } else if (!uiState.isChatInputOpen) {
@@ -368,6 +361,7 @@ export function appendChatMessage(username, message) {
     if (uiState.chatMessages.length > CHAT_FEED_LIMIT) {
         uiState.chatMessages.splice(0, uiState.chatMessages.length - CHAT_FEED_LIMIT);
     }
+    renderChatHistoryMessages();
     scrollChatFeedToBottom();
 }
 
@@ -402,6 +396,26 @@ export function isChatInputActive() {
 }
 
 export function createChatUI(parent) {
+    uiRefs.chatHistoryPanel = createEl('div', {
+        display: 'none',
+        pointerEvents: 'none'
+    }, parent, {
+        id: 'chat_history_panel'
+    });
+    const historyHeader = createEl('div', {}, uiRefs.chatHistoryPanel, { id: 'chat_history_header' });
+    createEl('div', {}, historyHeader, { id: 'chat_history_title', textContent: 'CHAT' });
+    uiRefs.chatHistoryCloseBtn = createEl('button', {}, historyHeader, {
+        id: 'chat_history_close',
+        type: 'button',
+        textContent: '×',
+        ariaLabel: 'Close chat'
+    });
+    uiRefs.chatHistoryBody = createEl('div', {}, uiRefs.chatHistoryPanel, { id: 'chat_history_body' });
+    uiRefs.chatHistoryCloseBtn.onclick = () => closeChatDrawer();
+    uiRefs.chatHistoryBody.addEventListener('scroll', () => {
+        uiState.chatScrollY = uiRefs.chatHistoryBody.scrollTop;
+    }, { passive: true });
+
     uiRefs.chatInputWrapper = createEl('div', {
         display: 'none',
         pointerEvents: 'none'
@@ -428,6 +442,8 @@ export function createChatUI(parent) {
     enforceChatInputLimit();
     resizeChatInput();
     hydrateChatFeed();
+    renderChatHistoryMessages();
+    syncChatHistoryPanel();
 
     uiRefs.chatInput.addEventListener('input', () => {
         commandAutocompletePrefix = '';
@@ -437,71 +453,6 @@ export function createChatUI(parent) {
         resizeChatInput();
         updateCommandUI();
     });
-}
-
-function wrapPlainText(text, maxWidth, font) {
-    const words = String(text || '').split(/\s+/).filter(Boolean);
-    if (!words.length) return [''];
-    const lines = [];
-    let line = '';
-    for (const word of words) {
-        const next = line ? `${line} ${word}` : word;
-        if (LC.measureText({ text: next, font }).width <= maxWidth) {
-            line = next;
-        } else {
-            if (line) lines.push(line);
-            line = word;
-        }
-    }
-    if (line) lines.push(line);
-    return lines;
-}
-
-function buildChatMessageLines(entry, maxWidth) {
-    const username = String(entry?.username || 'Unknown');
-    const message = String(entry?.message || '');
-    const cachedLayout = entry?._layoutCache;
-    if (cachedLayout
-        && cachedLayout.maxWidth === maxWidth
-        && cachedLayout.username === username
-        && cachedLayout.message === message) {
-        return cachedLayout.layout;
-    }
-
-    const usernameFont = '800 13px Inter';
-    const messageFont = '600 13px Inter';
-    const prefix = `${username}: `;
-    const prefixWidth = LC.measureText({ text: prefix, font: usernameFont }).width;
-    const words = message.split(/\s+/).filter(Boolean);
-    const lines = [];
-    let current = '';
-
-    for (const word of words) {
-        const candidate = current ? `${current} ${word}` : word;
-        const allowedWidth = lines.length === 0 ? Math.max(10, maxWidth - prefixWidth) : maxWidth;
-        if (LC.measureText({ text: candidate, font: messageFont }).width <= allowedWidth) {
-            current = candidate;
-        } else {
-            if (!current) {
-                lines.push(word);
-            } else {
-                lines.push(current);
-                current = word;
-            }
-        }
-    }
-    if (current || !lines.length) lines.push(current || '');
-
-    const layout = { username, prefix, prefixWidth, lines, usernameFont, messageFont };
-    if (entry && typeof entry === 'object') {
-        entry._layoutCache = {
-            maxWidth,
-            username,
-            message,
-            layout
-        };
-    }
-    return layout;
 }
 
 function getAutocompletePreviewItems() {
@@ -515,158 +466,56 @@ function getAutocompletePreviewItems() {
         .slice(0, 4);
 }
 
-export function drawChatOverlay() {
-    chatCanvasState.panelRect = null;
-    chatCanvasState.messagesRect = null;
-    chatCanvasState.closeRect = null;
-    chatCanvasState.bodyVisibleHeight = 0;
-    chatCanvasState.contentHeight = 0;
-
-    if (!uiState.isChatHistoryOpen) return;
-
-    const panel = getChatPanelLayout();
-    const headerH = 34;
-    const outerPad = 12;
-    const bodyX = panel.x + outerPad;
-    const bodyY = panel.y + headerH + 8;
-    const bodyW = panel.width - outerPad * 2;
-    const bodyH = panel.height - headerH - 20;
-    const closeSize = 20;
-    const closeX = panel.x + panel.width - closeSize - 12;
-    const closeY = panel.y + 8;
-
-    chatCanvasState.panelRect = panel;
-    chatCanvasState.messagesRect = { x: bodyX, y: bodyY, width: bodyW, height: bodyH };
-    chatCanvasState.closeRect = { x: closeX, y: closeY, width: closeSize, height: closeSize };
-
-    LC.drawRect({
-        pos: [panel.x, panel.y],
-        size: [panel.width, panel.height],
-        color: 'rgba(10, 16, 24, 0.58)',
-        stroke: 'rgba(255,255,255,0.12)',
-        strokeWidth: 2,
-        cornerRadius: 18
-    });
-
-    LC.drawText({
-        text: 'CHAT',
-        pos: [panel.x + 16, panel.y + 23],
-        font: '800 13px Inter',
-        color: 'rgba(255,255,255,0.78)',
-        textAlign: 'left'
-    });
-
-    LC.drawRect({
-        pos: [closeX, closeY],
-        size: [closeSize, closeSize],
-        color: 'rgba(255,255,255,0.08)',
-        cornerRadius: 6
-    });
-    LC.drawText({
-        text: '×',
-        pos: [closeX + closeSize / 2, closeY + 15],
-        font: '800 16px Inter',
-        color: 'rgba(255,255,255,0.8)',
-        textAlign: 'center'
-    });
-
-    LC.drawRect({
-        pos: [bodyX, bodyY],
-        size: [bodyW, bodyH],
-        color: 'rgba(255,255,255,0.04)',
-        stroke: 'rgba(255,255,255,0.08)',
-        strokeWidth: 1,
-        cornerRadius: 12
-    });
-
-    const innerPad = 10;
-    const messageX = bodyX + innerPad;
-    const messageYStart = bodyY + innerPad;
-    const messageW = bodyW - innerPad * 2 - 6;
-    const lineHeight = 18;
-    let cursorY = messageYStart;
-    const entries = uiState.chatMessages.map((entry) => buildChatMessageLines(entry, messageW));
-    chatCanvasState.contentHeight = entries.reduce((sum, entry) => sum + (entry.lines.length * lineHeight) + 8, 0);
-    chatCanvasState.bodyVisibleHeight = Math.max(0, bodyH - innerPad * 2);
-    const scrollMax = getChatScrollMax();
-    uiState.chatScrollY = Math.max(0, Math.min(scrollMax, uiState.chatScrollY || 0));
-    const scrollY = uiState.chatScrollY;
-
-    LC.ctx.save();
-    LC.ctx.beginPath();
-    LC.ctx.rect(bodyX + 1, bodyY + 1, bodyW - 2, bodyH - 2);
-    LC.ctx.clip();
-
-    cursorY -= scrollY;
-    for (const entry of entries) {
-        const blockHeight = (entry.lines.length * lineHeight) + 8;
-        if (cursorY + blockHeight >= bodyY && cursorY <= bodyY + bodyH) {
-            LC.drawText({
-                text: entry.username,
-                pos: [messageX, cursorY + 14],
-                font: entry.usernameFont,
-                color: '#ffffff',
-                textAlign: 'left'
-            });
-
-            for (let i = 0; i < entry.lines.length; i++) {
-                LC.drawText({
-                    text: i === 0 ? entry.lines[i] : entry.lines[i],
-                    pos: [messageX + (i === 0 ? entry.prefixWidth : 0), cursorY + 14 + (i * lineHeight)],
-                    font: entry.messageFont,
-                    color: 'rgba(255,255,255,0.88)',
-                    textAlign: 'left'
-                });
-            }
-        }
-        cursorY += blockHeight;
-    }
-    LC.ctx.restore();
-
-    if (scrollMax > 0) {
-        const trackX = bodyX + bodyW - 6;
-        LC.drawRect({
-            pos: [trackX, bodyY + 4],
-            size: [3, bodyH - 8],
-            color: 'rgba(255,255,255,0.08)',
-            cornerRadius: 3
-        });
-        const thumbH = Math.max(24, (chatCanvasState.bodyVisibleHeight * chatCanvasState.bodyVisibleHeight) / Math.max(1, chatCanvasState.contentHeight));
-        const thumbTravel = Math.max(0, bodyH - 8 - thumbH);
-        const thumbY = bodyY + 4 + ((scrollY / scrollMax) * thumbTravel);
-        LC.drawRect({
-            pos: [trackX, thumbY],
-            size: [3, thumbH],
-            color: 'rgba(255,255,255,0.34)',
-            cornerRadius: 3
-        });
-    }
-
+function syncChatHistoryPanel() {
+    if (!uiRefs.chatHistoryPanel) return;
+    const isOpen = !!uiState.isChatHistoryOpen;
+    uiRefs.chatHistoryPanel.style.display = isOpen ? 'flex' : 'none';
+    uiRefs.chatHistoryPanel.style.pointerEvents = isOpen ? 'auto' : 'none';
 }
 
-export function isChatCanvasInteractiveAtClientPos(clientX, clientY) {
-    if (!uiState.isChatHistoryOpen || !chatCanvasState.panelRect) return false;
-    const { x, y } = LC.clientToLogical(clientX, clientY);
-    const panel = chatCanvasState.panelRect;
-    return x >= panel.x && x <= panel.x + panel.width && y >= panel.y && y <= panel.y + panel.height;
+function renderChatHistoryMessages() {
+    const body = uiRefs.chatHistoryBody;
+    if (!body) return;
+    body.textContent = '';
+    for (const entry of uiState.chatMessages) {
+        const row = createEl('div', {}, body, { className: 'chat_history_message' });
+        createEl('span', {}, row, {
+            className: 'chat_history_username',
+            textContent: `${String(entry?.username || 'Unknown')}: `
+        });
+        createEl('span', {}, row, {
+            className: 'chat_history_text',
+            textContent: String(entry?.message || '')
+        });
+    }
 }
 
-export function handleChatCanvasPointerDown(clientX, clientY) {
-    if (!isChatCanvasInteractiveAtClientPos(clientX, clientY)) return false;
-    const { x, y } = LC.clientToLogical(clientX, clientY);
-    const closeRect = chatCanvasState.closeRect;
-    if (closeRect && x >= closeRect.x && x <= closeRect.x + closeRect.width && y >= closeRect.y && y <= closeRect.y + closeRect.height) {
+export function syncChatOverlay() {
+    syncChatHistoryPanel();
+}
+
+export function isChatHistoryInteractiveAtClientPos(clientX, clientY) {
+    if (!uiState.isChatHistoryOpen || !uiRefs.chatHistoryPanel) return false;
+    const rect = uiRefs.chatHistoryPanel.getBoundingClientRect();
+    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+}
+
+export function handleChatHistoryPointerDown(clientX, clientY) {
+    if (!isChatHistoryInteractiveAtClientPos(clientX, clientY)) return false;
+    const closeRect = uiRefs.chatHistoryCloseBtn?.getBoundingClientRect?.();
+    if (closeRect && clientX >= closeRect.left && clientX <= closeRect.right && clientY >= closeRect.top && clientY <= closeRect.bottom) {
         closeChatDrawer();
         return true;
     }
     return true;
 }
 
-export function handleChatCanvasWheel(clientX, clientY, deltaY) {
-    if (!isChatCanvasInteractiveAtClientPos(clientX, clientY)) return false;
-    const scrollMax = getChatScrollMax();
-    if (scrollMax <= 0) return true;
-    uiState.chatScrollY = Math.max(0, Math.min(scrollMax, uiState.chatScrollY + (deltaY * 0.8)));
+export function handleChatHistoryWheel(clientX, clientY, deltaY) {
+    if (!isChatHistoryInteractiveAtClientPos(clientX, clientY)) return false;
+    const body = uiRefs.chatHistoryBody;
+    if (!body) return true;
+    body.scrollTop += deltaY;
+    uiState.chatScrollY = body.scrollTop;
     return true;
 }
 
@@ -1724,7 +1573,7 @@ function handleTpDim(raw) {
 }
 
 function handleBreak(raw) {
-    const chestMatch = raw.match(/^\/break\s+@o\[(\w+)\]\s+\[([\d\-]+|all)\](?:\s+(dropLoot))?$/i);
+    const chestMatch = raw.match(/^\/break\s+@o\[(\w+)\](?:\s+\[?([\d\-]+|all)\]?)?(?:\s+(dropLoot))?$/i);
     const structMatch = raw.match(/^\/break\s+@s\[(tree_big|rock_small|rock_medium|rock_big)\]$/i);
     if (!chestMatch && !structMatch) return false;
 
@@ -1737,7 +1586,7 @@ function handleBreak(raw) {
 
     // chest path
     const chestType = chestMatch[1].toLowerCase();
-    const rangeStr = chestMatch[2];
+    const rangeStr = (chestMatch[2] || 'all').toLowerCase();
     const dropLoot = !!chestMatch[3];
     const typeMap = {
         chest: 10
