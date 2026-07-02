@@ -8,7 +8,7 @@ import { getId, PacketWriter } from './server/helpers.js';
 import { ENTITIES, MAP_SIZE, deleteWorldState } from './server/game.js';
 import { dataMap } from './public/shared/datamap.js';
 import { TPS } from './public/shared/datamap.js';
-import { sendUpdates, saveHistory, sendPlayerCount } from './server/network.js';
+import { sendUpdates, saveHistory } from './server/network.js';
 import { updateGame } from './server/loop.js';
 import { spawnBotPlayers, BOT_POPULATION_TARGET } from './server/bots.js';
 import { startHunterDebugInterval } from './server/debug.js';
@@ -380,7 +380,6 @@ wss.on('connection', (ws, req) => {
 
 // --- Master Loop ---
 const lbWriter = new PacketWriter();
-const countWriter = new PacketWriter(16);
 
 spawnBotPlayers(BOT_POPULATION_TARGET);
 startHunterDebugInterval();
@@ -391,10 +390,6 @@ setInterval(() => {
     sendUpdates(wss, lbWriter, now);
     saveHistory();
 }, 1000 / TPS.server);
-
-setInterval(() => {
-    sendPlayerCount(wss, countWriter);
-}, 1000);
 
 setInterval(() => {
     refreshMonitorDiffs();
