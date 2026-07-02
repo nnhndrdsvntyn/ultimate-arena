@@ -369,17 +369,6 @@ function buildWorldSnapshots() {
     return snapshots;
 }
 
-export function sendPlayerCount(wss, writer) {
-    const count = [...wss.clients].filter(ws => ws.readyState === 1).length;
-    writer.reset();
-    writer.writeU8(20); // Packet Type: Player Count
-    writer.writeU8(count);
-    const buf = writer.getBuffer();
-    wss.clients.forEach(ws => {
-        if (ws.readyState === 1) ws.send(buf);
-    });
-}
-
 function getLeaderboard(world) {
     if (!isPracticeWorld(world)) {
         const lb = [];

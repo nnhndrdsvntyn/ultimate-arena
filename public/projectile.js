@@ -24,6 +24,11 @@ import {
 
 const BOOMERANG_THROW_HITBOX_MULT = 0.36;
 
+function getConfiguredProjectileRadius(type, fallback = 10) {
+    if (type === -1) return fallback;
+    return Math.max(1, Number(dataMap.PROJECTILES[type]?.radius) || fallback);
+}
+
 export class Projectile {
     constructor(id, x, y, angle, type, weaponRank) {
         this.id = id;
@@ -39,7 +44,7 @@ export class Projectile {
 
         this.type = type;
         this.weaponRank = weaponRank;
-        this.radius = 10;
+        this.radius = getConfiguredProjectileRadius(type, 10);
         this.renderLength = 0;
 
         ENTITIES.PROJECTILES[id] = this;
@@ -49,6 +54,10 @@ export class Projectile {
         const lerpFactor = getTimeLerpFactor(dt, 1);
 
         if (typeof this.newX === 'undefined' || typeof this.newY === 'undefined') return;
+
+        if (this.type !== -1) {
+            this.radius = Math.max(Number(this.radius) || 0, getConfiguredProjectileRadius(this.type, 10));
+        }
 
         lerpEntityPosition(this, dt, 1, 0.25);
 

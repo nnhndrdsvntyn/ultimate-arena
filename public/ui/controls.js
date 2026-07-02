@@ -1,5 +1,5 @@
 import { ENTITIES } from '../game.js';
-import { ws, Vars, LC, camera, isTutorialMobileActionEnabled, isTutorialWorldActive, getHudUpgradeTypeAtClientPos, isHudUpgradeHeaderAtClientPos, tryUseHudUpgradeAtClientPos, getCreativeInventorySlotAtLogicalPos, getCreativeInventoryItemBySlot, getAdminInventoryPanelPositions, isAdminCreativeInventoryPanelAtClientPos, handleAdminCreativeInventoryWheel, getTopBarButtonAtClientPos, handleForgotControlsCanvasClick, isForgotControlsCanvasAtClientPos, handleInfoBoxToggleClick, isInfoBoxToggleAtClientPos, handleSettingsCanvasPointerDown, handleSettingsCanvasPointerMove, handleSettingsCanvasPointerUp, handleSettingsCanvasKeyDown, handleSettingsCanvasPaste, isSettingsCanvasInteractiveAtClientPos, handleSettingsCanvasWheel, handleShopCanvasPointerDown, handleShopCanvasPointerMove, handleShopCanvasPointerUp, handleShopCanvasWheel, isShopCanvasInteractiveAtClientPos, getShopCanvasSellDropClientRect, isShopCanvasPanelAtClientPos, isSettingsCanvasPanelAtClientPos, isMinimapCoachInteractiveAtClientPos, handleMinimapCoachPointerDown, setViewRangeMult, VIEW_RANGE_STEP, isLeaderboardToggleAtClientPos, toggleLeaderboardExpanded, isMinimapToggleAtClientPos, toggleMinimapOpen, playUITapSound } from '../client.js';
+import { ws, Vars, LC, camera, isTutorialMobileActionEnabled, isTutorialWorldActive, getHudUpgradeTypeAtClientPos, isHudUpgradeHeaderAtClientPos, tryUseHudUpgradeAtClientPos, getCreativeInventorySlotAtLogicalPos, getCreativeInventoryItemBySlot, getAdminInventoryPanelPositions, isAdminCreativeInventoryPanelAtClientPos, handleAdminCreativeInventoryWheel, getTopBarButtonAtClientPos, handleForgotControlsCanvasClick, isForgotControlsCanvasAtClientPos, handleInfoBoxToggleClick, isInfoBoxToggleAtClientPos, isInfoBoxCanvasInteractiveAtClientPos, handleSettingsCanvasPointerDown, handleSettingsCanvasPointerMove, handleSettingsCanvasPointerUp, handleSettingsCanvasKeyDown, handleSettingsCanvasPaste, isSettingsCanvasInteractiveAtClientPos, handleSettingsCanvasWheel, handleShopCanvasPointerDown, handleShopCanvasPointerMove, handleShopCanvasPointerUp, handleShopCanvasWheel, isShopCanvasInteractiveAtClientPos, getShopCanvasSellDropClientRect, isShopCanvasPanelAtClientPos, isSettingsCanvasPanelAtClientPos, isMinimapCoachInteractiveAtClientPos, handleMinimapCoachPointerDown, setViewRangeMult, VIEW_RANGE_STEP, isLeaderboardToggleAtClientPos, isLeaderboardCanvasInteractiveAtClientPos, toggleLeaderboardExpanded, isMinimapToggleAtClientPos, isMinimapCanvasInteractiveAtClientPos, toggleMinimapOpen, playUITapSound } from '../client.js';
 import { writer, sendPickupCommand, sendEquipAccessoryPacket, sendUseAbilityPacket, sendUseItemPacket, sendAdminCreativeItemCommand } from '../helpers.js';
 import { isMobile, HOTBAR_CONFIG, INVENTORY_CONFIG, ACCESSORY_SLOT_CONFIG, THROW_BTN_CONFIG, PICKUP_BTN_CONFIG, DROP_BTN_CONFIG, ATTACK_BTN_CONFIG } from './config.js';
 import { dataMap } from '../shared/datamap.js';
@@ -490,6 +490,20 @@ function isUIElement(target) {
     return false;
 }
 
+function isTouchWithinJoystickBounds(clientX, clientY, padding = 22) {
+    const joyContainer = document.getElementById('joystick_container');
+    if (!joyContainer || joyContainer.style.display === 'none') return false;
+    const rect = joyContainer.getBoundingClientRect();
+    if (!rect.width || !rect.height) return false;
+    const effectivePadding = isMobile ? Math.max(padding, 36) : padding;
+    return clientX >= rect.left - effectivePadding &&
+        clientX <= rect.right + effectivePadding &&
+        clientY >= rect.top - effectivePadding &&
+        clientY <= rect.bottom + effectivePadding;
+}
+
+const activeJoystickTouchIds = new Set();
+
 export function handleHotbarSelection(slot, allowDrag = true) {
     if (slot === 5) {
         toggleInventoryModal(!uiState.isInventoryOpen);
@@ -829,6 +843,7 @@ export function toggleInventoryModal(show) {
         Vars.dragSlot = -1;
         Vars.dragAccessory = false;
         Vars.dragAccessoryId = 0;
+        Vars.mobileAccessoryAbilityArmed = false;
         clearCreativeDrag();
     }
     if (uiRefs.inventoryOverlay) uiRefs.inventoryOverlay.style.display = show ? 'flex' : 'none';
@@ -841,7 +856,7 @@ export function toggleInventoryModal(show) {
 export function setupMobileControls(container) {
     // Joystick elements
     const joyContainer = createEl('div', {
-        position: 'absolute', bottom: '40px', left: '40px', width: '120px', height: '120px',
+        position: 'absolute', bottom: '12px', left: '12px', width: '176px', height: '176px',
         background: 'rgba(255, 255, 255, 0.1)', backdropFilter: 'blur(5px)',
         borderRadius: '50%', pointerEvents: 'auto', touchAction: 'none',
         border: '2px solid rgba(255, 255, 255, 0.1)',
@@ -849,7 +864,7 @@ export function setupMobileControls(container) {
     }, container, { id: 'joystick_container' });
 
     const joyKnob = createEl('div', {
-        position: 'absolute', top: '50%', left: '50%', width: '50px', height: '50px',
+        position: 'absolute', top: '50%', left: '50%', width: '72px', height: '72px',
         transform: 'translate(-50%, -50%)', background: 'rgba(255, 255, 255, 0.4)',
         borderRadius: '50%', pointerEvents: 'none',
         boxShadow: '0 0 15px rgba(255,255,255,0.2)'
@@ -862,7 +877,7 @@ export function setupMobileControls(container) {
 function setupJoystickLogic(container, knob) {
     let startX, startY;
     let moveId = null;
-    const maxDist = 45;
+    const maxDist = 72;
 
     const updateKeys = (dx, dy) => {
         const mappedKeys = {
@@ -904,18 +919,21 @@ function setupJoystickLogic(container, knob) {
     };
 
     container.addEventListener('touchstart', e => {
+        e.stopPropagation();
         if (uiState.isPaused) {
             updateKeys(0, 0);
             return;
         }
         if (isChatInputActive() || uiState.isSettingsOpen) return;
         const touch = e.changedTouches[0];
+        activeJoystickTouchIds.add(touch.identifier);
         moveId = touch.identifier;
         startX = touch.clientX;
         startY = touch.clientY;
     }, { passive: true });
 
     container.addEventListener('touchmove', e => {
+        e.stopPropagation();
         if (uiState.isPaused) {
             updateKeys(0, 0);
             return;
@@ -954,17 +972,38 @@ function setupJoystickLogic(container, knob) {
         updateKeys(0, 0);
     };
 
-    container.addEventListener('touchend', resetJoystick);
-    container.addEventListener('touchcancel', resetJoystick);
+    container.addEventListener('touchend', (e) => {
+        e.stopPropagation();
+        Array.from(e.changedTouches).forEach((touch) => {
+            activeJoystickTouchIds.delete(touch.identifier);
+        });
+        resetJoystick();
+    });
+    container.addEventListener('touchcancel', (e) => {
+        e.stopPropagation();
+        Array.from(e.changedTouches).forEach((touch) => {
+            activeJoystickTouchIds.delete(touch.identifier);
+        });
+        resetJoystick();
+    });
 }
 
 function setupMobileTouchActions(joyContainer) {
     let throwTouchId = null;
     let attackTouchId = null;
     const uiTouchIds = new Set();  // Track all UI touches
+    const gameTouchIds = new Set();
+    const activeTouches = new Map();
     let scrollTouchId = null;
     let scrollLastY = 0;
     let scrollTarget = null; // 'settings' | 'shop' | 'chat' | 'adminCreative' | null
+    let rotationTouchId = null;
+    const pinchState = {
+        active: false,
+        touchIds: [],
+        startDistance: 0,
+        startViewRange: 0
+    };
 
     const updateRotationFromTouch = (x, y) => {
         const myPlayer = ENTITIES.PLAYERS[Vars.myId];
@@ -974,8 +1013,46 @@ function setupMobileTouchActions(joyContainer) {
         sendRotation(angle);
     };
 
+    const updatePinchZoom = (touches) => {
+        if (!pinchState.active || pinchState.touchIds.length < 2) return false;
+        const [idA, idB] = pinchState.touchIds;
+        const touchA = touches.get(idA);
+        const touchB = touches.get(idB);
+        if (!touchA || !touchB) return false;
+        const currentDistance = Math.hypot(touchA.clientX - touchB.clientX, touchA.clientY - touchB.clientY);
+        if (!Number.isFinite(currentDistance) || currentDistance <= 1) return false;
+        const nextViewRange = pinchState.startViewRange * (Math.max(1, pinchState.startDistance) / currentDistance);
+        setViewRangeMult(nextViewRange);
+        return true;
+    };
+
+    const syncGestureState = () => {
+        if (pinchState.active && pinchState.touchIds.some((id) => !gameTouchIds.has(id))) {
+            pinchState.active = false;
+            pinchState.touchIds = [];
+            pinchState.startDistance = 0;
+            pinchState.startViewRange = 0;
+        }
+
+        if (!pinchState.active && gameTouchIds.size >= 2 && !activeJoystickTouchIds.size) {
+            const ids = Array.from(gameTouchIds).slice(0, 2);
+            const touchA = activeTouches.get(ids[0]);
+            const touchB = activeTouches.get(ids[1]);
+            if (touchA && touchB) {
+                pinchState.active = true;
+                pinchState.touchIds = ids;
+                pinchState.startDistance = Math.max(1, Math.hypot(touchA.clientX - touchB.clientX, touchA.clientY - touchB.clientY));
+                pinchState.startViewRange = Vars.viewRangeMult || 1;
+                rotationTouchId = null;
+            }
+        }
+    };
+
     window.addEventListener('touchstart', (e) => {
         if (e.target?.closest?.('.settings_modal, .shop_modal')) {
+            return;
+        }
+        if (isUIElement(e.target)) {
             return;
         }
         ignoreMouseUntil = performance.now() + 500;
@@ -1003,96 +1080,124 @@ function setupMobileTouchActions(joyContainer) {
             return;
         }
         Array.from(e.changedTouches).forEach(t => {
-            // Check if touching any UI
-            if (isTouchOnUI(t.clientX, t.clientY)) {
-                e.preventDefault(); // Prevent synthesized mouse/click events
-                uiTouchIds.add(t.identifier);
+            const isUiTouch = isTouchOnUI(t.clientX, t.clientY);
+            if (!isUiTouch) {
+                Vars.mouseX = t.clientX;
+                Vars.mouseY = t.clientY;
+                activeTouches.set(t.identifier, { clientX: t.clientX, clientY: t.clientY });
+                gameTouchIds.add(t.identifier);
+                e.preventDefault();
+                if (isMobile && Vars.mobileAccessoryAbilityArmed) {
+                    const worldPos = getWorldPosFromClient(t.clientX, t.clientY);
+                    if (worldPos) {
+                        sendUseAbilityPacket(worldPos.x, worldPos.y);
+                    }
+                    Vars.mobileAccessoryAbilityArmed = false;
+                    return;
+                }
+                if (!activeJoystickTouchIds.size && !rotationTouchId && !pinchState.active && gameTouchIds.size === 1) {
+                    rotationTouchId = t.identifier;
+                }
+                syncGestureState();
+                return;
+            }
 
-                if (uiState.isChatHistoryOpen && isChatHistoryInteractiveAtClientPos(t.clientX, t.clientY)) {
-                    handleChatHistoryPointerDown(t.clientX, t.clientY);
+            e.preventDefault(); // Prevent synthesized mouse/click events
+            uiTouchIds.add(t.identifier);
+
+            if (uiState.isChatHistoryOpen && isChatHistoryInteractiveAtClientPos(t.clientX, t.clientY)) {
+                handleChatHistoryPointerDown(t.clientX, t.clientY);
+                scrollTouchId = t.identifier;
+                scrollLastY = t.clientY;
+                scrollTarget = 'chat';
+                return;
+            }
+
+            if (uiState.isShopOpen) {
+                const inPanel = isShopCanvasPanelAtClientPos(t.clientX, t.clientY);
+                const handled = handleShopCanvasPointerDown(t.clientX, t.clientY);
+                if (inPanel) {
                     scrollTouchId = t.identifier;
                     scrollLastY = t.clientY;
-                    scrollTarget = 'chat';
-                    return;
+                    scrollTarget = 'shop';
                 }
+                if (handled) return;
+            }
 
-                if (uiState.isShopOpen) {
-                    const inPanel = isShopCanvasPanelAtClientPos(t.clientX, t.clientY);
-                    const handled = handleShopCanvasPointerDown(t.clientX, t.clientY);
-                    if (inPanel) {
-                        scrollTouchId = t.identifier;
-                        scrollLastY = t.clientY;
-                        scrollTarget = 'shop';
-                    }
-                    if (handled) return;
-                }
+            if (handleSettingsCanvasPointerDown(t.clientX, t.clientY)) {
+                return;
+            }
 
-                if (handleSettingsCanvasPointerDown(t.clientX, t.clientY)) {
-                    return;
-                }
+            if (handleTopBarClick(t.clientX, t.clientY)) {
+                return;
+            }
 
-                if (handleTopBarClick(t.clientX, t.clientY)) {
-                    return;
-                }
+            // Check hotbar
+            if (tryUseHudUpgradeAtClientPos(t.clientX, t.clientY)) {
+                return;
+            }
 
-                // Check hotbar
-                if (tryUseHudUpgradeAtClientPos(t.clientX, t.clientY)) {
-                    return;
-                }
+            const { hotbarSlot, inventorySlot, isAccessorySlot } = getInventoryPointerTargets(t.clientX, t.clientY);
+            if (hotbarSlot !== -1) {
+                handleHotbarSelection(hotbarSlot);
+                return;
+            }
 
-                const { hotbarSlot, inventorySlot, isAccessorySlot } = getInventoryPointerTargets(t.clientX, t.clientY);
-                if (hotbarSlot !== -1) {
-                    handleHotbarSelection(hotbarSlot);
-                    return;
-                }
+            if (startInventoryDrag(inventorySlot)) {
+                return;
+            }
 
-                if (startInventoryDrag(inventorySlot)) {
-                    return;
-                }
+            if (startCreativeDragAt(t.clientX, t.clientY)) {
+                return;
+            }
 
-                if (startCreativeDragAt(t.clientX, t.clientY)) {
-                    return;
-                }
+            if (isAdminCreativeInventoryPanelAtClientPos(t.clientX, t.clientY)) {
+                scrollTouchId = t.identifier;
+                scrollLastY = t.clientY;
+                scrollTarget = 'adminCreative';
+                return;
+            }
 
-                if (isAdminCreativeInventoryPanelAtClientPos(t.clientX, t.clientY)) {
-                    scrollTouchId = t.identifier;
-                    scrollLastY = t.clientY;
-                    scrollTarget = 'adminCreative';
-                    return;
+            if (isMobile && isAccessorySlot) {
+                const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+                if (myPlayer?.accessoryId > 0) {
+                    Vars.mobileAccessoryAbilityArmed = true;
+                    playUITapSound();
                 }
+                return;
+            }
 
-                if (isAccessorySlot && startAccessoryDragIfPresent()) {
-                    return;
-                }
+            if (isAccessorySlot && startAccessoryDragIfPresent()) {
+                return;
+            }
 
-                // Check action buttons
-                if (isButtonTouched(t.clientX, t.clientY, THROW_BTN_CONFIG)) {
-                    const myPlayer = ENTITIES.PLAYERS[Vars.myId];
-                    if (isSelectedSpecialConsumable()) {
-                        if (isTutorialMobileActionEnabled('throw')) sendUseItemPacket();
-                    } else if (myPlayer?.hasWeapon && isTutorialMobileActionEnabled('throw')) {
-                        sendThrowPacket();
-                    }
-                    throwTouchId = t.identifier;
-                } else if (isButtonTouched(t.clientX, t.clientY, ATTACK_BTN_CONFIG)) {
-                    if (isTutorialMobileActionEnabled('attack')) sendAttackPacket(1);
-                    attackTouchId = t.identifier;
-                } else if (isButtonTouched(t.clientX, t.clientY, PICKUP_BTN_CONFIG)) {
-                    if (isTutorialMobileActionEnabled('pickup')) sendPickupCommand();
-                } else if (isButtonTouched(t.clientX, t.clientY, DROP_BTN_CONFIG)) {
-                    if (isTutorialMobileActionEnabled('drop')) sendDropSinglePacket();
-                } else {
-                    Vars.mouseX = t.clientX;
-                    Vars.mouseY = t.clientY;
-                    updateRotationFromTouch(t.clientX, t.clientY);
+            if (isMobile && Vars.mobileAccessoryAbilityArmed) {
+                Vars.mobileAccessoryAbilityArmed = false;
+            }
+
+            if (isButtonTouched(t.clientX, t.clientY, THROW_BTN_CONFIG)) {
+                const myPlayer = ENTITIES.PLAYERS[Vars.myId];
+                if (isSelectedSpecialConsumable()) {
+                    if (isTutorialMobileActionEnabled('throw')) sendUseItemPacket();
+                } else if (myPlayer?.hasWeapon && isTutorialMobileActionEnabled('throw')) {
+                    sendThrowPacket();
                 }
+                throwTouchId = t.identifier;
+            } else if (isButtonTouched(t.clientX, t.clientY, ATTACK_BTN_CONFIG)) {
+                if (isTutorialMobileActionEnabled('attack')) sendAttackPacket(1);
+                attackTouchId = t.identifier;
+            } else if (isButtonTouched(t.clientX, t.clientY, PICKUP_BTN_CONFIG)) {
+                if (isTutorialMobileActionEnabled('pickup')) sendPickupCommand();
+            } else if (isButtonTouched(t.clientX, t.clientY, DROP_BTN_CONFIG)) {
+                if (isTutorialMobileActionEnabled('drop')) sendDropSinglePacket();
             }
         });
-    });
+    }, { passive: false });
 
     window.addEventListener('touchmove', (e) => {
         const isDraggingInventoryItem = Vars.dragSlot !== -1 || Vars.dragAccessory || Vars.creativeDragItemType > 0;
         Array.from(e.changedTouches).forEach(t => {
+            activeTouches.set(t.identifier, { clientX: t.clientX, clientY: t.clientY });
             if (isDraggingInventoryItem) {
                 // Keep drag ghost synced with finger even while modals are open.
                 Vars.mouseX = t.clientX;
@@ -1116,19 +1221,34 @@ function setupMobileTouchActions(joyContainer) {
             }
             if (uiState.isSettingsOpen || uiState.isShopOpen || uiState.isInventoryOpen) return;
 
-            // Only rotate if NOT touching any UI
-            if (!uiTouchIds.has(t.identifier) && t.identifier !== throwTouchId && t.identifier !== attackTouchId) {
+            if (pinchState.active && pinchState.touchIds.includes(t.identifier)) {
+                e.preventDefault();
+                updatePinchZoom(activeTouches);
+                return;
+            }
+
+            const isRotationBlocked =
+                uiTouchIds.has(t.identifier) ||
+                activeJoystickTouchIds.has(t.identifier) ||
+                isTouchWithinJoystickBounds(t.clientX, t.clientY);
+
+            if (gameTouchIds.has(t.identifier) && !isRotationBlocked) {
+                e.preventDefault();
                 Vars.mouseX = t.clientX;
                 Vars.mouseY = t.clientY;
+                rotationTouchId = t.identifier;
                 updateRotationFromTouch(t.clientX, t.clientY);
             }
         });
-    });
+    }, { passive: false });
 
     window.addEventListener('touchend', (e) => {
         Array.from(e.changedTouches).forEach(t => {
             // Clean up UI touch tracking
             uiTouchIds.delete(t.identifier);
+            gameTouchIds.delete(t.identifier);
+            activeTouches.delete(t.identifier);
+            activeJoystickTouchIds.delete(t.identifier);
             handleSettingsCanvasPointerUp();
             handleShopCanvasPointerUp();
             if (scrollTouchId === t.identifier) {
@@ -1149,6 +1269,51 @@ function setupMobileTouchActions(joyContainer) {
                 attackTouchId = null;
                 sendAttackPacket(0);
             }
+
+            if (rotationTouchId === t.identifier) {
+                rotationTouchId = null;
+            }
+            if (pinchState.touchIds.includes(t.identifier)) {
+                pinchState.active = false;
+                pinchState.touchIds = [];
+                pinchState.startDistance = 0;
+                pinchState.startViewRange = 0;
+            }
+            syncGestureState();
+        });
+    });
+
+    window.addEventListener('touchcancel', (e) => {
+        Array.from(e.changedTouches).forEach(t => {
+            uiTouchIds.delete(t.identifier);
+            gameTouchIds.delete(t.identifier);
+            activeTouches.delete(t.identifier);
+            activeJoystickTouchIds.delete(t.identifier);
+            if (scrollTouchId === t.identifier) {
+                scrollTouchId = null;
+                scrollTarget = null;
+            }
+            if (Vars.dragSlot !== -1 || Vars.dragAccessory) {
+                handleHotbarSwap(t.clientX, t.clientY);
+            } else if (Vars.creativeDragItemType > 0) {
+                handleCreativeInventoryDrop(t.clientX, t.clientY);
+            }
+            if (t.identifier === throwTouchId) {
+                throwTouchId = null;
+            } else if (t.identifier === attackTouchId) {
+                attackTouchId = null;
+                sendAttackPacket(0);
+            }
+            if (rotationTouchId === t.identifier) {
+                rotationTouchId = null;
+            }
+            if (pinchState.touchIds.includes(t.identifier)) {
+                pinchState.active = false;
+                pinchState.touchIds = [];
+                pinchState.startDistance = 0;
+                pinchState.startViewRange = 0;
+            }
+            syncGestureState();
         });
     });
 }
@@ -1176,6 +1341,13 @@ function isTouchOnUI(clientX, clientY) {
     const { hotbarSlot, inventorySlot, isAccessorySlot } = getInventoryPointerTargets(clientX, clientY);
 
     if (isMinimapCoachInteractiveAtClientPos(clientX, clientY)) return true;
+    if (isLeaderboardToggleAtClientPos(clientX, clientY)) return true;
+    if (isMinimapToggleAtClientPos(clientX, clientY)) return true;
+    if (isInfoBoxToggleAtClientPos(clientX, clientY)) return true;
+    if (isLeaderboardCanvasInteractiveAtClientPos(clientX, clientY)) return true;
+    if (isInfoBoxCanvasInteractiveAtClientPos(clientX, clientY)) return true;
+    if (isMinimapCanvasInteractiveAtClientPos(clientX, clientY)) return true;
+    if (isTouchWithinJoystickBounds(clientX, clientY)) return true;
     if (uiState.isSettingsOpen) return true;
     // Don't block all interactions when the shop is open; only treat clicks that are
     // actually inside the shop modal as UI. This allows inventory dragging while shop is visible.
@@ -1328,18 +1500,21 @@ export function setupDesktopControls() {
         const overTopBar = !!getTopBarButtonAtClientPos(e.clientX, e.clientY);
         const overForgotControls = isForgotControlsCanvasAtClientPos(e.clientX, e.clientY);
         const overInfoBoxToggle = isInfoBoxToggleAtClientPos(e.clientX, e.clientY);
+        const overInfoBoxPanel = isInfoBoxCanvasInteractiveAtClientPos(e.clientX, e.clientY);
         const overLeaderboardToggle = isLeaderboardToggleAtClientPos(e.clientX, e.clientY);
+        const overLeaderboardPanel = isLeaderboardCanvasInteractiveAtClientPos(e.clientX, e.clientY);
         const overMinimapToggle = isMinimapToggleAtClientPos(e.clientX, e.clientY);
+        const overMinimapPanel = isMinimapCanvasInteractiveAtClientPos(e.clientX, e.clientY);
         const overSettings = uiState.isSettingsOpen && isSettingsCanvasInteractiveAtClientPos(e.clientX, e.clientY);
         const overShop = uiState.isShopOpen && isShopCanvasInteractiveAtClientPos(e.clientX, e.clientY);
         const overMinimapCoach = isMinimapCoachInteractiveAtClientPos(e.clientX, e.clientY);
         if (LC?.canvas) {
-            const nextCursor = (overUpgradeHeader || overTopBar || overForgotControls || overInfoBoxToggle || overLeaderboardToggle || overMinimapToggle || overSettings || overShop || overMinimapCoach) ? 'pointer' : 'default';
+            const nextCursor = (overUpgradeHeader || overTopBar || overForgotControls || overInfoBoxToggle || overInfoBoxPanel || overLeaderboardToggle || overLeaderboardPanel || overMinimapToggle || overMinimapPanel || overSettings || overShop || overMinimapCoach) ? 'pointer' : 'default';
             if (LC.canvas.style.cursor !== nextCursor) LC.canvas.style.cursor = nextCursor;
         }
 
         const myPlayer = ENTITIES.PLAYERS[Vars.myId];
-        if (!myPlayer?.isAlive || ws?.readyState !== ws.OPEN || uiState.isSettingsOpen || uiState.isShopOpen || Vars.dragSlot !== -1 || Vars.dragAccessory) return;
+        if (!myPlayer?.isAlive || ws?.readyState !== ws.OPEN || uiState.isSettingsOpen || uiState.isShopOpen || Vars.dragSlot !== -1 || Vars.dragAccessory || overInfoBoxToggle || overInfoBoxPanel || overLeaderboardToggle || overLeaderboardPanel || overMinimapToggle || overMinimapPanel || overTopBar || overForgotControls || overUpgradeHeader || overMinimapCoach) return;
         if (Vars.creativeDragItemType > 0) return;
         if (shouldBlockRotationDuringSwing(myPlayer)) {
             clearQueuedRotation();

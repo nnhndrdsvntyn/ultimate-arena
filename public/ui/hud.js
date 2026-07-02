@@ -1,10 +1,12 @@
 import { ENTITIES } from '../game.js';
-import { Vars, LC, startJoinActionCooldown, PAUSE_SPECTATE_START_DELAY_MS, playUITapSound, playWheelClickSound } from '../client.js';
-import { sendAccountLeaderboardRefreshPacket, sendHomeWheelSpinRequestPacket, sendPausePacket } from '../helpers.js';
+import { Vars, LC, startJoinActionCooldown, PAUSE_SPECTATE_START_DELAY_MS, playUITapSound, playWheelClickSound, getDoubleXpStatusText, formatCountdownMs } from '../client.js';
+import { sendAccountLeaderboardRefreshPacket, sendAuthSessionPacket, sendHomeWheelSpinRequestPacket, sendPausePacket } from '../helpers.js';
 import { createEl } from './dom.js';
 import { uiRefs, uiState } from './context.js';
 import { isMobile, HOTBAR_CONFIG, UPDATES_LOG, version } from './config.js';
 import { getCurrentAuthenticatedAccountNameStyle } from '../auth/client_auth.js';
+import { getAccountWheelSpinState, getStoredAccountAuthToken, hasStoredAccountSession } from '../auth/client_auth.js';
+import { showNotification } from './notifications.js';
 
 const DID_YOU_KNOW_HINTS = [
     "There are are various weapon types with different combat mechanics!",
@@ -23,10 +25,10 @@ const HOME_LEADERBOARD_SCOPES = ['daily', 'weekly', 'monthly'];
 const HOME_WHEEL_SEGMENT_RARITIES = [
     { color: '#6ee7b7', rarity: 'Common', chance: 35, reward: '500 coins' },
     { color: '#34d399', rarity: 'Uncommon', chance: 22, reward: '2x XP (3 MIN)' },
-    { color: '#38bdf8', rarity: 'Rare', chance: 15 },
-    { color: '#60a5fa', rarity: 'Elite', chance: 12 },
-    { color: '#ffd166', rarity: 'Epic', chance: 7 },
-    { color: '#ff9f43', rarity: 'Mythic', chance: 5, reward: '+5000 coins' },
+    { color: '#38bdf8', rarity: 'Rare', chance: 15, reward: '50 Hearty Essence' },
+    { color: '#60a5fa', rarity: 'Elite', chance: 12, reward: '10 Golden Skulls' },
+    { color: '#ffd166', rarity: 'Epic', chance: 7, reward: 'A random Rank 12 Weapon' },
+    { color: '#ff9f43', rarity: 'Mythic', chance: 5, reward: '5000 coins' },
     { color: '#ec4899', rarity: 'Ultra', chance: 3, reward: '+15 Levels' },
     { color: '#ff5f57', rarity: 'Legendary', chance: 1, reward: 'All Rank 12 Weapons' }
 ];
@@ -45,7 +47,11 @@ const homeWheelState = {
     spinDuration: 0,
     lastSegmentIndex: 0,
     resultText: 'Click wheel to spin',
-    hoverText: ''
+    hoverText: '',
+    wheelSpinsRemaining: 0,
+    wheelSpinsResetAtSec: 0,
+    accessTimerId: 0,
+    lastRefreshRequestedResetAtSec: 0
 };
 const homeLeaderboardState = {
     activeScope: 'daily',
@@ -64,6 +70,91 @@ function getHomeWheelElement() {
     return uiRefs.homeWheel || document.getElementById('home_wheel');
 }
 
+function getHomeAccountPanel() {
+    return uiRefs.homeAccountPanel || document.getElementById('auth_panel');
+}
+
+function openHomeAccountPanel() {
+    const trigger = document.getElementById('home_account_toggle');
+    if (trigger) {
+        trigger.click();
+        return true;
+    }
+
+    const panel = getHomeAccountPanel();
+    const homeScreen = uiRefs.homeScreen || document.getElementById('home_screen');
+    const backdrop = document.getElementById('home_overlay_backdrop');
+    if (!panel || !homeScreen) return false;
+    homeScreen.classList.add('home_overlay_open');
+    panel.classList.add('is_open');
+    panel.setAttribute('aria-hidden', 'false');
+    backdrop?.classList.add('is_open');
+    return true;
+}
+
+function getWheelResetRemainingMs(now = Date.now()) {
+    const resetAtSec = Math.max(0, Math.floor(Number(homeWheelState.wheelSpinsResetAtSec) || 0));
+    if (resetAtSec <= 0) return 0;
+    return Math.max(0, (resetAtSec * 1000) - now);
+}
+
+function updateHomeWheelStatusUi() {
+    const loggedIn = hasStoredAccountSession();
+    const wheelState = getAccountWheelSpinState();
+    const profileLoaded = !!wheelState.loaded;
+    homeWheelState.wheelSpinsRemaining = Math.max(0, Math.floor(Number(wheelState.spinsRemaining) || 0));
+    homeWheelState.wheelSpinsResetAtSec = Math.max(0, Math.floor(Number(wheelState.resetAtSec) || 0));
+
+    const statusEl = uiRefs.homeWheelStatus;
+    const disabled = !loggedIn || !profileLoaded || homeWheelState.wheelSpinsRemaining <= 0;
+    const remainingMs = getWheelResetRemainingMs();
+
+    if (loggedIn && !profileLoaded) {
+        if (statusEl && !homeWheelState.spinning) {
+            statusEl.textContent = 'Checking your wheel balance...';
+        }
+    } else if (loggedIn) {
+        if (homeWheelState.wheelSpinsRemaining > 0) {
+            const spinsText = `${homeWheelState.wheelSpinsRemaining} spin${homeWheelState.wheelSpinsRemaining === 1 ? '' : 's'} left`;
+            if (statusEl && !homeWheelState.spinning) {
+                statusEl.textContent = `${spinsText}. Tap the wheel to spin.`;
+            }
+        } else {
+            const resetText = remainingMs > 0 ? formatCountdownMs(remainingMs) : '0h 0m 0s';
+            if (statusEl && !homeWheelState.spinning) {
+                statusEl.textContent = `No spins left. Resets in ${resetText}.`;
+            }
+        }
+    } else if (statusEl && !homeWheelState.spinning) {
+        statusEl.textContent = 'Log in first to spin the prize wheel.';
+    }
+
+    if (loggedIn && profileLoaded && homeWheelState.wheelSpinsRemaining <= 0 && homeWheelState.wheelSpinsResetAtSec > 0 && remainingMs <= 0) {
+        const refreshToken = getStoredAccountAuthToken();
+        if (refreshToken && homeWheelState.lastRefreshRequestedResetAtSec !== homeWheelState.wheelSpinsResetAtSec) {
+            homeWheelState.lastRefreshRequestedResetAtSec = homeWheelState.wheelSpinsResetAtSec;
+            sendAuthSessionPacket(refreshToken);
+        }
+    }
+
+    const shell = uiRefs.homeWheel?.querySelector?.('#home_wheel_shell');
+    if (shell) {
+        shell.classList.toggle('wheel_locked', disabled && !homeWheelState.spinning);
+        shell.setAttribute('aria-disabled', disabled && !homeWheelState.spinning ? 'true' : 'false');
+    }
+}
+
+function ensureHomeWheelStatusTimer() {
+    if (homeWheelState.accessTimerId) return;
+    homeWheelState.accessTimerId = window.setInterval(() => {
+        updateHomeWheelStatusUi();
+    }, 1000);
+}
+
+window.addEventListener('ua-account-profile-changed', () => {
+    updateHomeWheelStatusUi();
+});
+
 function renderHomeWheelAngle() {
     const svg = uiRefs.homeWheelSvg;
     if (!svg) return;
@@ -76,24 +167,9 @@ function renderHomeWheelResult(text) {
     if (resultEl) resultEl.textContent = text;
 }
 
-function showHomeWheelPrizePopup(text) {
-    const popup = uiRefs.homeWheelPrizePopup;
-    const prizeText = uiRefs.homeWheelPrizeText;
-    if (!popup || !prizeText) return;
-    prizeText.textContent = text;
-    popup.classList.add('is_visible');
-    popup.setAttribute('aria-hidden', 'false');
-}
-
-function hideHomeWheelPrizePopup() {
-    const popup = uiRefs.homeWheelPrizePopup;
-    if (!popup) return;
-    popup.classList.remove('is_visible');
-    popup.setAttribute('aria-hidden', 'true');
-}
-
-function formatHomeWheelReward(segment) {
+function formatHomeWheelReward(segment, includeChance = true) {
     if (!segment) return '';
+    if (!includeChance) return `${segment.reward || segment.rarity}`;
     return `${segment.reward || segment.rarity} (${segment.chance}%)`;
 }
 
@@ -131,7 +207,7 @@ function updateHomeWheelHoverLabel(segment) {
         }
         return;
     }
-    homeWheelState.hoverText = formatHomeWheelReward(segment);
+    homeWheelState.hoverText = formatHomeWheelReward(segment, true);
     if (labelEl) {
         labelEl.textContent = homeWheelState.hoverText;
         labelEl.style.opacity = '1';
@@ -148,39 +224,45 @@ function getHomeWheelSegmentData(index) {
     return HOME_WHEEL_SEGMENT_RARITIES[((Number(index) || 0) % HOME_WHEEL_SEGMENT_COUNT + HOME_WHEEL_SEGMENT_COUNT) % HOME_WHEEL_SEGMENT_COUNT];
 }
 
-export function handleHomeWheelSpinResult(index) {
+function updateHomeStatsHud() {
+    const homeScreen = uiRefs.homeScreen || document.getElementById('home_screen');
+    const statsHud = uiRefs.homeStatsHud || document.getElementById('home_stats_hud');
+    const killsEl = uiRefs.homeStatsKillsEl || document.getElementById('home_stats_kills');
+    const coinsEl = uiRefs.homeStatsCoinsEl || document.getElementById('home_stats_coins');
+
+    if (!uiRefs.homeScreen && homeScreen) uiRefs.homeScreen = homeScreen;
+    if (!uiRefs.homeStatsHud && statsHud) uiRefs.homeStatsHud = statsHud;
+    if (!uiRefs.homeStatsKillsEl && killsEl) uiRefs.homeStatsKillsEl = killsEl;
+    if (!uiRefs.homeStatsCoinsEl && coinsEl) uiRefs.homeStatsCoinsEl = coinsEl;
+
+    if (!statsHud || !killsEl || !coinsEl) return;
+
+    const isHome = homeScreen?.style.display !== 'none';
+    statsHud.style.display = isHome ? 'flex' : 'none';
+    if (!isHome) return;
+
+    killsEl.textContent = Math.max(0, Math.floor(Number(Vars.myStats.kills) || 0)).toLocaleString();
+    coinsEl.textContent = Math.max(0, Math.floor(Number(Vars.myStats.goldCoins) || 0)).toLocaleString();
+}
+
+export function handleHomeWheelSpinResult(index, spinDurationMs = null) {
     if (!homeWheelState.spinning) return;
 
     const segmentSize = 360 / HOME_WHEEL_SEGMENT_COUNT;
     const chosenIndex = ((Number(index) || 0) % HOME_WHEEL_SEGMENT_COUNT + HOME_WHEEL_SEGMENT_COUNT) % HOME_WHEEL_SEGMENT_COUNT;
     const chosenSegment = getHomeWheelSegmentData(chosenIndex);
-    const segmentStartAngle = -90 + (chosenIndex * segmentSize);
     const landingFraction = 0.18 + (Math.random() * 0.64);
-    const landingAngle = segmentStartAngle + (segmentSize * landingFraction);
     const currentAngle = homeWheelState.angle;
-    const finalRotation = ((-90 - landingAngle) % 360 + 360) % 360;
+    const finalRotation = (360 - ((chosenIndex + landingFraction) * segmentSize)) % 360;
     const normalizedDelta = ((finalRotation - currentAngle) % 360 + 360) % 360;
     const extraTurns = 5 + Math.floor(Math.random() * 3);
-
-    console.log('[home wheel] spin result', {
-        targetIndex: chosenIndex,
-        targetRarity: chosenSegment.rarity,
-        targetChance: chosenSegment.chance,
-        segmentStartAngle,
-        landingFraction,
-        landingAngle,
-        currentAngle,
-        finalRotation,
-        normalizedDelta,
-        extraTurns
-    });
 
     homeWheelState.startAngle = currentAngle;
     homeWheelState.targetAngle = currentAngle + normalizedDelta + (extraTurns * 360);
     homeWheelState.targetIndex = chosenIndex;
-    homeWheelState.targetLabel = formatHomeWheelReward(chosenSegment);
+    homeWheelState.targetLabel = formatHomeWheelReward(chosenSegment, false);
     homeWheelState.spinStartTime = performance.now();
-    homeWheelState.spinDuration = 8600 + Math.floor(Math.random() * 2400);
+    homeWheelState.spinDuration = Math.max(1000, Math.min(65535, Number(spinDurationMs) || (8600 + Math.floor(Math.random() * 2400))));
     homeWheelState.angularVelocity = 0;
     homeWheelState.lastFrameTime = 0;
     homeWheelState.lastSegmentIndex = getHomeWheelSegmentIndex(currentAngle);
@@ -206,16 +288,6 @@ export function handleHomeWheelSpinResult(index) {
             homeWheelState.angle = ((homeWheelState.targetAngle % 360) + 360) % 360;
             renderHomeWheelAngle();
             const landedIndex = getHomeWheelSegmentIndex(homeWheelState.angle);
-            const landedSegment = getHomeWheelSegmentData(landedIndex);
-
-            console.log('[home wheel] spin end', {
-                finalAngle: homeWheelState.angle,
-                landedIndex,
-                landedRarity: landedSegment?.rarity,
-                landedChance: landedSegment?.chance,
-                targetIndex: homeWheelState.targetIndex,
-                targetLabel: homeWheelState.targetLabel
-            });
 
             homeWheelState.spinning = false;
             homeWheelState.angularVelocity = 0;
@@ -225,9 +297,9 @@ export function handleHomeWheelSpinResult(index) {
             homeWheelState.spinStartTime = 0;
             homeWheelState.spinDuration = 0;
             homeWheelState.lastSegmentIndex = getHomeWheelSegmentIndex(homeWheelState.angle);
-            const prizeText = formatHomeWheelReward(landedSegment);
+            const prizeText = formatHomeWheelReward(chosenSegment, false);
             renderHomeWheelResult(prizeText);
-            showHomeWheelPrizePopup(prizeText);
+            showNotification(`You've been awarded ${prizeText}`, '#0ea5e9');
             updateHomeWheelHoverLabel(null);
             return;
         }
@@ -271,8 +343,29 @@ function startHomeWheelSpin() {
         return;
     }
 
+    if (!hasStoredAccountSession()) {
+        showNotification('Log in first to spin the prize wheel.', 'red');
+        openHomeAccountPanel();
+        updateHomeWheelStatusUi();
+        return;
+    }
+
+    if (!getAccountWheelSpinState().loaded) {
+        showNotification('Checking your wheel balance. Try again in a moment.', 'red');
+        openHomeAccountPanel();
+        updateHomeWheelStatusUi();
+        return;
+    }
+
+    if (homeWheelState.wheelSpinsRemaining <= 0) {
+        const remainingMs = getWheelResetRemainingMs();
+        const resetText = remainingMs > 0 ? formatCountdownMs(remainingMs) : '0h 0m 0s';
+        showNotification(`You are out of spins. Try again in ${resetText}.`, 'red');
+        updateHomeWheelStatusUi();
+        return;
+    }
+
     homeWheelState.spinning = true;
-    hideHomeWheelPrizePopup();
     updateHomeWheelHoverLabel(null);
     renderHomeWheelResult('Requesting spin...');
     if (!sendHomeWheelSpinRequestPacket()) {
@@ -300,7 +393,10 @@ function appendHomeWheelRewardLabel(svgNS, wheel, segment, cx, cy, labelAngle) {
     const lines = segment.rarity === 'Legendary'
         ? ['All Rank 12', 'Weapons']
         : [segment.reward];
-    const fontSize = segment.rarity === 'Legendary' ? 32 : (segment.reward.length > 12 ? 34 : 38);
+    const rewardText = String(segment.reward || '');
+    const fontSize = segment.rarity === 'Legendary'
+        ? 26
+        : (rewardText.length > 20 ? 26 : (rewardText.length > 14 ? 30 : 36));
     const startX = 390;
     const lineGap = fontSize * 0.96;
     const startY = -((lines.length - 1) * lineGap) / 2;
@@ -427,31 +523,12 @@ export function createHomeWheel(parent) {
     uiRefs.homeWheelResult = wheelResult;
     wheelResult.setAttribute('aria-live', 'polite');
 
-    const prizePopup = createEl('div', {}, wheel, {
-        id: 'home_wheel_prize_popup',
-        className: 'home_wheel_prize_popup'
-    });
-    uiRefs.homeWheelPrizePopup = prizePopup;
-    prizePopup.setAttribute('aria-hidden', 'true');
-    prizePopup.setAttribute('role', 'status');
-    prizePopup.setAttribute('aria-live', 'polite');
-    createEl('button', {}, prizePopup, {
-        className: 'home_wheel_prize_close',
-        textContent: '×',
-        type: 'button',
-        ariaLabel: 'Close prize result'
-    }).onclick = (event) => {
-        event.stopPropagation();
-        hideHomeWheelPrizePopup();
-    };
-    createEl('div', {}, prizePopup, {
-        className: 'home_wheel_prize_label',
-        textContent: 'Prize'
-    });
-    uiRefs.homeWheelPrizeText = createEl('div', {}, prizePopup, {
-        className: 'home_wheel_prize_text',
+    const wheelStatus = createEl('div', {}, wheel, {
+        id: 'home_wheel_status',
         textContent: ''
     });
+    uiRefs.homeWheelStatus = wheelStatus;
+    wheelStatus.setAttribute('aria-live', 'polite');
 
     const hoverLabel = createEl('div', {}, wheelShell, {
         id: 'home_wheel_hover_label',
@@ -473,6 +550,10 @@ export function createHomeWheel(parent) {
     });
     wheelShell.addEventListener('pointermove', (event) => {
         if (homeWheelState.spinning) return;
+        if (wheelShell.classList.contains('wheel_locked')) {
+            updateHomeWheelHoverLabel(null);
+            return;
+        }
         updateHomeWheelHoverLabel(getHomeWheelHoverSegment(event.clientX, event.clientY));
     });
     wheelShell.addEventListener('pointerleave', () => {
@@ -481,6 +562,8 @@ export function createHomeWheel(parent) {
     });
 
     renderHomeWheelAngle();
+    updateHomeWheelStatusUi();
+    ensureHomeWheelStatusTimer();
 }
 
 export function setupHomeOverlays() {
@@ -508,6 +591,7 @@ export function setupHomeOverlays() {
     const triggers = [];
 
     const closeAll = () => {
+        if (homeWheelState.spinning) return;
         stopHomeWheel(true);
         homeScreen.classList.remove('home_overlay_open');
         for (let i = 0; i < panels.length; i++) {
@@ -805,7 +889,11 @@ export function updateHUDVisibility(isAlive) {
         if (homeBlurBtn && homeBlurBtn.style.display !== (isAlive ? 'none' : 'flex')) {
             homeBlurBtn.style.display = isAlive ? 'none' : 'flex';
         }
+        if (!shouldShowTopBar) {
+            Vars.mobileAccessoryAbilityArmed = false;
+        }
     }
+    updateHomeStatsHud();
     updateMobileUIState();
 }
 
@@ -875,7 +963,7 @@ export function setupVersion() {
     if (credits) {
         createEl('div', {
             fontSize: '0.7rem',
-            marginTop: '5px',
+            marginTop: '8px',
             opacity: '0.6',
             letterSpacing: '0.05rem',
             textAlign: 'center',
@@ -940,6 +1028,19 @@ export function setupDidYouKnowBox() {
     const playPanel = document.getElementById('play_panel');
     if (!playPanel) return;
 
+    let timerBox = document.getElementById('double_xp_timer_box');
+    if (!timerBox) {
+        timerBox = createEl('div', {}, playPanel, { id: 'double_xp_timer_box' });
+    }
+    uiRefs.homeXpBoostTimerEl = timerBox;
+    let timerValue = uiRefs.homeXpBoostTimerValueEl || timerBox.querySelector('.double_xp_timer_value');
+    if (!timerValue) {
+        timerBox.innerHTML = '';
+        createEl('span', {}, timerBox, { className: 'double_xp_timer_label', textContent: '2X XP' });
+        timerValue = createEl('span', {}, timerBox, { className: 'double_xp_timer_value', textContent: '' });
+    }
+    uiRefs.homeXpBoostTimerValueEl = timerValue;
+
     const box = createEl('div', {}, playPanel, { id: 'did_you_know_box' });
     createEl('span', {}, box, { className: 'did_you_know_label', textContent: 'DID YOU KNOW:' });
     const hintText = createEl('span', {}, box, {
@@ -947,9 +1048,20 @@ export function setupDidYouKnowBox() {
         textContent: DID_YOU_KNOW_HINTS[0]
     });
 
+    const updateTimerBox = () => {
+        if (!uiRefs.homeXpBoostTimerEl || !uiRefs.homeXpBoostTimerValueEl) return;
+        const text = getDoubleXpStatusText();
+        uiRefs.homeXpBoostTimerEl.style.display = text ? 'flex' : 'none';
+        if (text) {
+            uiRefs.homeXpBoostTimerValueEl.textContent = text.replace(/^2X XP\s*/i, '');
+        }
+    };
+
     let hintIndex = 0;
+    setInterval(updateTimerBox, 250);
     setInterval(() => {
         hintIndex = (hintIndex + 1) % DID_YOU_KNOW_HINTS.length;
         hintText.textContent = DID_YOU_KNOW_HINTS[hintIndex];
     }, 7000);
+    updateTimerBox();
 }

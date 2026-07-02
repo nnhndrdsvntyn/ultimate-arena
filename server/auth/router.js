@@ -1,6 +1,7 @@
 import express from 'express';
 import { loginAccount, registerAccount } from './service.js';
 import { isServerStartupGracePeriodActive } from '../constants.js';
+import { isAccountConnected } from '../account_sessions.js';
 
 const ACCOUNT_CREATION_LIMIT = 3;
 const ACCOUNT_CREATION_WINDOW_MS = 5 * 60 * 1000;
@@ -8,10 +9,8 @@ const accountCreationHistoryByIp = new Map();
 const ACCOUNT_CREATION_LIMIT_MESSAGE = 'Sorry, we can’t create another account right now because too many accounts were made from this connection recently. Please wait a few minutes and try again.';
 const LOGIN_ATTEMPT_LIMIT = 20;
 const LOGIN_ATTEMPT_WINDOW_MS = 60 * 1000;
-const LOGIN_BLOCK_DURATION_MS = 60 * 1000;
 const loginAttemptHistoryByIp = new Map();
-const loginBlockedUntilByIp = new Map();
-const LOGIN_RATE_LIMIT_MESSAGE = 'You’re trying to log in too often right now. Please wait a minute, then try again.';
+const LOGIN_RATE_LIMIT_MESSAGE = 'You’re trying to log in too often right now. Please slow down and try again.';
 
 function pruneCreationHistory(ip, now = Date.now()) {
     const history = accountCreationHistoryByIp.get(ip) || [];
@@ -33,15 +32,6 @@ function pruneLoginHistory(ip, now = Date.now()) {
         loginAttemptHistoryByIp.delete(ip);
     }
     return recentHistory;
-}
-
-function isLoginBlocked(ip, now = Date.now()) {
-    const blockedUntil = loginBlockedUntilByIp.get(ip) || 0;
-    if (blockedUntil <= now) {
-        if (blockedUntil > 0) loginBlockedUntilByIp.delete(ip);
-        return false;
-    }
-    return true;
 }
 
 export function createAuthRouter({ getClientIp }) {
@@ -98,6 +88,14 @@ export function createAuthRouter({ getClientIp }) {
     router.post('/login', async (req, res) => {
         const ip = getClientIp(req);
         const now = Date.now();
+        const requestedUsername = String(req.body?.username || '').trim();
+        if (requestedUsername && isAccountConnected(requestedUsername)) {
+            res.status(409).json({
+                ok: false,
+                message: 'That account is already signed in on another device. Please log out there first.'
+            });
+            return;
+        }
         if (isServerStartupGracePeriodActive(now)) {
             try {
                 const result = await loginAccount(req.body?.username, req.body?.password);
@@ -111,19 +109,10 @@ export function createAuthRouter({ getClientIp }) {
             }
             return;
         }
-        if (isLoginBlocked(ip, now)) {
-            res.status(429).json({
-                ok: false,
-                message: LOGIN_RATE_LIMIT_MESSAGE
-            });
-            return;
-        }
-
         const recentAttempts = pruneLoginHistory(ip, now);
         recentAttempts.push(now);
         loginAttemptHistoryByIp.set(ip, recentAttempts);
         if (recentAttempts.length > LOGIN_ATTEMPT_LIMIT) {
-            loginBlockedUntilByIp.set(ip, now + LOGIN_BLOCK_DURATION_MS);
             res.status(429).json({
                 ok: false,
                 message: LOGIN_RATE_LIMIT_MESSAGE

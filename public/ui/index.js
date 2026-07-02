@@ -85,7 +85,6 @@ export function initializeUI() {
     uiRefs.respawnScreen = document.getElementById('respawn_screen');
     uiRefs.joystickContainer = document.getElementById('joystick_container');
     uiRefs.mobileChatBtn = document.getElementById('mobile_chat_btn');
-    uiRefs.homeOnlineCount = document.getElementById('home_online_count');
 
     const cursorEl = isMobile ? null : createEl('div', {}, document.body, { id: 'custom_cursor' });
     const isPointerTarget = (target) => {

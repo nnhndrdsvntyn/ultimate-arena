@@ -19,13 +19,13 @@ import { createAuthRouter } from './server/auth/router.js';
 import { updateAccountSessionStats } from './server/auth/service.js';
 import { buildAccountLeaderboardPacket, createLeaderboardRouter, finalizePlayerLeaderboardRun } from './server/leaderboards.js';
 import { isServerStartupGracePeriodActive } from './server/constants.js';
+import { releaseAccountSocket } from './server/account_sessions.js';
 
 const app = express();
 const PORT = 3000;
 const ipTracker = new Map();
 const ipRapidAttemptState = new Map();
 const ipAttemptHistory = new Map();
-const ipBlockedUntil = new Map();
 const ipLastAcceptedConnectionAt = new Map();
 const ipNextQueuedAcceptAt = new Map();
 const ANTIBOT_WEBHOOK =
@@ -37,7 +37,6 @@ const RAPID_ATTEMPT_GAP_MS = 2 * 1000;
 const RAPID_ATTEMPT_STREAK_LIMIT = 10;
 const ATTEMPT_WINDOW_LIMIT = 10;
 const CONNECTION_SPACING_MS = 3 * 1000;
-const CONNECTION_BLOCK_DURATION_MS = 60 * 1000;
 
 function isLocalDevIp(ip) {
     return ip === '127.0.0.1' ||
@@ -64,30 +63,6 @@ function getClientDevice(req) {
     return 'PC';
 }
 
-function isIpBlocked(ip, now = Date.now()) {
-    if (isServerStartupGracePeriodActive(now)) return false;
-    if (isLocalDevIp(ip)) return false;
-    const blockedUntil = ipBlockedUntil.get(ip);
-    if (!blockedUntil) return false;
-    if (blockedUntil <= now) {
-        ipBlockedUntil.delete(ip);
-        return false;
-    }
-    return true;
-}
-
-function getIpBlockRemainingSeconds(ip, now = Date.now()) {
-    const blockedUntil = ipBlockedUntil.get(ip);
-    if (!blockedUntil || blockedUntil <= now) return 0;
-    return Math.max(1, Math.ceil((blockedUntil - now) / 1000));
-}
-
-function rejectSocketWithBlock(socket, retryAfter) {
-    if (!socket || socket.destroyed || !Number.isFinite(retryAfter) || retryAfter <= 0) return;
-    socket.write(`HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nConnection: close\r\nRetry-After: ${retryAfter}\r\n\r\nToo many connection attempts. Try again in ${retryAfter} seconds.`);
-    socket.destroy();
-}
-
 async function sendAntibotWebhook(ip, eventCount, trigger) {
     const payload = {
         embeds: [
@@ -96,8 +71,7 @@ async function sendAntibotWebhook(ip, eventCount, trigger) {
                 color: 0xf39c12,
                 fields: [
                     { name: 'IP', value: ip || 'unknown', inline: false },
-                    { name: 'Action', value: 'Temporary connection block', inline: false },
-                    { name: 'Duration', value: `${Math.floor(CONNECTION_BLOCK_DURATION_MS / 1000)} seconds`, inline: true },
+                    { name: 'Action', value: 'Rate limit warning', inline: false },
                     { name: 'Rapid Attempts In 60s', value: String(eventCount), inline: true },
                     { name: 'Triggered By', value: trigger, inline: true },
                     { name: 'Time', value: new Date().toLocaleString(), inline: false }
@@ -154,15 +128,9 @@ function recordIpConnectionAttempt(ip, label) {
     const shouldBlockForRapidStreak = rapidAttemptStreak >= RAPID_ATTEMPT_STREAK_LIMIT;
 
     if (shouldBlockForWindow || shouldBlockForRapidStreak) {
-        const existingBlockedUntil = ipBlockedUntil.get(ip) || 0;
-        const blockedUntil = now + CONNECTION_BLOCK_DURATION_MS;
-        ipBlockedUntil.set(ip, blockedUntil);
-
-        if (existingBlockedUntil <= now) {
-            const trigger = shouldBlockForWindow ? `${label}:minute-window` : `${label}:rapid-streak`;
-            const eventCount = shouldBlockForWindow ? attempts.length : rapidAttemptStreak;
-            void sendAntibotWebhook(ip, eventCount, trigger);
-        }
+        const trigger = shouldBlockForWindow ? `${label}:minute-window` : `${label}:rapid-streak`;
+        const eventCount = shouldBlockForWindow ? attempts.length : rapidAttemptStreak;
+        void sendAntibotWebhook(ip, eventCount, trigger);
     }
 }
 
@@ -245,12 +213,6 @@ server.on('upgrade', (req, socket, head) => {
     const now = Date.now();
     recordIpConnectionAttempt(ip, 'upgrade');
 
-    if (isIpBlocked(ip, now)) {
-        const retryAfter = getIpBlockRemainingSeconds(ip, now);
-        rejectSocketWithBlock(socket, retryAfter);
-        return;
-    }
-
     const currentIps = ipTracker.get(ip) || 0;
     if (currentIps >= 3) {
         socket.write('HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nConnection: close\r\nRetry-After: 5\r\n\r\nYou cannot have more than 3 connections on one IP.');
@@ -268,12 +230,6 @@ server.on('upgrade', (req, socket, head) => {
         if (socket.destroyed) return;
 
         const checkNow = Date.now();
-        if (isIpBlocked(ip, checkNow)) {
-            const retryAfter = getIpBlockRemainingSeconds(ip, checkNow);
-            rejectSocketWithBlock(socket, retryAfter);
-            return;
-        }
-
         const latestCurrentIps = ipTracker.get(ip) || 0;
         if (latestCurrentIps >= 3) {
             socket.write('HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nConnection: close\r\nRetry-After: 5\r\n\r\nYou cannot have more than 3 connections on one IP.');
@@ -367,6 +323,10 @@ wss.on('connection', (ws, req) => {
     });
 
     ws.on('close', () => {
+        if (ws._homeWheelRewardTimer) {
+            clearTimeout(ws._homeWheelRewardTimer);
+            ws._homeWheelRewardTimer = null;
+        }
         const world = ws.world || 'main';
         const disconnectedId = ws.id;
         const disconnectedPlayer = ENTITIES.PLAYERS[ws.id] || null;
@@ -389,6 +349,7 @@ wss.on('connection', (ws, req) => {
                 });
             }
         }
+        releaseAccountSocket(ws);
         ENTITIES.deleteEntity('player', ws.id);
         for (const id in ENTITIES.PLAYERS) {
             const player = ENTITIES.PLAYERS[id];

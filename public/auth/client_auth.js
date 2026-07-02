@@ -1,8 +1,10 @@
 const ACCOUNT_SESSION_STORAGE_KEY = 'ultimateArenaAccountSession';
+const AUTH_USERNAME_STORAGE_KEY = 'ultimateArenaAuthUsername';
 const LIBERATION_USERNAME = 'Liberation';
 const OTHER_ADMIN_NAME_COLOR = '#7f1d1d';
 
 let accountSession = loadStoredAccountSession();
+let storedAccountSessionRaw = readStoredAccountSessionRaw();
 let authUiRefs = null;
 let onSessionChange = null;
 let authRequestInFlight = false;
@@ -10,14 +12,48 @@ const accountProfile = {
     totalPlayerKills: 0,
     totalDeaths: 0,
     basePlayTime: 0,
-    sessionStartedAtSec: 0
+    sessionStartedAtSec: 0,
+    wheelSpinsRemaining: 0,
+    wheelSpinsResetAtSec: 0,
+    isLoaded: false
 };
 let accountProfileTimerStarted = false;
 let lastObservedSessionKills = 0;
 
-function loadStoredAccountSession() {
+function loadStoredAuthUsername() {
+    try {
+        const raw = localStorage.getItem(AUTH_USERNAME_STORAGE_KEY);
+        return typeof raw === 'string' ? raw : '';
+    } catch (error) {
+        return '';
+    }
+}
+
+function persistStoredAuthUsername(username) {
+    try {
+        const safe = String(username || '').trim();
+        if (safe) {
+            localStorage.setItem(AUTH_USERNAME_STORAGE_KEY, safe);
+        } else {
+            localStorage.removeItem(AUTH_USERNAME_STORAGE_KEY);
+        }
+    } catch (error) {
+        // Ignore storage errors.
+    }
+}
+
+function readStoredAccountSessionRaw() {
     try {
         const raw = localStorage.getItem(ACCOUNT_SESSION_STORAGE_KEY);
+        return typeof raw === 'string' ? raw : '';
+    } catch (error) {
+        return '';
+    }
+}
+
+function loadStoredAccountSession() {
+    try {
+        const raw = readStoredAccountSessionRaw();
         if (!raw) return null;
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed.username !== 'string' || typeof parsed.token !== 'string') return null;
@@ -30,13 +66,52 @@ function loadStoredAccountSession() {
     }
 }
 
+function resetAccountProfileState() {
+    accountProfile.totalPlayerKills = 0;
+    accountProfile.totalDeaths = 0;
+    accountProfile.basePlayTime = 0;
+    accountProfile.sessionStartedAtSec = 0;
+    accountProfile.wheelSpinsRemaining = 0;
+    accountProfile.wheelSpinsResetAtSec = 0;
+    accountProfile.isLoaded = false;
+    lastObservedSessionKills = 0;
+}
+
+function syncAccountSessionFromStorage(force = false) {
+    const nextRaw = readStoredAccountSessionRaw();
+    if (!force && nextRaw === storedAccountSessionRaw) {
+        return accountSession;
+    }
+
+    storedAccountSessionRaw = nextRaw;
+    const nextSession = nextRaw ? loadStoredAccountSession() : null;
+    const prevUsername = String(accountSession?.username || '').trim();
+    const prevToken = String(accountSession?.token || '');
+    const nextUsername = String(nextSession?.username || '').trim();
+    const nextToken = String(nextSession?.token || '');
+    const sessionChanged = prevUsername !== nextUsername || prevToken !== nextToken;
+
+    accountSession = nextSession;
+    if (sessionChanged) {
+        resetAccountProfileState();
+        syncAccountUi();
+        dispatchAccountProfileChange();
+        notifySessionChange();
+    }
+
+    return accountSession;
+}
+
 function persistAccountSession() {
     try {
         if (!accountSession) {
             localStorage.removeItem(ACCOUNT_SESSION_STORAGE_KEY);
+            storedAccountSessionRaw = '';
             return;
         }
-        localStorage.setItem(ACCOUNT_SESSION_STORAGE_KEY, JSON.stringify(accountSession));
+        const raw = JSON.stringify(accountSession);
+        localStorage.setItem(ACCOUNT_SESSION_STORAGE_KEY, raw);
+        storedAccountSessionRaw = raw;
     } catch (error) {
         // Ignore storage errors.
     }
@@ -92,10 +167,18 @@ function ensureAccountProfileTimer() {
     }, 1000);
 }
 
+function dispatchAccountProfileChange() {
+    try {
+        window.dispatchEvent(new Event('ua-account-profile-changed'));
+    } catch (error) {
+        // Ignore event dispatch failures.
+    }
+}
+
 function syncAccountUi() {
     if (!authUiRefs) return;
     const {
-        usernameInput,
+        authUsernameInput,
         passwordInput,
         loginButton,
         signupButton,
@@ -109,13 +192,15 @@ function syncAccountUi() {
     } = authUiRefs;
     const loggedIn = !!accountSession?.token;
 
-    if (usernameInput) {
+    if (authUsernameInput) {
         if (loggedIn) {
-            usernameInput.value = accountSession.username;
+            authUsernameInput.value = accountSession.username;
+        } else if (!authUsernameInput.value.trim()) {
+            authUsernameInput.value = loadStoredAuthUsername();
         }
-        usernameInput.disabled = loggedIn;
-        usernameInput.readOnly = loggedIn;
-        usernameInput.title = loggedIn ? 'Your in-game name is locked to your account.' : '';
+        authUsernameInput.disabled = loggedIn;
+        authUsernameInput.readOnly = loggedIn;
+        authUsernameInput.title = loggedIn ? 'Your account name is locked while you are logged in.' : '';
     }
 
     if (passwordInput) {
@@ -153,22 +238,27 @@ async function postAuth(path, username, password) {
 }
 
 export function getStoredAccountSession() {
+    syncAccountSessionFromStorage();
     return accountSession;
 }
 
 export function getStoredAccountAuthToken() {
+    syncAccountSessionFromStorage();
     return accountSession?.token || '';
 }
 
 export function getStoredAccountUsername() {
+    syncAccountSessionFromStorage();
     return accountSession?.username || '';
 }
 
 export function hasStoredAccountSession() {
+    syncAccountSessionFromStorage();
     return !!accountSession?.token;
 }
 
 export function getCurrentAuthenticatedAccountNameStyle(username, isAdmin = false, now = performance.now()) {
+    syncAccountSessionFromStorage();
     if (!accountSession?.token) return null;
 
     const sessionUsername = String(accountSession.username || '').trim();
@@ -195,13 +285,11 @@ export function getCurrentAuthenticatedAccountNameStyle(username, isAdmin = fals
 
 export function clearStoredAccountSession() {
     accountSession = null;
-    accountProfile.totalPlayerKills = 0;
-    accountProfile.totalDeaths = 0;
-    accountProfile.basePlayTime = 0;
-    accountProfile.sessionStartedAtSec = 0;
-    lastObservedSessionKills = 0;
+    storedAccountSessionRaw = '';
+    resetAccountProfileState();
     persistAccountSession();
     syncAccountUi();
+    dispatchAccountProfileChange();
     notifySessionChange();
 }
 
@@ -211,16 +299,24 @@ export function updateAccountProfileFromServer(payload) {
         accountProfile.totalDeaths = 0;
         accountProfile.basePlayTime = 0;
         accountProfile.sessionStartedAtSec = 0;
+        accountProfile.wheelSpinsRemaining = 0;
+        accountProfile.wheelSpinsResetAtSec = 0;
+        accountProfile.isLoaded = false;
         lastObservedSessionKills = 0;
         syncAccountStatsUi();
+        dispatchAccountProfileChange();
         return;
     }
     accountProfile.totalPlayerKills = Math.max(0, Math.floor(Number(payload.totalPlayerKills) || 0));
     accountProfile.totalDeaths = Math.max(0, Math.floor(Number(payload.totalDeaths) || 0));
     accountProfile.basePlayTime = Math.max(0, Math.floor(Number(payload.playTime) || 0));
     accountProfile.sessionStartedAtSec = Math.max(0, Math.floor(Number(payload.sessionStartedAtSec) || 0));
+    accountProfile.wheelSpinsRemaining = Math.max(0, Math.floor(Number(payload.wheelSpinsRemaining) || 0));
+    accountProfile.wheelSpinsResetAtSec = Math.max(0, Math.floor(Number(payload.wheelSpinsResetAtSec) || 0));
+    accountProfile.isLoaded = true;
     lastObservedSessionKills = 0;
     syncAccountStatsUi();
+    dispatchAccountProfileChange();
 }
 
 export function applyLiveAccountDeathIncrement() {
@@ -242,8 +338,17 @@ export function applyLiveAccountKillDelta(currentSessionKills) {
     syncAccountStatsUi();
 }
 
+export function getAccountWheelSpinState() {
+    return {
+        loggedIn: !!accountSession?.token,
+        loaded: !!accountProfile.isLoaded,
+        spinsRemaining: Math.max(0, Math.floor(Number(accountProfile.wheelSpinsRemaining) || 0)),
+        resetAtSec: Math.max(0, Math.floor(Number(accountProfile.wheelSpinsResetAtSec) || 0))
+    };
+}
+
 export function setupAccountAuthUI({
-    usernameInput,
+    authUsernameInput,
     passwordInput,
     loginButton,
     signupButton,
@@ -258,7 +363,7 @@ export function setupAccountAuthUI({
     onAccountSessionChange
 }) {
     authUiRefs = {
-        usernameInput,
+        authUsernameInput,
         passwordInput,
         loginButton,
         signupButton,
@@ -272,10 +377,11 @@ export function setupAccountAuthUI({
     };
     onSessionChange = onAccountSessionChange;
     ensureAccountProfileTimer();
+    syncAccountSessionFromStorage(true);
 
     const submit = async (mode) => {
         if (authRequestInFlight) return;
-        const username = String(usernameInput?.value || '').trim();
+        const username = String(authUsernameInput?.value || '').trim();
         const password = String(passwordInput?.value || '');
         authRequestInFlight = true;
         try {
@@ -289,7 +395,7 @@ export function setupAccountAuthUI({
                 username: result.username,
                 token: result.token
             };
-            localStorage.username = result.username;
+            persistStoredAuthUsername(result.username);
             persistAccountSession();
             syncAccountUi();
             notifySessionChange();
@@ -309,7 +415,7 @@ export function setupAccountAuthUI({
         clearStoredAccountSession();
         showNotification?.('You have been logged out.', '#eab308');
     });
-    usernameInput?.addEventListener('keydown', (event) => {
+    authUsernameInput?.addEventListener('keydown', (event) => {
         if (event.key !== 'Enter') return;
         if (accountSession?.token) return;
         event.preventDefault();
@@ -324,4 +430,11 @@ export function setupAccountAuthUI({
 
     syncAccountUi();
     notifySessionChange();
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('storage', (event) => {
+        if (event.key !== ACCOUNT_SESSION_STORAGE_KEY && event.key !== AUTH_USERNAME_STORAGE_KEY) return;
+        syncAccountSessionFromStorage(true);
+    });
 }

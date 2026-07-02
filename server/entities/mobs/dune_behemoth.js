@@ -25,13 +25,14 @@ const SANDSPIN_RAMP_MS = 5000;
 const SANDSPIN_DASH_MS = 5000;
 const SANDSPIN_DASH_INTERVAL_MS = 1000;
 const SANDSPIN_MAX_DEGREES_PER_SECOND = 1800;
+const SANDSPIN_CHARGE_SPEED_MULT = 5;
 const SANDSPIN_MIN_DAMAGE = 20;
 const SANDSPIN_MAX_DAMAGE = 70;
 const SANDSPIN_CONTACT_BUFFER = 45;
 const SANDSPIN_MIN_KNOCKBACK_DISTANCE = 300;
 const SANDSPIN_MAX_KNOCKBACK_DISTANCE = 1500;
 const SANDSPIN_KNOCKBACK_DURATION_MS = 250;
-const SANDSPIN_LAUNCH_DISTANCE = 1000;
+const SANDSPIN_CHARGE_DISTANCE_LIMIT = 1000;
 const GLOBAL_ABILITY_COOLDOWN_MS = 5000;
 const ROCK_MEDIUM_TYPE = 2;
 const ROCK_BIG_TYPE = 6;
@@ -418,6 +419,9 @@ export class DuneBehemoth extends Mob {
     }
 
     clearSandspin() {
+        if (this._sandspinState) {
+            this._sandspinState.charge = null;
+        }
         this._sandspinState = null;
     }
 
@@ -1078,11 +1082,17 @@ export class DuneBehemoth extends Mob {
             return true;
         }
 
+        if (state.charge) {
+            this.processSandspinCharge(state, currentTarget, now);
+            return true;
+        }
+
         this.applySandspinContact(now, spinProgress);
 
         if (now >= state.startedAt + SANDSPIN_WINDUP_MS + SANDSPIN_RAMP_MS) {
             while (now >= state.nextLaunchAt && state.nextLaunchAt < state.endsAt) {
                 this.performSandspinLaunch(currentTarget);
+                if (state.charge) break;
                 state.nextLaunchAt += SANDSPIN_DASH_INTERVAL_MS;
             }
         }
@@ -1103,6 +1113,46 @@ export class DuneBehemoth extends Mob {
     getSandspinDamage(spinProgress) {
         const t = Math.max(0, Math.min(1, Number(spinProgress) || 0));
         return SANDSPIN_MIN_DAMAGE + ((SANDSPIN_MAX_DAMAGE - SANDSPIN_MIN_DAMAGE) * t);
+    }
+
+    processSandspinCharge(state, currentTarget = null, now = performance.now()) {
+        const targetFromState = state?.charge?.targetId ? ENTITIES.PLAYERS[state.charge.targetId] : null;
+        const target = (targetFromState && targetFromState.isAlive && !targetFromState.isInvisible && (targetFromState.world || 'main') === (this.world || 'main'))
+            ? targetFromState
+            : this.getSandspinLaunchTarget(currentTarget);
+        if (!target) {
+            state.charge = null;
+            return false;
+        }
+
+        const dx = target.x - this.x;
+        const dy = target.y - this.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist <= 0.001) {
+            state.charge = null;
+            return false;
+        }
+
+        const baseSpeed = Number.isFinite(dataMap.MOBS[this.type]?.speed) ? dataMap.MOBS[this.type].speed : 0;
+        const chargeSpeed = baseSpeed * SANDSPIN_CHARGE_SPEED_MULT;
+        const step = Math.min(dist, chargeSpeed);
+
+        this.lastX = this.x;
+        this.lastY = this.y;
+        this.angle = Math.atan2(dy, dx);
+        this.speed = chargeSpeed;
+        this.x += (dx / dist) * step;
+        this.y += (dy / dist) * step;
+        state.charge.distanceTravelled = (state.charge.distanceTravelled || 0) + step;
+
+        this.clamp();
+        pushEntityOutOfSafeZone(this, this.world || 'main');
+        this.applySandspinContact(now, 1);
+
+        if (state.charge.distanceTravelled >= SANDSPIN_CHARGE_DISTANCE_LIMIT) {
+            state.charge = null;
+        }
+        return true;
     }
 
     applySandspinContact(now = performance.now(), spinProgress = 1) {
@@ -1207,22 +1257,18 @@ export class DuneBehemoth extends Mob {
     performSandspinLaunch(currentTarget = null) {
         const target = this.getSandspinLaunchTarget(currentTarget);
         if (!target) return;
-
-        const dx = target.x - this.x;
-        const dy = target.y - this.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist <= 0.001) return;
-
-        const ux = dx / dist;
-        const uy = dy / dist;
-        const travel = Math.min(SANDSPIN_LAUNCH_DISTANCE, dist);
-        this.lastX = this.x;
-        this.lastY = this.y;
-        this.x += ux * travel;
-        this.y += uy * travel;
-        this.clamp();
-        pushEntityOutOfSafeZone(this, this.world || 'main');
-        this.applySandspinContact(performance.now(), 1);
+        const state = this._sandspinState;
+        if (!state) return;
+        state.charge = {
+            targetId: target.id,
+            startedAt: performance.now(),
+            distanceTravelled: 0
+        };
+        state.nextLaunchAt = performance.now() + SANDSPIN_DASH_INTERVAL_MS;
+        this.target = target;
+        this.isAlarmed = true;
+        this.alarmReason = this.lastHitById === target.id ? 'hit' : 'proximity';
+        this.speed = dataMap.MOBS[this.type].speed * SANDSPIN_CHARGE_SPEED_MULT;
     }
 
     getSandspinLaunchTarget(currentTarget = null) {

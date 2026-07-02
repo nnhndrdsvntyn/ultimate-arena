@@ -78,6 +78,13 @@ import { WORLD_ROOT_DIMENSION, WORLD_YETI_DIMENSION, WORLD_DUNE_DIMENSION, WORLD
 
 const WORLD_STORAGE_KEY = 'ua_world';
 
+function normalizeProjectileRadius(type, radius) {
+    const packetRadius = Number(radius) || 0;
+    if (type === -1) return packetRadius;
+    const configuredRadius = Number(dataMap.PROJECTILES?.[type]?.radius) || 0;
+    return Math.max(packetRadius, configuredRadius, 1);
+}
+
 // --- Packet Type Map ---
 const PACKET_TYPES = {
     INIT: 1,
@@ -91,7 +98,6 @@ const PACKET_TYPES = {
     ADMIN_AUTH: 11,
     INVENTORY: 15,
     STATS: 18,
-    PLAYER_COUNT: 20,
     LIGHTNING_SHOT_FX: 21,
     COIN_PICKUP_FX: 22,
     ENERGY_BURST_FX: 23,
@@ -405,9 +411,6 @@ export function parsePacket(buffer) {
         case PACKET_TYPES.STATS:
             handleStatsPacket(reader);
             break;
-        case PACKET_TYPES.PLAYER_COUNT:
-            handlePlayerCountPacket(reader);
-            break;
         case PACKET_TYPES.LIGHTNING_SHOT_FX:
             handleLightningShotFxPacket(reader);
             break;
@@ -478,7 +481,7 @@ export function parsePacket(buffer) {
             handleInfernoBeamFxPacket(reader);
             break;
         case PACKET_TYPES.HOME_WHEEL_SPIN_RESULT:
-            handleHomeWheelSpinResult(reader.readU8());
+            handleHomeWheelSpinResult(reader.readU8(), reader.readU16());
             break;
         default:
             // console.warn(`Unknown packet type: ${packetType}`);
@@ -750,7 +753,7 @@ function handleUpdatePacket(reader) {
             if (!p) p = new Projectile(id, x, y, angle, type, rank);
             p.newX = x; p.newY = y; p.newAngle = angle;
             p.type = type; p.weaponRank = rank;
-            p.radius = reader.readU16();
+            p.radius = normalizeProjectileRadius(type, reader.readU16());
             p.renderLength = (type === 13) ? reader.readU16() : 0;
         } else { // Delta Update
             if (!p) {
@@ -763,7 +766,7 @@ function handleUpdatePacket(reader) {
             if (mask & 0x08) p.type = reader.readI8();
             if (mask & 0x10) p.weaponRank = reader.readU8();
             if (mask & 0x20) p.renderLength = reader.readU16();
-            if (mask & 0x40) p.radius = reader.readU16();
+            if (mask & 0x40) p.radius = normalizeProjectileRadius(p.type, reader.readU16());
         }
     }
     for (const id in ENTITIES.PROJECTILES) {
@@ -971,7 +974,9 @@ function handleAccountProfilePacket(reader) {
         playTime: reader.readU32(),
         totalPlayerKills: reader.readU32(),
         totalDeaths: reader.readU32(),
-        sessionStartedAtSec: reader.readU32()
+        sessionStartedAtSec: reader.readU32(),
+        wheelSpinsRemaining: reader.offset < reader.view.byteLength ? reader.readU8() : 0,
+        wheelSpinsResetAtSec: reader.offset + 4 <= reader.view.byteLength ? reader.readU32() : 0
     });
 }
 
@@ -1066,7 +1071,7 @@ function handleKickedPacket(reader) {
         Vars.disableAutoReconnect = false;
         Vars.disconnectMessage = message || 'Disconnected from server.';
     }
-    if (normalized.includes('account session') && normalized.includes('log in again')) {
+    if ((normalized.includes('account session') && normalized.includes('log in again')) || normalized.includes('already signed in on another device')) {
         clearStoredAccountSession();
     }
     Vars.lastDiedTime = performance.now();
@@ -1147,22 +1152,18 @@ function handleStatsPacket(reader) {
     Vars.myStats.buffStrength = reader.readU8();
     Vars.myStats.buffMaxHealth = reader.readU8();
     Vars.myStats.buffRegenSpeed = reader.readU8();
+    if (reader.offset + 4 <= reader.view.byteLength) {
+        const remainingMs = reader.readU32();
+        Vars.myStats.doubleXpEndsAt = remainingMs > 0 ? (performance.now() + remainingMs) : 0;
+    } else {
+        Vars.myStats.doubleXpEndsAt = 0;
+    }
     refreshHudDerivedState();
 
     if (uiState.isShopOpen) {
         updateShopBody();
     }
     updateShopAttentionIndicator();
-}
-
-function handlePlayerCountPacket(reader) {
-    Vars.onlineCount = reader.readU8();
-    const countEl = document.getElementById('home_online_count');
-    if (!countEl) return;
-    const homeScreen = document.getElementById('home_screen');
-    if (!homeScreen || homeScreen.style.display === 'none') return;
-    const count = Math.max(0, Vars.onlineCount || 0);
-    countEl.textContent = `${count} player${count === 1 ? '' : 's'} online`;
 }
 
 function handleLightningShotFxPacket(reader) {

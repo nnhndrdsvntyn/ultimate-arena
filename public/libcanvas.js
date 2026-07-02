@@ -10,6 +10,7 @@ export class LibCanvas {
     constructor() {
         this.images = {};
         this.imageMipmaps = {};
+        this.imageAverageColors = {};
         this.audios = {};
         this.audioBuffers = {};
         this.audioSrcs = {};
@@ -23,6 +24,7 @@ export class LibCanvas {
         this.renderPixelHeight = 1080;
         this.targetPixelWidth = Math.round(this.renderPixelWidth);
         this.targetPixelHeight = Math.round(this.renderPixelHeight);
+        this.clearColor = '#1f4d2e';
         this.width = this.logicalWidth;
         this.height = this.logicalHeight;
         this.offsetX = 0;
@@ -108,6 +110,41 @@ export class LibCanvas {
         return selected;
     }
 
+    getImageAverageColor(name, fallback = '#1f4d2e') {
+        return this.imageAverageColors[name] || fallback;
+    }
+
+    sampleImageAverageColor(image, fallback = '#1f4d2e') {
+        if (!image?.width || !image?.height) return fallback;
+        const sampleSize = 16;
+        const canvas = document.createElement('canvas');
+        canvas.width = sampleSize;
+        canvas.height = sampleSize;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return fallback;
+        try {
+            ctx.clearRect(0, 0, sampleSize, sampleSize);
+            ctx.drawImage(image, 0, 0, sampleSize, sampleSize);
+            const { data } = ctx.getImageData(0, 0, sampleSize, sampleSize);
+            let r = 0;
+            let g = 0;
+            let b = 0;
+            let count = 0;
+            for (let i = 0; i < data.length; i += 4) {
+                const a = data[i + 3];
+                if (a === 0) continue;
+                r += data[i];
+                g += data[i + 1];
+                b += data[i + 2];
+                count++;
+            }
+            if (!count) return fallback;
+            return `rgb(${Math.round(r / count)}, ${Math.round(g / count)}, ${Math.round(b / count)})`;
+        } catch {
+            return fallback;
+        }
+    }
+
     createDOM() {
         this.container = document.createElement('div');
         this.canvas = document.createElement('canvas');
@@ -125,7 +162,7 @@ export class LibCanvas {
 
         this.canvas.style.width = '100%';
         this.canvas.style.height = '100%';
-        this.canvas.style.backgroundColor = 'white';
+        this.canvas.style.backgroundColor = this.clearColor;
         this.canvas.style.display = 'block';
 
         this.container.appendChild(this.canvas);
@@ -210,6 +247,8 @@ export class LibCanvas {
         if (!this.ctx) return;
         this.ctx.setTransform(1, 0, 0, 1, 0, 0);
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        this.ctx.fillStyle = this.clearColor;
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
         this.ctx.setTransform(this.scaleX, 0, 0, this.scaleY, this.offsetX, this.offsetY);
         this.imageScaleX = this.scaleX;
         this.imageScaleY = this.scaleY;
@@ -549,6 +588,13 @@ export class LibCanvas {
             img.onload = () => {
                 this.images[name] = img;
                 this.imageMipmaps[name] = this.createImageMipmapLevels(img);
+                this.imageAverageColors[name] = this.sampleImageAverageColor(img);
+                if (name === 'grass' && this.imageAverageColors[name]) {
+                    this.clearColor = this.imageAverageColors[name];
+                    if (this.canvas) {
+                        this.canvas.style.backgroundColor = this.clearColor;
+                    }
+                }
                 resolve(img);
             };
             img.onerror = reject;

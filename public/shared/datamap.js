@@ -663,8 +663,8 @@ export const dataMap = {
     PROJECTILES: {
         '13': { radius: 30, speed: 100, damage: 20, maxDistance: 500, knockbackStrength: 25, imgProportions: [10, 2.5], imgSrc: './images/projectiles/lightning_black_red.png', imgName: 'projectiles_lightning_black_red'},
         '14': { radius: 30, speed: 100, damage: 35, maxDistance: 500, knockbackStrength: 25, imgProportions: [10, 2.5], imgSrc: './images/projectiles/lightning.png', imgName: 'projectiles_lightning'},
-        '15': { radius: 14, speed: 60, damage: 20, maxDistance: 1100, knockbackStrength: 15, imgProportions: [7, 1.2], imgSrc: './images/projectiles/icicle_shard.png', imgName: 'projectiles_icicle_shard'},
-        '16': { radius: 45, speed: 42, damage: 10, maxDistance: 850, knockbackStrength: 35, imgProportions: [2, 2], imgSrc: './images/projectiles/snowball.png', imgName: 'projectiles_snowball'}
+        '15': { radius: 30, speed: 60, damage: 25, maxDistance: 1100, knockbackStrength: 15, imgProportions: [7, 1.2], imgSrc: './images/projectiles/icicle_shard.png', imgName: 'projectiles_icicle_shard'},
+        '16': { radius: 60, speed: 60, damage: 15, maxDistance: 1100, knockbackStrength: 35, imgProportions: [2, 2], imgSrc: './images/projectiles/snowball.png', imgName: 'projectiles_snowball'}
     },
     ATTACK_PROJECTILES: WEAPON_ATTACK_PROJECTILES,
     STRUCTURES: {

@@ -22,6 +22,40 @@ function normalizeTutorialObjectiveText(text) {
     return String(text || '').trim().toLowerCase();
 }
 
+function getMobileTutorialObjectiveText(step, text) {
+    const normalized = normalizeTutorialObjectiveText(text);
+    if (step === 0 || normalized.includes('hold the') || normalized.includes('keyboard')) {
+        return 'Use the joystick in the bottom left to move around.';
+    }
+    if (step === 1 || normalized.includes('space bar') || normalized.includes('left mouse button') || normalized.includes('e key')) {
+        return 'Swing by clicking the attack button in the bottom right, and throw using the throw button in the bottom right.';
+    }
+    return text;
+}
+
+function wrapTutorialObjectiveText(ctx, text, font, maxWidth, maxLines = 2) {
+    const words = String(text || '').trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return [''];
+
+    const lines = [];
+    let current = words[0];
+
+    for (let i = 1; i < words.length; i++) {
+        const next = `${current} ${words[i]}`;
+        const nextWidth = ctx.LC.measureText({ text: next, font }).width;
+        if (nextWidth <= maxWidth || lines.length >= maxLines - 1) {
+            current = next;
+        } else {
+            lines.push(current);
+            current = words[i];
+        }
+    }
+
+    lines.push(current);
+    if (lines.length <= maxLines) return lines;
+    return [lines[0], lines.slice(1).join(' ')];
+}
+
 function getTutorialObjectiveMode(ctx) {
     const text = normalizeTutorialObjectiveText(ctx?.Vars?.tutorialObjectiveText);
     if (!text) return '';
@@ -127,7 +161,7 @@ export function drawTutorialObjective(ctx) {
     const topBarBottom = topBar
         ? ((topBar.getBoundingClientRect().bottom - contentRect.top) * (LC.height / Math.max(1, contentRect.height)))
         : 0;
-    const panelHeight = isMobile ? 64 : 56;
+    const panelHeight = isMobile ? 84 : 56;
     const panelY = Math.max(18, Math.floor(topBarBottom + 10));
     let desktopMovementProgress = null;
     if (!isMobile && Vars.tutorialObjectiveStep === 0) {
@@ -159,13 +193,22 @@ export function drawTutorialObjective(ctx) {
         tutorialMovementUi.stepIndex = -1;
         tutorialMovementUi.holdStartedAt = 0;
     }
-    const objectiveText = Vars.tutorialObjectiveText;
-    const font = isMobile ? '700 20px Inter' : '700 22px Inter';
-    const textMetrics = LC.measureText({ text: objectiveText, font });
-    const horizontalPadding = isMobile ? 36 : 42;
-    const minPanelWidth = isMobile ? 280 : 320;
+    const objectiveText = isMobile ? getMobileTutorialObjectiveText(Vars.tutorialObjectiveStep, Vars.tutorialObjectiveText) : Vars.tutorialObjectiveText;
+    const font = isMobile ? '700 17px Inter' : '700 22px Inter';
+    const horizontalPadding = isMobile ? 34 : 42;
+    const minPanelWidth = isMobile ? 284 : 320;
     const maxPanelWidth = Math.max(minPanelWidth, LC.width - 40);
-    const panelWidth = Math.min(maxPanelWidth, Math.max(minPanelWidth, Math.ceil(textMetrics.width + horizontalPadding)));
+    const textMetrics = LC.measureText({ text: objectiveText, font });
+    const wrappedLines = isMobile
+        ? wrapTutorialObjectiveText({ LC }, objectiveText, font, Math.min(maxPanelWidth - horizontalPadding, LC.width - 60), 2)
+        : [objectiveText];
+    const panelWidth = isMobile
+        ? Math.min(maxPanelWidth, Math.max(minPanelWidth, Math.ceil(Math.max(...wrappedLines.map((line) => LC.measureText({ text: line, font }).width)) + horizontalPadding)))
+        : Math.min(maxPanelWidth, Math.max(minPanelWidth, Math.ceil(textMetrics.width + horizontalPadding)));
+    const lineHeight = isMobile ? 22 : 26;
+    const textBlockHeight = (wrappedLines.length * lineHeight) + (isMobile ? 2 : 0);
+    const desiredHeight = isMobile ? Math.max(84, textBlockHeight + 24) : 56;
+    const panelHeightFinal = desiredHeight;
     const panelX = (LC.width - panelWidth) * 0.5;
 
     const isComplete = Vars.tutorialObjectiveStatus === 1;
@@ -175,7 +218,7 @@ export function drawTutorialObjective(ctx) {
 
     LC.drawRect({
         pos: [panelX, panelY],
-        size: [panelWidth, panelHeight],
+        size: [panelWidth, panelHeightFinal],
         color: bgColor,
         stroke: borderColor,
         strokeWidth: 2,
@@ -184,26 +227,39 @@ export function drawTutorialObjective(ctx) {
     if (desktopMovementProgress !== null && desktopMovementProgress > 0.001) {
         LC.drawRect({
             pos: [panelX, panelY],
-            size: [panelWidth * desktopMovementProgress, panelHeight],
+            size: [panelWidth * desktopMovementProgress, panelHeightFinal],
             color: 'rgba(21, 128, 61, 0.48)',
             cornerRadius: 10
         });
         LC.drawRect({
             pos: [panelX, panelY],
-            size: [panelWidth, panelHeight],
+            size: [panelWidth, panelHeightFinal],
             color: 'rgba(0, 0, 0, 0)',
             stroke: borderColor,
             strokeWidth: 2,
             cornerRadius: 10
         });
     }
-    LC.drawText({
-        text: objectiveText,
-        pos: [LC.width / 2, panelY + (panelHeight / 2) + 6],
-        font,
-        color: textColor,
-        textAlign: 'center'
-    });
+    if (isMobile && wrappedLines.length > 1) {
+        const startY = panelY + ((panelHeightFinal - textBlockHeight) / 2) + 12;
+        wrappedLines.forEach((line, idx) => {
+            LC.drawText({
+                text: line,
+                pos: [LC.width / 2, startY + (idx * lineHeight)],
+                font,
+                color: textColor,
+                textAlign: 'center'
+            });
+        });
+    } else {
+        LC.drawText({
+            text: objectiveText,
+            pos: [LC.width / 2, panelY + (panelHeightFinal / 2) + 6],
+            font,
+            color: textColor,
+            textAlign: 'center'
+        });
+    }
 }
 
 function worldToScreenPos(ctx, worldX, worldY) {

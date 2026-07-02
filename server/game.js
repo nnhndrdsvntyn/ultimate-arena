@@ -1047,6 +1047,63 @@ function isValidMobSpawnPosition(type, x, y) {
     return isValidMobSpawnPositionForWorld(type, x, y, WORLD_MAIN);
 }
 
+function buildChestSpawnCandidates(type, mapSize, preferredX = null, preferredY = null) {
+    const candidates = [];
+    const [mapW, mapH] = mapSize;
+    const step = 220;
+    const margin = 140;
+    const allowedChestQuadrants = CHEST_WORLD_SPAWN_QUADRANTS[type] || null;
+
+    const addCandidate = (x, y) => {
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        if (x < margin || x > (mapW - margin) || y < margin || y > (mapH - margin)) return;
+        if (Array.isArray(allowedChestQuadrants) && !allowedChestQuadrants.includes(getMapQuadrant(x, y))) return;
+        candidates.push({ x: Math.round(x), y: Math.round(y) });
+    };
+
+    if (Number.isFinite(preferredX) && Number.isFinite(preferredY)) {
+        addCandidate(preferredX, preferredY);
+        addCandidate(preferredX + step, preferredY);
+        addCandidate(preferredX - step, preferredY);
+        addCandidate(preferredX, preferredY + step);
+        addCandidate(preferredX, preferredY - step);
+        addCandidate(preferredX + step, preferredY + step);
+        addCandidate(preferredX - step, preferredY - step);
+        addCandidate(preferredX + step, preferredY - step);
+        addCandidate(preferredX - step, preferredY + step);
+    }
+
+    const midX = mapW * 0.5;
+    const midY = mapH * 0.5;
+    const boundsByQuadrant = {
+        tl: [margin, midX - margin, margin, midY - margin],
+        tr: [midX + margin, mapW - margin, margin, midY - margin],
+        bl: [margin, midX - margin, midY + margin, mapH - margin],
+        br: [midX + margin, mapW - margin, midY + margin, mapH - margin]
+    };
+
+    if (Array.isArray(allowedChestQuadrants) && allowedChestQuadrants.length > 0) {
+        for (let i = 0; i < allowedChestQuadrants.length; i++) {
+            const bounds = boundsByQuadrant[allowedChestQuadrants[i]];
+            if (!bounds) continue;
+            const [minX, maxX, minY, maxY] = bounds;
+            for (let y = minY; y <= maxY; y += step) {
+                for (let x = minX; x <= maxX; x += step) {
+                    addCandidate(x, y);
+                }
+            }
+        }
+    } else {
+        for (let y = margin; y <= mapH - margin; y += step) {
+            for (let x = margin; x <= mapW - margin; x += step) {
+                addCandidate(x, y);
+            }
+        }
+    }
+
+    return candidates;
+}
+
 function isValidMobSpawnPositionForWorld(type, x, y, world = WORLD_MAIN) {
     const mapSize = getWorldMapSize(world);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
@@ -1671,77 +1728,99 @@ export function spawnObject(type, x, y, amount = 1, source = null, world = null)
         }
     }
 
-    // If x or y is missing, find a valid random position
-    if (x === undefined || y === undefined) {
-        const allowedChestQuadrants = objectConfig.isChest
-            ? CHEST_WORLD_SPAWN_QUADRANTS[type] || null
-            : null;
-        let validPosition = false;
-        let attempts = 0;
-        while (!validPosition && attempts < 5000) {
-            attempts++;
-            x = Math.floor(Math.random() * mapSize[0]);
-            y = Math.floor(Math.random() * mapSize[1]);
+    const allowedChestQuadrants = objectConfig.isChest
+        ? CHEST_WORLD_SPAWN_QUADRANTS[type] || null
+        : null;
 
-            const distanceToSpawnSq = spawnZone ? (x - spawnZone.x) ** 2 + (y - spawnZone.y) ** 2 : 2000 ** 2;
+    const isSpawnPositionValid = (candidateX, candidateY) => {
+        const distanceToSpawnSq = spawnZone ? (candidateX - spawnZone.x) ** 2 + (candidateY - spawnZone.y) ** 2 : 2000 ** 2;
 
-            const riverBuffer = objectConfig.riverBuffer || 0;
-            const inRiver = worldHasRivers(worldId) ? isPointInRiver(mapSize, x, y, radius + riverBuffer) : false;
-            const nearSpawn = spawnZone ? distanceToSpawnSq < (spawnZone.radius + 200) ** 2 : false;
-            const outOfBounds = x < 100 || x > (mapSize[0] - 100) || y < 100 || y > (mapSize[1] - 100);
+        const riverBuffer = objectConfig.riverBuffer || 0;
+        const inRiver = worldHasRivers(worldId) ? isPointInRiver(mapSize, candidateX, candidateY, radius + riverBuffer) : false;
+        const nearSpawn = spawnZone ? distanceToSpawnSq < (spawnZone.radius + 200) ** 2 : false;
+        const outOfBounds = candidateX < 100 || candidateX > (mapSize[0] - 100) || candidateY < 100 || candidateY > (mapSize[1] - 100);
 
-            let obstructed = false;
-            for (let i = 0; i < blockingStructures.length; i++) {
-                const struct = blockingStructures[i];
-                const dx = x - struct.x;
-                const dy = y - struct.y;
-                const structConfig = dataMap.STRUCTURES[struct.type];
-                const avoidanceRadius = structConfig?.reservedSpawnRadius || struct.radius || 0;
-                if (dx * dx + dy * dy < (radius + avoidanceRadius) ** 2) {
-                    obstructed = true;
+        let obstructed = false;
+        for (let i = 0; i < blockingStructures.length; i++) {
+            const struct = blockingStructures[i];
+            const dx = candidateX - struct.x;
+            const dy = candidateY - struct.y;
+            const structConfig = dataMap.STRUCTURES[struct.type];
+            const avoidanceRadius = structConfig?.reservedSpawnRadius || struct.radius || 0;
+            if (dx * dx + dy * dy < (radius + avoidanceRadius) ** 2) {
+                obstructed = true;
+                break;
+            }
+        }
+
+        let validSide = true;
+        // For quadrant-locked world chest spawns, quadrant rules are the source of truth.
+        // This avoids legacy spawnSide flags (e.g. chest4 left) blocking intended quadrants.
+        if (!Array.isArray(allowedChestQuadrants)) {
+            if (objectConfig.spawnSide === 'left') {
+                const { left } = getRiverBoundsAtY(mapSize, candidateY);
+                if (candidateX > left - radius - riverBuffer) validSide = false;
+            } else if (objectConfig.spawnSide === 'right') {
+                const { right } = getRiverBoundsAtY(mapSize, candidateY);
+                if (candidateX < right + radius + riverBuffer) validSide = false;
+            }
+        }
+
+        let validQuadrant = true;
+        if (Array.isArray(allowedChestQuadrants)) {
+            validQuadrant = allowedChestQuadrants.includes(getMapQuadrant(candidateX, candidateY));
+        }
+
+        let nearChest = false;
+        if (isChestSpawn) {
+            for (const id in ENTITIES.OBJECTS) {
+                const obj = ENTITIES.OBJECTS[id];
+                if (!obj || (obj.world || 'main') !== worldId || !dataMap.OBJECTS[obj.type]?.isChest) continue;
+                const existingRadius = dataMap.OBJECTS[obj.type]?.radius || obj.radius || 50;
+                const minChestDistance = radius + existingRadius + CHEST_MIN_SPAWN_GAP;
+                const dx = candidateX - obj.x;
+                const dy = candidateY - obj.y;
+                if (dx * dx + dy * dy < minChestDistance * minChestDistance) {
+                    nearChest = true;
                     break;
                 }
             }
+        }
 
-            let validSide = true;
-            // For quadrant-locked world chest spawns, quadrant rules are the source of truth.
-            // This avoids legacy spawnSide flags (e.g. chest4 left) blocking intended quadrants.
-            if (!Array.isArray(allowedChestQuadrants)) {
-                if (objectConfig.spawnSide === 'left') {
-                    const { left } = getRiverBoundsAtY(mapSize, y);
-                    if (x > left - radius - riverBuffer) validSide = false;
-                } else if (objectConfig.spawnSide === 'right') {
-                    const { right } = getRiverBoundsAtY(mapSize, y);
-                    if (x < right + radius + riverBuffer) validSide = false;
+        return !inRiver && !nearSpawn && !outOfBounds && !obstructed && !nearChest && validSide && validQuadrant;
+    };
+
+    // If x or y is missing, find a valid position.
+    if (x === undefined || y === undefined) {
+        let validPosition = false;
+        let attempts = 0;
+
+        if (isChestSpawn) {
+            const candidatePositions = buildChestSpawnCandidates(type, mapSize, x, y);
+            for (let i = 0; i < candidatePositions.length; i++) {
+                const candidate = candidatePositions[i];
+                if (isSpawnPositionValid(candidate.x, candidate.y)) {
+                    x = candidate.x;
+                    y = candidate.y;
+                    validPosition = true;
+                    break;
                 }
             }
+        }
 
-            let validQuadrant = true;
-            if (Array.isArray(allowedChestQuadrants)) {
-                validQuadrant = allowedChestQuadrants.includes(getMapQuadrant(x, y));
-            }
-
-            let nearChest = false;
-            if (isChestSpawn) {
-                for (const id in ENTITIES.OBJECTS) {
-                    const obj = ENTITIES.OBJECTS[id];
-                    if (!obj || (obj.world || 'main') !== worldId || !dataMap.OBJECTS[obj.type]?.isChest) continue;
-                    const existingRadius = dataMap.OBJECTS[obj.type]?.radius || obj.radius || 50;
-                    const minChestDistance = radius + existingRadius + CHEST_MIN_SPAWN_GAP;
-                    const dx = x - obj.x;
-                    const dy = y - obj.y;
-                    if (dx * dx + dy * dy < minChestDistance * minChestDistance) {
-                        nearChest = true;
-                        break;
-                    }
-                }
-            }
-
-            if (!inRiver && !nearSpawn && !outOfBounds && !obstructed && !nearChest && validSide && validQuadrant) {
+        while (!validPosition && attempts < 5000) {
+            attempts++;
+            const candidateX = Math.floor(Math.random() * mapSize[0]);
+            const candidateY = Math.floor(Math.random() * mapSize[1]);
+            if (isSpawnPositionValid(candidateX, candidateY)) {
+                x = candidateX;
+                y = candidateY;
                 validPosition = true;
             }
         }
         if (!validPosition) return null;
+    } else if (!isSpawnPositionValid(x, y)) {
+        return null;
     }
 
     // Generate a unique ID (within 16-bit range)

@@ -29,6 +29,8 @@ import {
 import {
     dataMap,
     ACCESSORY_KEYS,
+    getWeaponConfig,
+    WEAPON_IDS,
     isAccessoryItemType,
     accessoryIdFromItemType,
     isXpShopItemType,
@@ -37,7 +39,8 @@ import {
     MAX_LEVEL,
     xpForLevel
 } from '../public/shared/datamap.js';
-import { getAccountAdminState, getAccountProfile, setAccountAdminState, verifyAccountSessionToken } from './auth/service.js';
+import { consumeAccountWheelSpin, getAccountAdminState, getAccountProfile, setAccountAdminState, verifyAccountSessionToken } from './auth/service.js';
+import { claimAccountSocket, releaseAccountSocket } from './account_sessions.js';
 import { buildAccountLeaderboardPacket } from './leaderboards.js';
 
 // --- Packet Type Map ---
@@ -86,11 +89,19 @@ const SPECTATOR_RANGE_DIVISOR = 1.5;
 const HOME_WHEEL_SEGMENT_CHANCES = [35, 22, 15, 12, 7, 5, 3, 1];
 const HOME_WHEEL_TOTAL_CHANCE = HOME_WHEEL_SEGMENT_CHANCES.reduce((sum, chance) => sum + chance, 0);
 const HOME_WHEEL_REWARD_COIN_500_INDEX = 0;
+const HOME_WHEEL_REWARD_DOUBLE_XP_INDEX = 1;
+const HOME_WHEEL_REWARD_HEARTY_ESSENCE_INDEX = 2;
+const HOME_WHEEL_REWARD_GOLDEN_SKULL_INDEX = 3;
+const HOME_WHEEL_REWARD_RANDOM_RANK_12_INDEX = 4;
 const HOME_WHEEL_REWARD_COIN_5000_INDEX = 5;
 const HOME_WHEEL_REWARD_LEVELS_INDEX = 6;
 const HOME_WHEEL_REWARD_ALL_RANK_12_INDEX = 7;
 const HOME_WHEEL_LEVEL_REWARD_COUNT = 15;
 const HOME_WHEEL_RANK_12_WEAPON_TYPES = [13, 29, 41, 53];
+const HOME_WHEEL_DOUBLE_XP_DURATION_MS = 3 * 60 * 1000;
+const HOME_WHEEL_HEARTY_ESSENCE_TYPE = dataMap.OBJECT_TYPE_BY_KEY?.['hearty_essence'] || 0;
+const HOME_WHEEL_GOLDEN_SKULL_TYPE = dataMap.OBJECT_TYPE_BY_KEY?.['golden_skull'] || 0;
+const HOME_WHEEL_RANK_12_WEAPON_POOL = WEAPON_IDS.filter((weaponType) => getWeaponConfig(weaponType)?.key?.endsWith('12'));
 
 export function parsePacket(buffer, ws) {
     const reader = new PacketReader(buffer);
@@ -117,7 +128,7 @@ export function parsePacket(buffer, ws) {
     }
 
     if (packetType === PACKET_TYPES.HOME_WHEEL_SPIN) {
-        handleHomeWheelSpinPacket(ws);
+        void handleHomeWheelSpinPacket(ws);
         return;
     }
 
@@ -247,7 +258,10 @@ function addItemToPlayerInventory(player, itemType, amount = 1) {
     if (!player?.inventory || !player?.inventoryCounts) return false;
     const safeType = Math.max(0, Math.floor(Number(itemType) || 0));
     let remaining = Math.max(1, Math.floor(Number(amount) || 1));
-    const stackLimit = isWeaponRank(safeType) ? 256 : 1;
+    const objectCfg = dataMap.OBJECTS?.[safeType];
+    const stackLimit = isWeaponRank(safeType)
+        ? 256
+        : Math.max(1, Math.floor(objectCfg?.stackLimit || (objectCfg?.stackable ? 256 : 1)));
     let changed = false;
 
     if (stackLimit > 1) {
@@ -279,6 +293,48 @@ function addItemToPlayerInventory(player, itemType, amount = 1) {
     return changed;
 }
 
+function addStackableItemToSingleSlot(player, itemType, amount = 1) {
+    if (!player?.inventory || !player?.inventoryCounts) return false;
+    const safeType = Math.max(0, Math.floor(Number(itemType) || 0));
+    const objectCfg = dataMap.OBJECTS?.[safeType];
+    const stackLimit = Math.max(1, Math.floor(objectCfg?.stackLimit || (objectCfg?.stackable ? 256 : 1)));
+    const safeAmount = Math.max(1, Math.floor(Number(amount) || 1));
+    let targetSlot = -1;
+    let totalCount = safeAmount;
+
+    for (let i = 0; i < player.inventory.length; i++) {
+        if (player.inventory[i] === safeType) {
+            const count = Math.max(0, Math.floor(player.inventoryCounts[i] || 0));
+            totalCount += count;
+            if (targetSlot < 0) targetSlot = i;
+        }
+    }
+    if (targetSlot < 0) {
+        targetSlot = player.inventory.findIndex((type) => type === 0);
+    }
+    if (targetSlot < 0) {
+        spawnObject(safeType, player.x, player.y, safeAmount, 'player', player.world || 'main');
+        return false;
+    }
+
+    for (let i = 0; i < player.inventory.length; i++) {
+        if (i !== targetSlot && player.inventory[i] === safeType) {
+            player.inventory[i] = 0;
+            player.inventoryCounts[i] = 0;
+        }
+    }
+
+    const toStore = Math.min(stackLimit, totalCount);
+    player.inventory[targetSlot] = safeType;
+    player.inventoryCounts[targetSlot] = toStore;
+
+    const remaining = totalCount - toStore;
+    if (remaining > 0) {
+        spawnObject(safeType, player.x, player.y, remaining, 'player', player.world || 'main');
+    }
+    return true;
+}
+
 function applyHomeWheelReward(player, segmentIndex) {
     if (!player) return;
 
@@ -286,6 +342,33 @@ function applyHomeWheelReward(player, segmentIndex) {
         case HOME_WHEEL_REWARD_COIN_500_INDEX:
             player.addGoldCoins?.(500);
             break;
+        case HOME_WHEEL_REWARD_DOUBLE_XP_INDEX:
+            player.activateXpBoost?.(HOME_WHEEL_DOUBLE_XP_DURATION_MS);
+            break;
+        case HOME_WHEEL_REWARD_HEARTY_ESSENCE_INDEX:
+            if (HOME_WHEEL_HEARTY_ESSENCE_TYPE) {
+                addStackableItemToSingleSlot(player, HOME_WHEEL_HEARTY_ESSENCE_TYPE, 50);
+                player.sendInventoryUpdate?.();
+                player.sendStatsUpdate?.();
+            }
+            break;
+        case HOME_WHEEL_REWARD_GOLDEN_SKULL_INDEX:
+            if (HOME_WHEEL_GOLDEN_SKULL_TYPE) {
+                addStackableItemToSingleSlot(player, HOME_WHEEL_GOLDEN_SKULL_TYPE, 10);
+                player.sendInventoryUpdate?.();
+                player.sendStatsUpdate?.();
+            }
+            break;
+        case HOME_WHEEL_REWARD_RANDOM_RANK_12_INDEX: {
+            const pool = HOME_WHEEL_RANK_12_WEAPON_POOL.length ? HOME_WHEEL_RANK_12_WEAPON_POOL : HOME_WHEEL_RANK_12_WEAPON_TYPES;
+            const randomWeaponType = pool[Math.floor(Math.random() * pool.length)] || HOME_WHEEL_RANK_12_WEAPON_TYPES[0];
+            if (randomWeaponType) {
+                addItemToPlayerInventory(player, randomWeaponType, 1);
+                player.sendInventoryUpdate?.();
+                player.sendStatsUpdate?.();
+            }
+            break;
+        }
         case HOME_WHEEL_REWARD_COIN_5000_INDEX:
             player.addGoldCoins?.(5000);
             break;
@@ -315,16 +398,39 @@ function applyHomeWheelReward(player, segmentIndex) {
     }
 }
 
-function handleHomeWheelSpinPacket(ws) {
+async function handleHomeWheelSpinPacket(ws) {
     if (!ws || ws.readyState !== 1) return;
-    const player = ENTITIES.PLAYERS[ws.id];
+    if (!ws.accountUsername) {
+        sendServerNoticePacket(ws, 'Log in first to spin the prize wheel.', true);
+        return;
+    }
+
+    const wheelSpend = await consumeAccountWheelSpin(ws.accountUsername);
+    if (!wheelSpend?.ok) {
+        sendServerNoticePacket(ws, wheelSpend?.message || 'You cannot spin the wheel right now.', true);
+        void sendAccountProfilePacket(ws);
+        return;
+    }
+
     const segmentIndex = getWeightedHomeWheelSegmentIndex();
-    applyHomeWheelReward(player, segmentIndex);
+    const spinDurationMs = 8600 + Math.floor(Math.random() * 2400);
+    if (ws._homeWheelRewardTimer) {
+        clearTimeout(ws._homeWheelRewardTimer);
+        ws._homeWheelRewardTimer = null;
+    }
     const writer = ws.packetWriter || new PacketWriter(8);
     writer.reset();
     writer.writeU8(PACKET_HOME_WHEEL_SPIN_RESULT);
     writer.writeU8(segmentIndex);
+    writer.writeU16(Math.min(65535, spinDurationMs));
     ws.send(writer.getBuffer());
+    void sendAccountProfilePacket(ws);
+    ws._homeWheelRewardTimer = setTimeout(() => {
+        ws._homeWheelRewardTimer = null;
+        const livePlayer = ENTITIES.PLAYERS[ws.id];
+        if (!livePlayer) return;
+        applyHomeWheelReward(livePlayer, segmentIndex);
+    }, spinDurationMs);
 }
 
 async function handleJoinPacket(reader, ws) {
@@ -350,12 +456,17 @@ async function handleJoinPacket(reader, ws) {
                 ws.kick('Your account session is no longer valid. Please log in again.');
                 return;
             }
-            ws.accountUsername = session.username;
+            const claim = claimAccountSocket(session.username, ws);
+            if (!claim.ok) {
+                ws.kick(claim.reason);
+                return;
+            }
+            ws.accountUsername = claim.username;
             try {
-                const adminState = await getAccountAdminState(session.username);
+                const adminState = await getAccountAdminState(claim.username);
                 ws.isAdmin = !!adminState?.isAdmin;
             } catch (error) {
-                console.error(`Failed to read admin state for ${session.username}:`, error);
+                console.error(`Failed to read admin state for ${claim.username}:`, error);
                 ws.isAdmin = false;
             }
         }
@@ -439,10 +550,15 @@ async function handleJoinPacket(reader, ws) {
 async function handleAuthSessionPacket(reader, ws) {
     const sessionToken = reader.readString();
     if (!sessionToken) {
+        releaseAccountSocket(ws);
         ws.accountUsername = null;
+        ws.accountPlayStartedAt = 0;
         ws.isAdmin = false;
         const player = ENTITIES.PLAYERS[ws.id];
-        if (player) player.isAdmin = false;
+        if (player) {
+            player.isAdmin = false;
+            player.accountUsername = '';
+        }
         sendAdminStatePacket(ws, false);
         void sendAccountProfilePacket(ws);
         return;
@@ -454,18 +570,24 @@ async function handleAuthSessionPacket(reader, ws) {
         return;
     }
 
-    ws.accountUsername = session.username;
+    const claim = claimAccountSocket(session.username, ws);
+    if (!claim.ok) {
+        ws.kick(claim.reason);
+        return;
+    }
+
+    ws.accountUsername = claim.username;
     try {
-        const adminState = await getAccountAdminState(session.username);
+        const adminState = await getAccountAdminState(claim.username);
         ws.isAdmin = !!adminState?.isAdmin;
     } catch (error) {
-        console.error(`Failed to read admin state for ${session.username}:`, error);
+        console.error(`Failed to read admin state for ${claim.username}:`, error);
         ws.isAdmin = false;
     }
     const player = ENTITIES.PLAYERS[ws.id];
     if (player) {
-        player.username = session.username;
-        player.accountUsername = session.username;
+        player.username = claim.username;
+        player.accountUsername = claim.username;
         player.isAdmin = !!ws.isAdmin;
     }
     sendAdminStatePacket(ws, !!ws.isAdmin);
@@ -494,7 +616,7 @@ async function sendAccountProfilePacket(ws) {
     }
     try {
         const profile = await getAccountProfile(username);
-        const writer = new PacketWriter(64);
+        const writer = new PacketWriter(96);
         writer.writeU8(PACKET_TYPES.ACCOUNT_PROFILE);
         writer.writeU8(profile?.ok ? 1 : 0);
         if (profile?.ok) {
@@ -503,6 +625,8 @@ async function sendAccountProfilePacket(ws) {
             writer.writeU32(Math.max(0, Math.floor(Number(profile.totalDeaths) || 0)));
             const sessionStartedAtSec = ws.accountPlayStartedAt > 0 ? Math.floor(ws.accountPlayStartedAt / 1000) : 0;
             writer.writeU32(sessionStartedAtSec);
+            writer.writeU8(Math.max(0, Math.min(255, Math.floor(Number(profile.wheelSpinsRemaining) || 0))));
+            writer.writeU32(Math.max(0, Math.floor(Number(profile.wheelSpinsResetAtSec) || 0)));
         }
         ws.send(writer.getBuffer());
     } catch (error) {

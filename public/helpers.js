@@ -110,10 +110,12 @@ export function encodeUsername(usernameStr, authToken = '', world = 'tutorial') 
 }
 
 export function sendAuthSessionPacket(token = '') {
+    if (!ws || ws.readyState !== ws.OPEN) return false;
     writer.reset();
     writer.writeU8(34);
     writer.writeStr(String(token || ''));
     ws.send(writer.getBuffer());
+    return true;
 }
 
 export function sendAccountLeaderboardRefreshPacket() {

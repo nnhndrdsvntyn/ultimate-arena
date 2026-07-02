@@ -18,7 +18,7 @@ import {
     isWeaponRank,
     isWeaponTypeStronger
 } from '../shared/datamap.js';
-import { createEl, makeDraggable } from './dom.js';
+import { createEl, makeDraggable, setAnimatedModalOpen } from './dom.js';
 import { uiRefs, uiState } from './context.js';
 import { isMobile } from './config.js';
 import { resetInputs } from './input.js';
@@ -32,6 +32,8 @@ export function createShopModal(parent) {
 
     uiRefs.shopOverlay = createEl('div', {}, parent, { className: 'modal_overlay' });
     uiRefs.shopModal = createEl('div', {}, uiRefs.shopOverlay, { className: 'shop_modal' });
+    uiRefs.shopOverlay.style.display = 'none';
+    uiRefs.shopOverlay.setAttribute('aria-hidden', 'true');
 
     const header = createEl('div', { cursor: 'move' }, uiRefs.shopModal, { className: 'shop_header' });
     createEl('h2', {}, header, { textContent: 'SHOP' });
@@ -175,7 +177,7 @@ export function updateShopBody() {
 
 export function toggleShopModal(show) {
     uiState.isShopOpen = !!show;
-    if (uiRefs.shopOverlay) uiRefs.shopOverlay.style.display = show ? 'flex' : 'none';
+    setAnimatedModalOpen(uiRefs.shopOverlay, uiRefs.shopModal, show);
     if (!show) {
         uiState.itemsInSellQueue = [];
         updateShopBody();

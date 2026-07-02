@@ -190,6 +190,24 @@ export function refreshHudDerivedState() {
     Vars.hasAffordableWeaponUpgrade = hasAffordableUpgrade;
 }
 
+export function formatCountdownMs(remainingMs) {
+    const totalSeconds = Math.max(0, Math.ceil(Math.max(0, Number(remainingMs) || 0) / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${hours}h ${minutes}m ${seconds}s`;
+}
+
+export function getDoubleXpRemainingMs(now = performance.now()) {
+    return Math.max(0, Math.floor((Number(Vars.myStats.doubleXpEndsAt) || 0) - now));
+}
+
+export function getDoubleXpStatusText(now = performance.now()) {
+    const remainingMs = getDoubleXpRemainingMs(now);
+    if (remainingMs <= 0) return '';
+    return `2X XP ${formatCountdownMs(remainingMs)}`;
+}
+
 const getStoredBackBufferQuality = () => {
     if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return null;
     try {
@@ -254,6 +272,7 @@ export const Vars = {
     dragSlot: -1,
     dragAccessory: false,
     dragAccessoryId: 0,
+    mobileAccessoryAbilityArmed: false,
     creativeDragItemType: 0,
     creativeDragAmount: 0,
     lastSelectionTime: 0,
@@ -268,12 +287,12 @@ export const Vars = {
         availablePoints: 0,
         buffStrength: 0,
         buffMaxHealth: 0,
-        buffRegenSpeed: 0
+        buffRegenSpeed: 0,
+        doubleXpEndsAt: 0
     },
     bestInventoryWeaponRank: 0,
     hasAffordableWeaponUpgrade: false,
     inCombat: false,
-    onlineCount: 0,
     vikingComboCount: 0,
     abilityCooldownMs: 0,
     abilityCooldownRemainingMs: 0,
@@ -536,7 +555,8 @@ const forgotControlsCanvasState = {
 const infoBoxCanvasState = {
     minimized: false,
     progress: 0,
-    toggleRect: null
+    toggleRect: null,
+    rect: null
 };
 const tutorialFocusUi = {
     rootEl: null,
@@ -634,6 +654,14 @@ const MINIMAP_UI = {
     y: 20,
     size: 180
 };
+function getMinimapUiLayout() {
+    if (!isMobile) return MINIMAP_UI;
+    return {
+        x: 24,
+        y: 24,
+        size: 186
+    };
+}
 const minimapBackgroundCache = {
     key: '',
     canvas: null
@@ -667,7 +695,7 @@ const UI_PANEL_IDS = {
     minimap: 2
 };
 function getMinimapHudSlideOffset() {
-    return (1 - minimapCanvasState.reveal) * (MINIMAP_UI.size - 4);
+    return (1 - minimapCanvasState.reveal) * (getMinimapUiLayout().size - 4);
 }
 const settingsCanvasState = {
     visible: false,
@@ -2634,20 +2662,25 @@ function drawTiledImageInRect(name, worldX, worldY, width, height, tileSize, vie
     const endX = Math.min(worldX + width, viewRect.right + tileSize);
     const endY = Math.min(worldY + height, viewRect.bottom + tileSize);
 
-    const screenX = worldX - camera.x;
-    const screenY = worldY - camera.y;
+    const zoom = Math.max(0.001, LC.zoom);
+    const snapToPixel = (value) => Math.round(value * zoom) / zoom;
+    const screenX = snapToPixel(worldX - camera.x);
+    const screenY = snapToPixel(worldY - camera.y);
     LC.ctx.save();
     const prevSmoothing = LC.ctx.imageSmoothingEnabled;
     LC.ctx.imageSmoothingEnabled = false;
     LC.ctx.beginPath();
     LC.ctx.rect(screenX, screenY, width, height);
     LC.ctx.clip();
+    const tileBaseColor = LC.getImageAverageColor?.(name, '#1f4d2e') || '#1f4d2e';
+    LC.ctx.fillStyle = tileBaseColor;
+    LC.ctx.fillRect(screenX, screenY, width, height);
 
     for (let x = startX; x < endX; x += tileSize) {
         for (let y = startY; y < endY; y += tileSize) {
             LC.drawImage({
                 name,
-                pos: [x - camera.x, y - camera.y],
+                pos: [snapToPixel(x - camera.x), snapToPixel(y - camera.y)],
                 size: [tileSize, tileSize],
                 transparency
             });
@@ -2886,7 +2919,6 @@ function updateHUD(lp) {
         const respawnScreen = uiRefs.respawnScreen || document.getElementById('respawn_screen');
         setElementDisplay(homeScreen, 'none');
         setElementDisplay(respawnScreen, 'none');
-        updateHomeOnlineCount(false);
         return;
     }
     const isAlive = lp?.isAlive;
@@ -3026,7 +3058,6 @@ function updateHUD(lp) {
         minimapCanvasState.toggleRect = null;
         setElementDisplay(homeScreen, 'none');
         setElementDisplay(respawnScreen, 'none');
-        updateHomeOnlineCount(false);
         return;
     }
 
@@ -3041,7 +3072,6 @@ function updateHUD(lp) {
             clearDragOverlay();
             hudUpgradeHitboxes.length = 0;
             hudUpgradeHeaderHitbox = null;
-            updateHomeOnlineCount(homeScreen?.style.display !== 'none');
             updateJoinButton();
             updateRespawnButton();
             return;
@@ -3075,7 +3105,6 @@ function updateHUD(lp) {
         updateTutorialGuidedShopFocus(tutorialCtx);
         setElementDisplay(homeScreen, 'flex');
         setElementDisplay(respawnScreen, 'none');
-        updateHomeOnlineCount(true);
         updateJoinButton();
         return;
     }
@@ -3095,28 +3124,25 @@ function updateHUD(lp) {
             } else {
                 hideDeathMenu(respawnScreen);
             }
-            updateHomeOnlineCount(false);
             updateRespawnButton();
         } else {
             hideDeathMenu(respawnScreen);
             closeHomeScreenBlockingUI();
             setElementDisplay(homeScreen, 'flex');
-            updateHomeOnlineCount(true);
             updateJoinButton();
         }
     } else {
         setElementDisplay(homeScreen, 'none');
         hideDeathMenu(respawnScreen);
         uiState.forceHomeScreen = false;
-        updateHomeOnlineCount(false);
         if (hudAlpha <= 0.001) {
             suppressBossIntroHudInteractions();
             return;
         }
         LC.ctx.save();
         LC.ctx.globalAlpha *= hudAlpha;
-        drawInfoBox(lp);
         drawLeaderboard();
+        drawInfoBox(lp);
         drawMinimap();
         drawKillCounter();
         drawUpgradeBars();
@@ -4088,10 +4114,11 @@ function drawBurstLightningBolt(centerX, centerY, worldX, worldY, angle, startRa
 }
 
 function drawInfoBox(lp) {
-    const labelFont = '900 11px Nunito';
-    const valueFont = '900 14px Nunito';
-    const paddingX = 14;
-    const minBoxWidth = Settings.debugMode ? 178 : 154;
+    const mobileHud = isMobile;
+    const labelFont = mobileHud ? '900 12px Nunito' : '900 11px Nunito';
+    const valueFont = mobileHud ? '900 15px Nunito' : '900 14px Nunito';
+    const paddingX = mobileHud ? 12 : 14;
+    const minBoxWidth = Settings.debugMode ? (mobileHud ? 164 : 178) : (mobileHud ? 140 : 154);
     const targetScore = Math.max(0, Math.floor(lp.score || 0));
     if (targetScore <= hudInfoBoxScore) {
         hudInfoBoxScore = targetScore;
@@ -4117,9 +4144,9 @@ function drawInfoBox(lp) {
         rows.push(['AUPBS', Vars.netAupbs, false]);
         rows.push(['LUPBS', Vars.netLupbs, false]);
     }
-    const rowHeight = 19;
-    const topPadding = 14;
-    const bottomPadding = 12;
+    const rowHeight = mobileHud ? 21 : 19;
+    const topPadding = mobileHud ? 16 : 14;
+    const bottomPadding = mobileHud ? 14 : 12;
     const labelColumnWidth = rows.reduce((maxWidth, row) => {
         const { width } = LC.measureText({ text: String(row[0]), font: labelFont });
         return Math.max(maxWidth, width);
@@ -4143,11 +4170,17 @@ function drawInfoBox(lp) {
     const contentAlpha = Math.max(0, Math.min(1, 1 - (collapseProgress * 1.35)));
     const boxWidth = lerp(expandedBoxWidth, minimizedBoxWidth, collapseProgress);
     const boxHeight = lerp(expandedBoxHeight, minimizedBoxHeight, collapseProgress);
-    const leaderboardOffset = Math.max(0, Math.round(205 * (1 - leaderboardCanvasState.reveal)));
-    const boxX = (LC.width - 265 - boxWidth) + leaderboardOffset;
+    const leaderboardRect = mobileHud ? leaderboardCanvasState.rect : null;
+    const boxX = mobileHud
+        ? Math.max(16, Math.min(
+            (leaderboardRect?.x || (LC.width - boxWidth - 16)) - boxWidth - 12,
+            LC.width - boxWidth - 16
+        ))
+        : ((LC.width - 265 - boxWidth) + Math.max(0, Math.round(205 * (1 - leaderboardCanvasState.reveal))));
     const labelX = boxX + paddingX;
     const valueX = boxX + boxWidth - paddingX;
-    const boxY = 5;
+    const boxY = mobileHud ? 16 : 5;
+    infoBoxCanvasState.rect = { x: boxX, y: boxY, width: boxWidth, height: boxHeight };
 
     if (collapseProgress < 0.99) {
         drawArcadeRect(boxX, boxY, boxWidth, boxHeight, {
@@ -4180,7 +4213,7 @@ function drawInfoBox(lp) {
                 transparency: contentAlpha
             });
         });
-        if (CURRENT_WORLD !== WORLD_TUTORIAL) {
+        if (!mobileHud && CURRENT_WORLD !== WORLD_TUTORIAL) {
             drawForgotControlsCanvasButton(boxX, boxY + boxHeight + 12, boxWidth, contentAlpha);
         } else {
             forgotControlsCanvasState.rect = null;
@@ -4192,7 +4225,7 @@ function drawInfoBox(lp) {
 }
 
 function drawInfoBoxToggleButton(centerX, centerY, minimized) {
-    const size = 21;
+    const size = isMobile ? 31 : 21;
     const x = centerX - (size / 2);
     const y = centerY - (size / 2);
     const cursorX = window._lastCursorX ?? -9999;
@@ -4255,6 +4288,13 @@ export function isInfoBoxToggleAtClientPos(clientX, clientY) {
     return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
 }
 
+export function isInfoBoxCanvasInteractiveAtClientPos(clientX, clientY) {
+    const rect = infoBoxCanvasState.rect;
+    if (!rect) return false;
+    const { x, y } = LC.clientToLogical(clientX, clientY);
+    return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+}
+
 export function handleInfoBoxToggleClick(clientX, clientY) {
     if (!isInfoBoxToggleAtClientPos(clientX, clientY)) return false;
     playUITapSound();
@@ -4270,24 +4310,11 @@ export function isForgotControlsCanvasAtClientPos(clientX, clientY) {
 }
 
 export function handleForgotControlsCanvasClick(clientX, clientY) {
+    if (isMobile) return false;
     if (!isForgotControlsCanvasAtClientPos(clientX, clientY)) return false;
     playUITapSound();
     showKeyHintOverlay();
     return true;
-}
-
-function updateHomeOnlineCount(shouldShow) {
-    const countEl = uiRefs.homeOnlineCount || document.getElementById('home_online_count');
-    if (!countEl) return;
-    if (!uiRefs.homeOnlineCount) uiRefs.homeOnlineCount = countEl;
-    if (!shouldShow) {
-        if (countEl.style.display !== 'none') countEl.style.display = 'none';
-        return;
-    }
-    const count = Math.max(0, Vars.onlineCount || 0);
-    const nextText = `${count} player${count === 1 ? '' : 's'} online`;
-    if (countEl.textContent !== nextText) countEl.textContent = nextText;
-    if (countEl.style.display !== 'block') countEl.style.display = 'block';
 }
 
 function resetTopLeaderState() {
@@ -4373,9 +4400,11 @@ function setMinimapOpenState(isOpen, notifyServer = true) {
 }
 
 function drawLeaderboard() {
-    const buttonSize = 24;
-    const buttonX = LC.width - 44;
-    const buttonY = 14;
+    const mobileHud = isMobile;
+    const buttonSize = mobileHud ? 34 : 24;
+    const topHudY = mobileHud ? 16 : 14;
+    const buttonX = LC.width - (mobileHud ? 52 : 44);
+    const buttonY = topHudY;
     const targetReveal = leaderboardOpen ? 1 : 0;
     leaderboardCanvasState.reveal += (targetReveal - leaderboardCanvasState.reveal) * PANEL_SLIDE_LERP;
     if (Math.abs(targetReveal - leaderboardCanvasState.reveal) < PANEL_SLIDE_EPSILON) {
@@ -4383,11 +4412,11 @@ function drawLeaderboard() {
     }
 
     const lb = ENTITIES.leaderboard || [];
-    const panelX = LC.width - 260;
-    const panelY = 10;
-    const panelWidth = 250;
-    const headerHeight = 30;
-    const rowHeight = 25;
+    const panelX = LC.width - (mobileHud ? 226 : 260);
+    const panelY = topHudY;
+    const panelWidth = mobileHud ? 210 : 250;
+    const headerHeight = mobileHud ? 34 : 30;
+    const rowHeight = mobileHud ? 24 : 25;
     const bodyTopPad = 4;
     const listHeight = (lb.length * rowHeight) + (lb.length > 0 ? bodyTopPad : 0);
     const panelHeight = headerHeight + listHeight;
@@ -4396,20 +4425,26 @@ function drawLeaderboard() {
     const currentWidth = lerp(buttonSize, panelWidth, leaderboardCanvasState.reveal);
     const currentHeight = lerp(buttonSize, panelHeight, leaderboardCanvasState.reveal);
     const toggleCenterX = lerp(buttonX + (buttonSize / 2), panelX + panelWidth - 18, leaderboardCanvasState.reveal);
-    const toggleCenterY = lerp(buttonY + (buttonSize / 2), panelY + 15, leaderboardCanvasState.reveal);
+    const toggleCenterY = lerp(buttonY + (buttonSize / 2), panelY + 16, leaderboardCanvasState.reveal);
+    const toggleHitSize = mobileHud ? 40 : 24;
 
     leaderboardCanvasState.rect = { x: currentX, y: currentY, width: currentWidth, height: currentHeight };
-    leaderboardCanvasState.toggleRect = { x: toggleCenterX - 12, y: toggleCenterY - 12, width: 24, height: 24 };
+    leaderboardCanvasState.toggleRect = {
+        x: toggleCenterX - (toggleHitSize / 2),
+        y: toggleCenterY - (toggleHitSize / 2),
+        width: toggleHitSize,
+        height: toggleHitSize
+    };
 
     if (leaderboardCanvasState.reveal <= PANEL_SLIDE_EPSILON) {
         if (leaderboardCanvasState.pendingClear) {
             ENTITIES.leaderboard = [];
             leaderboardCanvasState.pendingClear = false;
         }
-        drawArcadeRect(buttonX - 3, buttonY - 3, buttonSize + 6, buttonSize + 6, {
+        drawArcadeRect(buttonX - 4, buttonY - 4, buttonSize + 8, buttonSize + 8, {
             color: ARCADE_UI.blue,
-            radius: 8,
-            shadow: 4
+            radius: 9,
+            shadow: 5
         });
         LC.drawText({
             text: '+',
@@ -4553,7 +4588,7 @@ function formatScore(s) {
 }
 
 function getMinimapBackgroundCanvas() {
-    const size = MINIMAP_UI.size;
+    const size = getMinimapUiLayout().size;
     const cacheKey = [
         CURRENT_WORLD,
         size,
@@ -4665,10 +4700,11 @@ function getMinimapBackgroundCanvas() {
 }
 
 function drawMinimap() {
-    const size = MINIMAP_UI.size;
-    const x = MINIMAP_UI.x;
-    const y = MINIMAP_UI.y;
-    const toggleSize = 24;
+    const layout = getMinimapUiLayout();
+    const size = layout.size;
+    const x = layout.x;
+    const y = layout.y;
+    const toggleSize = isMobile ? 40 : 24;
     const toggleCenterX = x;
     const toggleCenterY = y;
     const toggleX = toggleCenterX - toggleSize / 2;
@@ -4795,8 +4831,9 @@ function drawMinimap() {
 }
 
 function getMinimapClientRect() {
-    const topLeft = LC.logicalToClient(MINIMAP_UI.x, MINIMAP_UI.y);
-    const bottomRight = LC.logicalToClient(MINIMAP_UI.x + MINIMAP_UI.size, MINIMAP_UI.y + MINIMAP_UI.size);
+    const layout = getMinimapUiLayout();
+    const topLeft = LC.logicalToClient(layout.x, layout.y);
+    const bottomRight = LC.logicalToClient(layout.x + layout.size, layout.y + layout.size);
     return {
         left: Math.min(topLeft.x, bottomRight.x),
         top: Math.min(topLeft.y, bottomRight.y),
@@ -4811,7 +4848,8 @@ export function getMinimapWorldPositionAtClientPos(clientX, clientY) {
     if (minimapCanvasState.reveal <= PANEL_SLIDE_EPSILON) return null;
 
     const { x, y } = LC.clientToLogical(clientX, clientY);
-    const rect = minimapCanvasState.rect || { x: MINIMAP_UI.x - 5, y: MINIMAP_UI.y - 5, width: MINIMAP_UI.size + 10, height: MINIMAP_UI.size + 10 };
+    const layout = getMinimapUiLayout();
+    const rect = minimapCanvasState.rect || { x: layout.x - 5, y: layout.y - 5, width: layout.size + 10, height: layout.size + 10 };
     const mapRect = {
         x: rect.x + 5,
         y: rect.y + 5,
@@ -5250,6 +5288,7 @@ function drawUpgradeBars() {
             });
         }
     });
+
 }
 
 function clientToHud(clientX, clientY) {
@@ -5307,12 +5346,26 @@ export function isLeaderboardToggleAtClientPos(clientX, clientY) {
     return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
 }
 
+export function isLeaderboardCanvasInteractiveAtClientPos(clientX, clientY) {
+    const rect = leaderboardCanvasState.rect;
+    if (!rect) return false;
+    const { x, y } = LC.clientToLogical(clientX, clientY);
+    return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+}
+
 export function toggleLeaderboardExpanded() {
     return setLeaderboardOpenState(!leaderboardOpen);
 }
 
 export function isMinimapToggleAtClientPos(clientX, clientY) {
     const rect = minimapCanvasState.toggleRect;
+    if (!rect) return false;
+    const { x, y } = LC.clientToLogical(clientX, clientY);
+    return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
+}
+
+export function isMinimapCanvasInteractiveAtClientPos(clientX, clientY) {
+    const rect = minimapCanvasState.rect;
     if (!rect) return false;
     const { x, y } = LC.clientToLogical(clientX, clientY);
     return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
@@ -5856,6 +5909,11 @@ function drawLevelProgressBar(hotbarX, hotbarY, hotbarWidth) {
         LC.drawRectFast(x, y, barWidth * progress, barHeight, 'rgba(96, 165, 250, 0.84)', 1, 6);
     }
     LC.drawTextFast(`LVL ${level}  (${Math.round(progress * 100)}%)`, x + (barWidth / 2), y - 8, '900 12px Nunito', isLocalPlayerInSnowBiome() ? '#4b5563' : HUD_ACCENT, 'center');
+
+    const xpBoostText = getDoubleXpStatusText();
+    if (xpBoostText) {
+        LC.drawTextFast(xpBoostText, x + (barWidth / 2), y + 28, '900 12px Nunito', '#7dd3fc', 'center');
+    }
 }
 
 function drawAbilityCooldownBar(hotbarX, hotbarY, hotbarWidth) {
@@ -5884,7 +5942,7 @@ function drawAbilityCooldownBar(hotbarX, hotbarY, hotbarWidth) {
 
     if (fillRatio >= 0.999) {
         LC.drawTextFast(
-            (isMobile || Settings.forceMobileUI) ? 'Tap ability to activate!' : 'Press F to activate your ability!',
+            (isMobile || Settings.forceMobileUI) ? 'Tap your accessory, then tap on your screen to activate your ability!' : 'Press F to activate your ability!',
             x + (barWidth / 2),
             y - 8,
             '900 14px Nunito',
@@ -6173,6 +6231,17 @@ function drawAccessorySlot(hotbarX, hotbarY, hotbarWidth) {
     if (!accessory) return;
     if (Vars.dragAccessory && Vars.dragAccessoryId === accessoryId) return;
 
+    if (isMobile && Vars.mobileAccessoryAbilityArmed && accessoryId > 0) {
+        drawArcadeRect(slotX - 2, slotY - 2, as.size + 4, as.size + 4, {
+            color: 'rgba(59, 130, 246, 0.32)',
+            radius: 12,
+            shadow: 4,
+            shadowColor: 'rgba(59, 130, 246, 0.35)',
+            stroke: 'rgba(219, 234, 254, 0.92)',
+            strokeWidth: 4
+        });
+    }
+
     const maxIconSize = as.size - 10;
     const aspect = (accessory.size?.[0] || 1) / (accessory.size?.[1] || 1);
     const [iconW, iconH] = fitIconSize(maxIconSize, aspect);
@@ -6256,6 +6325,7 @@ const gameHudEl = document.getElementById('game_hud');
 const joinBtn = document.getElementById('joinBtn');
 const tutorialBtn = document.getElementById('tutorialBtn');
 const usernameInput = document.getElementById('homeUsrnInput');
+const authUsernameInput = document.getElementById('authUsrnInput');
 const passwordInput = document.getElementById('homePassInput');
 const loginBtn = document.getElementById('loginBtn');
 const signupBtn = document.getElementById('signupBtn');
@@ -6707,7 +6777,7 @@ if (respawnHomeBtn) {
 }
 
 setupAccountAuthUI({
-    usernameInput,
+    authUsernameInput,
     passwordInput,
     loginButton: loginBtn,
     signupButton: signupBtn,
@@ -6725,9 +6795,19 @@ setupAccountAuthUI({
                 sendAuthSessionPacket(session.token);
             }
             if (usernameInput) usernameInput.value = session.username;
+            if (usernameInput) {
+                usernameInput.disabled = true;
+                usernameInput.readOnly = true;
+                usernameInput.title = 'Your in-game name is locked while you are logged in.';
+            }
             localStorage.username = session.username;
         } else if (ws.readyState === ws.OPEN) {
             sendAuthSessionPacket('');
+            if (usernameInput) {
+                usernameInput.disabled = false;
+                usernameInput.readOnly = false;
+                usernameInput.title = '';
+            }
         }
     }
 });

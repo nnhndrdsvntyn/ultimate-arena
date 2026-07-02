@@ -4,7 +4,10 @@ import { adminKey } from '../constants.js';
 
 export const RTDB_BASE_URL = 'https://ultimate-arena-accounts-default-rtdb.firebaseio.com';
 const ACCOUNT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const ACCOUNT_WHEEL_SPIN_LIMIT = 5;
+const ACCOUNT_WHEEL_RESET_WINDOW_MS = 24 * 60 * 60 * 1000;
 const ACCOUNT_SESSION_SECRET_PATH = './profile_runtime/account_session_secret.txt';
+const accountRecordLockTailByKey = new Map();
 
 function loadPersistedAccountSessionSecret() {
     if (process.env.ACCOUNT_SESSION_SECRET) {
@@ -61,6 +64,61 @@ function getAccountKey(username) {
 
 function buildAccountUrl(username) {
     return `${RTDB_BASE_URL}/players/${getAccountKey(username)}.json`;
+}
+
+function getAccountWheelResetAtSec(resetAtMs = 0) {
+    return Math.max(0, Math.floor(Math.max(0, Number(resetAtMs) || 0) / 1000));
+}
+
+async function withAccountRecordLock(username, task) {
+    const key = getAccountKey(username);
+    const previousTail = accountRecordLockTailByKey.get(key) || Promise.resolve();
+    let release;
+    const nextTail = new Promise((resolve) => {
+        release = resolve;
+    });
+    accountRecordLockTailByKey.set(key, previousTail.then(() => nextTail));
+    await previousTail;
+    try {
+        return await task();
+    } finally {
+        release?.();
+        if (accountRecordLockTailByKey.get(key) === nextTail) {
+            accountRecordLockTailByKey.delete(key);
+        }
+    }
+}
+
+function normalizeWheelState(record, now = Date.now()) {
+    const safeNow = Math.max(0, Math.floor(Number(now) || 0));
+    let wheelSpinsRemaining = Math.max(0, Math.min(ACCOUNT_WHEEL_SPIN_LIMIT, Math.floor(Number(record?.wheelSpinsRemaining) || 0)));
+    let wheelSpinsResetAt = Math.max(0, Math.floor(Number(record?.wheelSpinsResetAt) || 0));
+    let changed = false;
+
+    if (!Number.isFinite(Number(record?.wheelSpinsRemaining))) {
+        wheelSpinsRemaining = ACCOUNT_WHEEL_SPIN_LIMIT;
+        changed = true;
+    }
+
+    if (wheelSpinsRemaining <= 0 && wheelSpinsResetAt <= 0) {
+        wheelSpinsRemaining = ACCOUNT_WHEEL_SPIN_LIMIT;
+        changed = true;
+    }
+
+    if (wheelSpinsResetAt > 0 && wheelSpinsResetAt <= safeNow) {
+        wheelSpinsRemaining = ACCOUNT_WHEEL_SPIN_LIMIT;
+        wheelSpinsResetAt = 0;
+        changed = true;
+    } else if (wheelSpinsRemaining > ACCOUNT_WHEEL_SPIN_LIMIT) {
+        wheelSpinsRemaining = ACCOUNT_WHEEL_SPIN_LIMIT;
+        changed = true;
+    }
+
+    return {
+        wheelSpinsRemaining,
+        wheelSpinsResetAt,
+        changed
+    };
 }
 
 async function readJsonResponse(response) {
@@ -157,6 +215,7 @@ export async function getAccountProfile(username) {
     if (!record?.username) {
         return { ok: false, status: 404 };
     }
+    const wheelState = normalizeWheelState(record);
     return {
         ok: true,
         status: 200,
@@ -164,8 +223,81 @@ export async function getAccountProfile(username) {
         isAdmin: !!record.isAdmin,
         playTime: Math.max(0, Math.floor(Number(record.playTime) || 0)),
         totalPlayerKills: Math.max(0, Math.floor(Number(record.totalPlayerKills) || 0)),
-        totalDeaths: Math.max(0, Math.floor(Number(record.totalDeaths) || 0))
+        totalDeaths: Math.max(0, Math.floor(Number(record.totalDeaths) || 0)),
+        wheelSpinsRemaining: wheelState.wheelSpinsRemaining,
+        wheelSpinsResetAtSec: getAccountWheelResetAtSec(wheelState.wheelSpinsResetAt)
     };
+}
+
+export async function getAccountWheelState(username) {
+    const normalizedUsername = normalizeAccountUsername(username);
+    if (!normalizedUsername) return { ok: false, status: 400 };
+
+    return await withAccountRecordLock(normalizedUsername, async () => {
+        const record = await getAccountRecord(normalizedUsername);
+        if (!record?.username) {
+            return { ok: false, status: 404 };
+        }
+
+        const wheelState = normalizeWheelState(record);
+        if (wheelState.changed) {
+            await patchAccountRecord(normalizedUsername, {
+                wheelSpinsRemaining: wheelState.wheelSpinsRemaining,
+                wheelSpinsResetAt: wheelState.wheelSpinsResetAt
+            });
+        }
+
+        return {
+            ok: true,
+            status: 200,
+            username: String(record.username || normalizedUsername),
+            wheelSpinsRemaining: wheelState.wheelSpinsRemaining,
+            wheelSpinsResetAtSec: getAccountWheelResetAtSec(wheelState.wheelSpinsResetAt)
+        };
+    });
+}
+
+export async function consumeAccountWheelSpin(username) {
+    const normalizedUsername = normalizeAccountUsername(username);
+    if (!normalizedUsername) {
+        return { ok: false, status: 400, message: 'Log in first to spin the prize wheel.' };
+    }
+
+    return await withAccountRecordLock(normalizedUsername, async () => {
+        const record = await getAccountRecord(normalizedUsername);
+        if (!record?.username) {
+            return { ok: false, status: 404, message: 'That account does not exist.' };
+        }
+
+        const wheelState = normalizeWheelState(record);
+        let wheelSpinsResetAt = wheelState.wheelSpinsResetAt;
+        let wheelSpinsRemaining = wheelState.wheelSpinsRemaining;
+        if (wheelSpinsResetAt <= 0) {
+            wheelSpinsRemaining = ACCOUNT_WHEEL_SPIN_LIMIT;
+            wheelSpinsResetAt = Math.max(0, Math.floor(Date.now())) + ACCOUNT_WHEEL_RESET_WINDOW_MS;
+        }
+        if (wheelState.wheelSpinsRemaining <= 0) {
+            return {
+                ok: false,
+                status: 429,
+                message: 'You are out of prize wheel spins for now. Please wait until the reset timer ends.'
+            };
+        }
+
+        const nextWheelSpinsRemaining = Math.max(0, wheelSpinsRemaining - 1);
+        await patchAccountRecord(normalizedUsername, {
+            wheelSpinsRemaining: nextWheelSpinsRemaining,
+            wheelSpinsResetAt
+        });
+
+        return {
+            ok: true,
+            status: 200,
+            username: String(record.username || normalizedUsername),
+            wheelSpinsRemaining: nextWheelSpinsRemaining,
+            wheelSpinsResetAtSec: getAccountWheelResetAtSec(wheelSpinsResetAt)
+        };
+    });
 }
 
 export async function setAccountAdminState(username, isAdmin) {
@@ -212,6 +344,8 @@ export async function registerAccount(username, password) {
         playTime: 0,
         totalPlayerKills: 0,
         totalDeaths: 0,
+        wheelSpinsRemaining: ACCOUNT_WHEEL_SPIN_LIMIT,
+        wheelSpinsResetAt: 0,
         createdAt: Date.now()
     };
 

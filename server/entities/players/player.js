@@ -247,6 +247,7 @@ export class Player extends Entity {
         this.lastProcessTime = 0;
         this.lastCombatTime = -Infinity;
         this.wasInCombat = false;
+        this.xpBoostUntil = 0;
 
         this.attackCooldownTime = dataMap.PLAYERS.baseAttackCooldown;
         this.throwSwordCoolDownTime = dataMap.PLAYERS.baseThrowSwordCooldown;
@@ -2139,8 +2140,26 @@ export class Player extends Entity {
         }
     }
 
-    addScore(points) {
-        this.setScore(this.score + points);
+    getXpBoostRemainingMs(now = performance.now()) {
+        return Math.max(0, Math.ceil((Number(this.xpBoostUntil) || 0) - now));
+    }
+
+    getXpMultiplier(now = performance.now()) {
+        return this.getXpBoostRemainingMs(now) > 0 ? 2 : 1;
+    }
+
+    activateXpBoost(durationMs = 180000) {
+        const now = performance.now();
+        const safeDuration = Math.max(1000, Math.floor(Number(durationMs) || 0));
+        this.xpBoostUntil = Math.max(now, Number(this.xpBoostUntil) || 0) + safeDuration;
+        this.sendStatsUpdate();
+    }
+
+    addScore(points, options = {}) {
+        const safePoints = Math.max(0, Math.floor(Number(points) || 0));
+        if (safePoints <= 0) return;
+        const boostMult = options.ignoreXpBoost ? 1 : this.getXpMultiplier();
+        this.setScore(this.score + (safePoints * boostMult));
     }
 
     syncLevelFromScore() {
@@ -2348,6 +2367,7 @@ export class Player extends Entity {
         ws.packetWriter.writeU8(Math.min(BUFF_STAGE_MAX, this.buffLevels.strength || 0));
         ws.packetWriter.writeU8(Math.min(BUFF_STAGE_MAX, this.buffLevels.maxHealth || 0));
         ws.packetWriter.writeU8(Math.min(BUFF_STAGE_MAX, this.buffLevels.regenSpeed || 0));
+        ws.packetWriter.writeU32(this.getXpBoostRemainingMs());
         ws.send(ws.packetWriter.getBuffer());
     }
 

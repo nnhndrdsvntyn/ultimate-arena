@@ -3,10 +3,10 @@ export const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Oper
 const MOBILE_SHORT_EDGE = Math.min(window.innerWidth || 0, window.innerHeight || 0);
 const IS_COMPACT_MOBILE = isMobile && MOBILE_SHORT_EDGE > 0 && MOBILE_SHORT_EDGE <= 430;
 
-export const THROW_BTN_CONFIG = { xOffset: IS_COMPACT_MOBILE ? 58 : 66, yOffset: IS_COMPACT_MOBILE ? 124 : 136, radius: IS_COMPACT_MOBILE ? 40 : 44, touchPadding: 15 };
-export const PICKUP_BTN_CONFIG = { xOffset: IS_COMPACT_MOBILE ? 156 : 176, yOffset: IS_COMPACT_MOBILE ? 124 : 136, radius: IS_COMPACT_MOBILE ? 40 : 44, touchPadding: 20 };
-export const DROP_BTN_CONFIG = { xOffset: IS_COMPACT_MOBILE ? 58 : 66, yOffset: IS_COMPACT_MOBILE ? 226 : 248, radius: IS_COMPACT_MOBILE ? 36 : 40, touchPadding: 15 };
-export const ATTACK_BTN_CONFIG = { xOffset: IS_COMPACT_MOBILE ? 146 : 158, yOffset: IS_COMPACT_MOBILE ? 226 : 248, radius: IS_COMPACT_MOBILE ? 50 : 54, touchPadding: 20 };
+export const THROW_BTN_CONFIG = { xOffset: IS_COMPACT_MOBILE ? 60 : 66, yOffset: IS_COMPACT_MOBILE ? 128 : 136, radius: IS_COMPACT_MOBILE ? 46 : 50, touchPadding: 18 };
+export const PICKUP_BTN_CONFIG = { xOffset: IS_COMPACT_MOBILE ? 166 : 176, yOffset: IS_COMPACT_MOBILE ? 128 : 136, radius: IS_COMPACT_MOBILE ? 46 : 50, touchPadding: 22 };
+export const DROP_BTN_CONFIG = { xOffset: IS_COMPACT_MOBILE ? 60 : 66, yOffset: IS_COMPACT_MOBILE ? 230 : 248, radius: IS_COMPACT_MOBILE ? 42 : 46, touchPadding: 18 };
+export const ATTACK_BTN_CONFIG = { xOffset: IS_COMPACT_MOBILE ? 154 : 158, yOffset: IS_COMPACT_MOBILE ? 230 : 248, radius: IS_COMPACT_MOBILE ? 56 : 60, touchPadding: 22 };
 
 export const HOTBAR_CONFIG = {
     slotSize: isMobile ? (IS_COMPACT_MOBILE ? 62 : 68) : 60,
@@ -231,7 +231,13 @@ export const UPDATES_LOG = [
     {
         version: '1.6.3',
         changes: [
+            "Some auth security updates",
+            "Fixed Mobile Tutorial & Controls.",
+            "UI REVAMP",
             "Fixed chests not respawning (again)",
+            "Fixed Yeti small projectiles bug.",
+            "Nerfed dune behemoth 4th ability",
+            "Added a Prize Wheel on home screen, spin and get rewards!",
             "Fixed audio spam bug",
             "Coins are not stored in the inventory anymore.",
             "Minotaur's energy burst ability range & damage have been decreased.",
@@ -246,7 +252,7 @@ export const UPDATES_LOG = [
             "Upgrade bars now have 15 stages instead of 10.",
             "Weapons and upgrades are more balanced."
         ],
-        date: '2026-06-30'
+        date: '2026-07-01'
     }
 ];
 

@@ -1179,7 +1179,7 @@ class CommandMap {
             } else if (attrIdx === 2) { // score
                 const nextScore = isDefault ? 0 : Math.floor(value);
                 player.score = 0;
-                player.addScore(nextScore);
+                player.addScore(nextScore, { ignoreXpBoost: true });
             } else if (attrIdx === 3) { // invincible
                 player.invincible = isDefault ? false : !!value;
             } else if (attrIdx === 4) { // weapon rank (admin give)

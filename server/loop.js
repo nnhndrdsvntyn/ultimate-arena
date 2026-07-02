@@ -123,6 +123,26 @@ export function updateGame(now = performance.now()) {
         }
     }
 
+    const currentRespawnCycleId = ++respawnCycleId;
+    handleRespawns(brokenObjects, (obj) => {
+        const world = obj.world || 'main';
+        const spawned = spawnObject(obj.type, undefined, undefined, 1, null, world);
+        if (spawned) return true;
+
+        // Fallback: respawn at the previous chest location if strict random validation fails.
+        return !!spawnObject(obj.type, obj.x, obj.y, 1, null, world);
+    }, 3000, currentRespawnCycleId, { useThrottle: false });
+
+    handleRespawns(deadMobs, (ent) => {
+        const { x, y } = getRandomMobPosition(ent.type, ent.world || 'main');
+        return {
+            entityType: 'mob',
+            x,
+            y,
+            world: ent.world || 'main'
+        };
+    }, 3000, currentRespawnCycleId);
+
     if (ENTITIES.playerIds.size === 0) return;
 
     const proximity1500 = buildProximityContexts(playerProximityByWorld, 1500);
@@ -157,27 +177,6 @@ export function updateGame(now = performance.now()) {
             }
         }
     }
-
-    // 3. Handle Respawns
-    const currentRespawnCycleId = ++respawnCycleId;
-    handleRespawns(brokenObjects, (obj) => {
-        const world = obj.world || 'main';
-        const spawned = spawnObject(obj.type, undefined, undefined, 1, null, world);
-        if (spawned) return true;
-
-        // Fallback: respawn at the previous chest location if strict random validation fails.
-        return !!spawnObject(obj.type, obj.x, obj.y, 1, null, world);
-    }, 3000, currentRespawnCycleId, { useThrottle: false });
-
-    handleRespawns(deadMobs, (ent) => {
-        const { x, y } = getRandomMobPosition(ent.type, ent.world || 'main');
-        return {
-            entityType: 'mob',
-            x,
-            y,
-            world: ent.world || 'main'
-        };
-    }, 3000, currentRespawnCycleId);
 }
 
 function debugLogStillBots(players, now) {

@@ -14,7 +14,16 @@
 <body>
   <!-- Home / Login Screen -->
   <section id="home_screen">
-    <div id="home_online_count">0 players online</div>
+    <div id="home_stats_hud" aria-label="Current session stats">
+      <div class="home_stats_row">
+        <img class="home_stats_icon" src="./images/ui/skull.png" alt="" aria-hidden="true">
+        <span id="home_stats_kills" class="home_stats_value">0</span>
+      </div>
+      <div class="home_stats_row">
+        <img class="home_stats_icon" src="./images/objects/gold_coin.png" alt="" aria-hidden="true">
+        <span id="home_stats_coins" class="home_stats_value">0</span>
+      </div>
+    </div>
     <img id="home_logo" src="./images/ui/logo.png" alt="Ultimate Arena">
     <div id="home_panels">
       <div id="play_panel">
@@ -24,6 +33,12 @@
             <button id="tutorialBtn" type="button">TUTORIAL</button>
             <button id="joinBtn" type="button">PLAY</button>
           </div>
+          <a
+            id="home_form_link"
+            href="https://tinyurl.com/dtrhz9f2"
+            target="_blank"
+            rel="noopener noreferrer"
+          >Game Suggestions / Bug Reports Form</a>
         </div>
       </div>
     </div>
@@ -33,6 +48,7 @@
           <button class="home_overlay_close" type="button" aria-label="Close account">×</button>
         </div>
         <section class="home_account_section">
+          <input id="authUsrnInput" maxlength="15" placeholder="Username" autocomplete="off">
           <input id="homePassInput" type="password" maxlength="64" placeholder="Password" autocomplete="off">
           <div id="auth_actions">
             <button id="loginBtn" type="button">LOG IN</button>
@@ -92,12 +108,6 @@
         </div>
     </aside>
     <div id="credits">Made by Liberation</div>
-    <a
-      id="home_form_link"
-      href="https://tinyurl.com/dtrhz9f2"
-      target="_blank"
-      rel="noopener noreferrer"
-    >Game Suggestions / Bug Reports Form</a>
   </section>
 
   <!-- Respawn Screen -->

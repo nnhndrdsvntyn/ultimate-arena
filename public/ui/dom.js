@@ -64,3 +64,41 @@ export function makeDraggable(el, handle) {
     window.addEventListener('touchend', end);
     window.addEventListener('touchcancel', end);
 }
+
+export function setAnimatedModalOpen(overlay, modal, show, { transitionMs = 180 } = {}) {
+    if (!overlay || !modal) return;
+
+    if (overlay._modalOpenFrame) {
+        cancelAnimationFrame(overlay._modalOpenFrame);
+        overlay._modalOpenFrame = null;
+    }
+
+    if (overlay._modalHideTimer) {
+        clearTimeout(overlay._modalHideTimer);
+        overlay._modalHideTimer = null;
+    }
+
+    if (show) {
+        overlay.style.display = 'flex';
+        overlay.setAttribute('aria-hidden', 'false');
+
+        overlay._modalOpenFrame = requestAnimationFrame(() => {
+            overlay.classList.add('modal_open');
+            overlay.classList.remove('modal_closing');
+            overlay._modalOpenFrame = null;
+        });
+        return;
+    }
+
+    overlay.classList.remove('modal_open');
+    overlay.classList.add('modal_closing');
+    overlay.setAttribute('aria-hidden', 'true');
+
+    overlay._modalHideTimer = window.setTimeout(() => {
+        if (!overlay.classList.contains('modal_open')) {
+            overlay.style.display = 'none';
+        }
+        overlay.classList.remove('modal_closing');
+        overlay._modalHideTimer = null;
+    }, transitionMs);
+}

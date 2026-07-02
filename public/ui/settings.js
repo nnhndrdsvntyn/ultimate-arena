@@ -14,7 +14,7 @@ import {
     VIEW_RANGE_RECOMMENDED_DESKTOP
 } from '../client.js';
 import { BACK_BUFFER_QUALITIES } from './config.js';
-import { createEl, makeDraggable } from './dom.js';
+import { createEl, makeDraggable, setAnimatedModalOpen } from './dom.js';
 import { uiRefs, uiState } from './context.js';
 import { resetInputs } from './input.js';
 
@@ -38,6 +38,8 @@ export function createSettingsButton(parent) {
 export function createSettingsModal(parent) {
     uiRefs.settingsOverlay = createEl('div', {}, parent, { className: 'modal_overlay' });
     uiRefs.settingsModal = createEl('div', {}, uiRefs.settingsOverlay, { className: 'settings_modal' });
+    uiRefs.settingsOverlay.style.display = 'none';
+    uiRefs.settingsOverlay.setAttribute('aria-hidden', 'true');
 
     const blockOutsideClicks = (event) => {
         if (!uiState.isSettingsOpen) return;
@@ -104,7 +106,7 @@ export function updateSettingsBody() {
 
 export function toggleSettingsModal(show) {
     uiState.isSettingsOpen = show;
-    if (uiRefs.settingsOverlay) uiRefs.settingsOverlay.style.display = show ? 'flex' : 'none';
+    setAnimatedModalOpen(uiRefs.settingsOverlay, uiRefs.settingsModal, show);
     if (show) {
         resetInputs();
     }
