@@ -1797,14 +1797,17 @@ export function spawnObject(type, x, y, amount = 1, source = null, world = null)
 
         if (isChestSpawn) {
             const candidatePositions = buildChestSpawnCandidates(type, mapSize, x, y);
+            const validCandidates = [];
             for (let i = 0; i < candidatePositions.length; i++) {
                 const candidate = candidatePositions[i];
-                if (isSpawnPositionValid(candidate.x, candidate.y)) {
-                    x = candidate.x;
-                    y = candidate.y;
-                    validPosition = true;
-                    break;
-                }
+                if (!isSpawnPositionValid(candidate.x, candidate.y)) continue;
+                validCandidates.push(candidate);
+            }
+            if (validCandidates.length > 0) {
+                const chosen = validCandidates[Math.floor(Math.random() * validCandidates.length)];
+                x = chosen.x;
+                y = chosen.y;
+                validPosition = true;
             }
         }
 
